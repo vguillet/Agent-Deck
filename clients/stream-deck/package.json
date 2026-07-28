@@ -1,0 +1,20 @@
+{
+  "name": "@agent-deck/stream-deck",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:assets": "node scripts/build-assets.mjs",
+    "package": "npm run build:assets && streamdeck pack com.agentdeck.monitor.sdPlugin --output release --force"
+  },
+  "dependencies": {
+    "@agent-deck/client-sdk": "0.1.0",
+    "@agent-deck/domain": "0.1.0",
+    "@elgato/streamdeck": "2.1.0"
+  },
+  "devDependencies": {
+    "@elgato/cli": "1.7.4",
+    "esbuild": "^0.25.8",
+    "pngjs": "^7.0.0"
+  }
+}

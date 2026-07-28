@@ -1,0 +1,10 @@
+src/**
+dist/**/*.d.ts
+dist/**/*.d.ts.map
+dist/**/*.map
+dist/**/*.js
+dist/**/*.test.js
+dist/.tsbuildinfo
+release/**
+scripts/**
+tsconfig.json

@@ -1,0 +1,202 @@
+import { z } from "zod";
+import {
+  canonicalId,
+  type Agent,
+  type AgentRun,
+  type CommandResult,
+  type ProviderCommand,
+  type ProviderHealth,
+  type ProviderSnapshot,
+} from "@agent-deck/domain";
+import type {
+  AgentProviderPlugin,
+  ProviderContext,
+  ProviderEventEmitter,
+  Unsubscribe,
+} from "@agent-deck/provider-sdk";
+
+const ConfigSchema = z
+  .object({
+    count: z.number().int().min(1).max(50).default(6),
+    intervalMs: z.number().int().min(250).default(3_000),
+  })
+  .default({ count: 6, intervalMs: 3_000 });
+
+class FakeProvider implements AgentProviderPlugin {
+  readonly manifest = {
+    id: "fake",
+    displayName: "Agent Deck Demo",
+    version: "0.1.0",
+    sdkVersion: 1 as const,
+    capabilities: {
+      discovery: true,
+      liveEvents: true,
+      commands: [],
+    },
+  };
+  readonly configSchema = ConfigSchema;
+  private context: ProviderContext | undefined;
+  private emit: ProviderEventEmitter | undefined;
+  private timer: NodeJS.Timeout | undefined;
+  private count = 6;
+  private intervalMs = 3_000;
+  private tick = 0;
+  private readonly agents = new Map<string, Agent>();
+  private readonly runs = new Map<string, AgentRun>();
+
+  async initialise(context: ProviderContext): Promise<void> {
+    this.context = context;
+    const config = ConfigSchema.parse(context.config);
+    this.count = config.count;
+    this.intervalMs = config.intervalMs;
+    this.seed(context.now());
+  }
+
+  async discover(): Promise<ProviderSnapshot> {
+    const now = this.context?.now() ?? new Date().toISOString();
+    return {
+      complete: true,
+      observedAt: now,
+      workspaces: [],
+      projects: [
+        {
+          id: canonicalId("fake", "project:demo"),
+          providerId: "fake",
+          externalId: "demo",
+          name: "agent-deck-demo",
+          metadata: {},
+        },
+      ],
+      agents: [...this.agents.values()],
+      runs: [...this.runs.values()],
+      attention: [],
+    };
+  }
+
+  async subscribe(emit: ProviderEventEmitter): Promise<Unsubscribe> {
+    this.emit = emit;
+    this.timer = setInterval(() => {
+      void this.advance();
+    }, this.intervalMs);
+    this.timer.unref();
+    return async () => {
+      if (this.timer) clearInterval(this.timer);
+      this.timer = undefined;
+      this.emit = undefined;
+    };
+  }
+
+  async execute(command: ProviderCommand): Promise<CommandResult> {
+    return {
+      commandId: command.commandId,
+      status: "unsupported",
+      message: "Fake provider is observation-only",
+    };
+  }
+
+  async healthCheck(): Promise<ProviderHealth> {
+    return {
+      status: "healthy",
+      checkedAt: this.context?.now() ?? new Date().toISOString(),
+    };
+  }
+
+  async dispose(): Promise<void> {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    this.emit = undefined;
+  }
+
+  private seed(now: string): void {
+    for (let index = 0; index < this.count; index++) {
+      const externalId = `demo-${index + 1}`;
+      const agentId = canonicalId("fake", externalId);
+      const runId = canonicalId("fake", `${externalId}:run`);
+      const state: Agent["state"] =
+        index === 0
+          ? "waiting_for_approval"
+          : index === 1
+            ? "running"
+            : index === 2
+              ? "ready_for_review"
+              : "idle";
+      this.agents.set(agentId, {
+        id: agentId,
+        providerId: "fake",
+        externalId,
+        title: `Demo Agent ${index + 1}`,
+        projectId: canonicalId("fake", "project:demo"),
+        state,
+        freshness: "fresh",
+        activeRunId: runId,
+        requiresAttention:
+          state === "waiting_for_approval" || state === "ready_for_review",
+        lastActivityAt: now,
+        revision: 0,
+        archived: false,
+        capabilities: {
+          messages: false,
+          approvals: false,
+          cancellation: false,
+          creation: false,
+        },
+        links: [],
+        metadata: {},
+      });
+      this.runs.set(runId, {
+        id: runId,
+        agentId,
+        providerId: "fake",
+        externalId: `${externalId}:run`,
+        state:
+          state === "running"
+            ? "running"
+            : state === "waiting_for_approval"
+              ? "waiting_for_approval"
+              : state === "ready_for_review"
+                ? "succeeded"
+                : "unknown",
+        startedAt: now,
+        revision: 0,
+        metadata: {},
+      });
+    }
+  }
+
+  private async advance(): Promise<void> {
+    const states: Agent["state"][] = [
+      "running",
+      "waiting_for_approval",
+      "ready_for_review",
+      "idle",
+    ];
+    const index = this.tick % this.count;
+    this.tick++;
+    const id = canonicalId("fake", `demo-${index + 1}`);
+    const previous = this.agents.get(id);
+    if (!previous || !this.emit) return;
+    const state = states[this.tick % states.length] ?? "unknown";
+    const now = this.context?.now() ?? new Date().toISOString();
+    const agent: Agent = {
+      ...previous,
+      state,
+      freshness: "fresh",
+      requiresAttention:
+        state === "waiting_for_approval" || state === "ready_for_review",
+      lastActivityAt: now,
+    };
+    this.agents.set(id, agent);
+    await this.emit({
+      providerId: "fake",
+      providerEventId: `tick:${this.tick}`,
+      type: "agent.state.changed",
+      occurredAt: now,
+      agentId: id,
+      ...(agent.activeRunId ? { runId: agent.activeRunId } : {}),
+      payload: { agent },
+    });
+  }
+}
+
+export const createProviderPlugin = (): AgentProviderPlugin =>
+  new FakeProvider();

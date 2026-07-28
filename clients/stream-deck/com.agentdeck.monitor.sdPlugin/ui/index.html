@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Agent Deck</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font:
+          13px system-ui,
+          sans-serif;
+      }
+      body {
+        margin: 12px;
+        color: #eee;
+        background: #2d2d2d;
+      }
+      label {
+        display: block;
+        margin: 10px 0;
+      }
+      span {
+        display: block;
+        margin-bottom: 4px;
+        color: #bbb;
+      }
+      input,
+      select {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 6px;
+        color: #fff;
+        background: #1e1e1e;
+        border: 1px solid #555;
+        border-radius: 4px;
+      }
+      small {
+        color: #aaa;
+      }
+    </style>
+  </head>
+  <body>
+    <label
+      ><span>Core URL</span
+      ><input id="serverUrl" value="http://127.0.0.1:47831"
+    /></label>
+    <label
+      ><span>Device name</span><input id="name" value="Stream Deck"
+    /></label>
+    <label
+      ><span>Device role</span><input id="role" value="agent-monitor"
+    /></label>
+    <label
+      ><span>Provider IDs (comma-separated)</span><input id="providers"
+    /></label>
+    <label id="slotField"
+      ><span>Slot override</span
+      ><input
+        id="slot"
+        type="number"
+        min="0"
+        placeholder="Automatic key position"
+    /></label>
+    <label id="summaryProviderField" hidden
+      ><span>Recap scope</span
+      ><select id="summaryProviderId">
+        <option value="">All agents</option>
+      </select></label
+    >
+    <small
+      >Agent slots are dynamic placeholders. Provider identity sets the accent;
+      current state sets the main colour. Agent state is read-only.</small
+    >
+    <script>
+      let websocket;
+      let context;
+      let device;
+      let actionId;
+      let settings = {};
+      const defaults = {
+        states: [
+          "running",
+          "waiting_for_input",
+          "waiting_for_approval",
+          "ready_for_review",
+          "failed",
+        ],
+      };
+      function send(event, payload, targetContext = context) {
+        websocket?.send(
+          JSON.stringify({ event, context: targetContext, payload }),
+        );
+      }
+      async function save() {
+        const slot = document.querySelector("#slot").value;
+        if (slot === "") delete settings.slot;
+        else settings.slot = Number(slot);
+        settings.summaryProviderId =
+          document.querySelector("#summaryProviderId").value;
+        send("setSettings", settings);
+        const serverUrl = document
+          .querySelector("#serverUrl")
+          .value.replace(/\/$/, "");
+        send("setGlobalSettings", { serverUrl });
+        const data = {
+          ...defaults,
+          serverUrl,
+          name: document.querySelector("#name").value,
+          role: document.querySelector("#role").value,
+          providers: document
+            .querySelector("#providers")
+            .value.split(",")
+            .map((v) => v.trim())
+            .filter(Boolean),
+        };
+        try {
+          const existing = await fetch(
+            `${serverUrl}/api/v1/clients/stream-deck%3A${encodeURIComponent(device)}/configuration`,
+          );
+          const revision = existing.ok
+            ? (await existing.json()).revision
+            : undefined;
+          await fetch(
+            `${serverUrl}/api/v1/clients/stream-deck%3A${encodeURIComponent(device)}/configuration`,
+            {
+              method: "PUT",
+              headers: {
+                "content-type": "application/json",
+                ...(revision === undefined
+                  ? {}
+                  : { "if-match": `"${revision}"` }),
+              },
+              body: JSON.stringify({
+                schema: "com.agentdeck.stream-deck/v1",
+                data,
+              }),
+            },
+          );
+        } catch {}
+      }
+      document
+        .querySelectorAll("input, select")
+        .forEach((input) => input.addEventListener("change", save));
+      async function populateProviders(serverUrl) {
+        try {
+          const response = await fetch(
+            `${serverUrl}/api/v1/providers?limit=200`,
+          );
+          if (!response.ok) return;
+          const providers = (await response.json()).items ?? [];
+          const select = document.querySelector("#summaryProviderId");
+          select.replaceChildren(new Option("All agents", ""));
+          for (const provider of providers) {
+            select.add(new Option(provider.name, provider.id));
+          }
+          select.value = settings.summaryProviderId ?? "";
+        } catch {}
+      }
+      window.connectElgatoStreamDeckSocket = (
+        port,
+        uuid,
+        registerEvent,
+        info,
+        actionInfo,
+      ) => {
+        context = uuid;
+        const parsed = JSON.parse(actionInfo);
+        device = parsed.device;
+        actionId = parsed.action;
+        settings = parsed.payload?.settings ?? {};
+        document.querySelector("#slot").value = settings.slot ?? "";
+        document.querySelector("#summaryProviderId").value =
+          settings.summaryProviderId ?? "";
+        document.querySelector("#slotField").hidden =
+          actionId !== "com.agentdeck.monitor.agent-slot";
+        document.querySelector("#summaryProviderField").hidden =
+          actionId !== "com.agentdeck.monitor.agent-summary";
+        websocket = new WebSocket(`ws://127.0.0.1:${port}`);
+        websocket.onopen = () => {
+          websocket.send(JSON.stringify({ event: registerEvent, uuid }));
+          send("getGlobalSettings", {});
+        };
+        websocket.onmessage = async (event) => {
+          const message = JSON.parse(event.data);
+          if (message.event !== "didReceiveGlobalSettings") return;
+          const serverUrl =
+            message.payload?.settings?.serverUrl ?? "http://127.0.0.1:47831";
+          document.querySelector("#serverUrl").value = serverUrl;
+          await populateProviders(serverUrl);
+          try {
+            const response = await fetch(
+              `${serverUrl}/api/v1/clients/stream-deck%3A${encodeURIComponent(device)}/configuration`,
+            );
+            if (!response.ok) return;
+            const data = (await response.json()).data;
+            document.querySelector("#name").value = data.name ?? "Stream Deck";
+            document.querySelector("#role").value =
+              data.role ?? "agent-monitor";
+            document.querySelector("#providers").value = (
+              data.providers ?? []
+            ).join(",");
+          } catch {}
+        };
+      };
+    </script>
+  </body>
+</html>

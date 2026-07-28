@@ -1,0 +1,35 @@
+{
+  "name": "focus",
+  "displayName": "Agent Deck Focus",
+  "description": "Opens a specific local Cursor conversation from Agent Deck.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "agent-deck",
+  "type": "module",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onUri"
+  ],
+  "main": "./dist/extension.cjs",
+  "exports": {
+    "./package.json": "./package.json"
+  },
+  "categories": [
+    "Other"
+  ],
+  "scripts": {
+    "build": "tsc -b && node scripts/build-extension.mjs",
+    "prepackage": "node scripts/prepare-package.mjs",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out release/agent-deck.focus-0.1.0.vsix"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.25.8"
+  }
+}

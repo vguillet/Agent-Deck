@@ -1,0 +1,108 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Actions": [
+    {
+      "UUID": "com.agentdeck.monitor.agent-slot",
+      "Name": "Agent Slot",
+      "Tooltip": "A placeholder filled dynamically by a canonical agent",
+      "Icon": "assets/action-agent",
+      "Controllers": ["Keypad", "Encoder"],
+      "Encoder": {
+        "layout": "$B1"
+      },
+      "PropertyInspectorPath": "ui/index.html",
+      "States": [
+        {
+          "Image": "assets/action-agent"
+        }
+      ]
+    },
+    {
+      "UUID": "com.agentdeck.monitor.agent-summary",
+      "Name": "Agent Recap",
+      "Tooltip": "Summarize all agents or one provider type",
+      "Icon": "assets/action-summary",
+      "Controllers": ["Keypad", "Encoder"],
+      "Encoder": {
+        "layout": "$B1"
+      },
+      "PropertyInspectorPath": "ui/index.html",
+      "States": [
+        {
+          "Image": "assets/action-summary"
+        }
+      ]
+    },
+    {
+      "UUID": "com.agentdeck.monitor.attention",
+      "Name": "Attention Queue",
+      "Tooltip": "Show and browse attention items",
+      "Icon": "assets/action-attention",
+      "Controllers": ["Keypad", "Encoder"],
+      "Encoder": {
+        "layout": "$B1"
+      },
+      "PropertyInspectorPath": "ui/index.html",
+      "States": [
+        {
+          "Image": "assets/action-attention"
+        }
+      ]
+    },
+    {
+      "UUID": "com.agentdeck.monitor.provider-health",
+      "Name": "Provider Health",
+      "Tooltip": "Show provider health",
+      "Icon": "assets/action-health",
+      "Controllers": ["Keypad", "Encoder"],
+      "Encoder": {
+        "layout": "$B1"
+      },
+      "PropertyInspectorPath": "ui/index.html",
+      "States": [
+        {
+          "Image": "assets/action-health"
+        }
+      ]
+    },
+    {
+      "UUID": "com.agentdeck.monitor.system-health",
+      "Name": "System Health",
+      "Tooltip": "Show Agent Deck system health",
+      "Icon": "assets/action-system",
+      "Controllers": ["Keypad", "Encoder"],
+      "Encoder": {
+        "layout": "$B1"
+      },
+      "PropertyInspectorPath": "ui/index.html",
+      "States": [
+        {
+          "Image": "assets/action-system"
+        }
+      ]
+    }
+  ],
+  "Author": "Agent Deck",
+  "Category": "Agent Deck",
+  "CategoryIcon": "assets/category",
+  "CodePath": "bin/index.js",
+  "Description": "Observe Codex and Cursor agents from any Stream Deck.",
+  "Icon": "assets/plugin",
+  "Name": "Agent Deck",
+  "Nodejs": {
+    "Version": "24",
+    "Debug": "enabled"
+  },
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "13"
+    }
+  ],
+  "SDKVersion": 3,
+  "Software": {
+    "MinimumVersion": "7.1"
+  },
+  "UUID": "com.agentdeck.monitor",
+  "Version": "0.1.0.0"
+}

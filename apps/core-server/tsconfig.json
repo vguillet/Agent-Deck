@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/domain" },
+    { "path": "../../packages/api-contract" },
+    { "path": "../../packages/provider-sdk" },
+    { "path": "../../packages/event-store" },
+    { "path": "../../packages/persistence-sqlite" }
+  ]
+}

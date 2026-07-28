@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.DS_Store
+.data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+clients/stream-deck/release/
+clients/stream-deck/com.agentdeck.monitor.sdPlugin/bin/
+clients/cursor-focus/release/

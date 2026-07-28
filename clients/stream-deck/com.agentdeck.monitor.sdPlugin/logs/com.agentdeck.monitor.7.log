@@ -1,0 +1,11 @@
+2026-07-28T12:53:29.839Z ERROR Process encountered uncaught exception 
+Error: Unable to establish a connection with Stream Deck, missing command line arguments: -port, -pluginUUID, -registerEvent, -info
+    at Connection.getRegistrationParameters (file:///Users/vguillet/Documents/Repos/Agent-Deck/clients/stream-deck/com.agentdeck.monitor.sdPlugin/bin/index.js:15795:13)
+    at get registrationParameters (file:///Users/vguillet/Documents/Repos/Agent-Deck/clients/stream-deck/com.agentdeck.monitor.sdPlugin/bin/index.js:15707:50)
+    at Connection.connect (file:///Users/vguillet/Documents/Repos/Agent-Deck/clients/stream-deck/com.agentdeck.monitor.sdPlugin/bin/index.js:15723:68)
+    at Object.connect (file:///Users/vguillet/Documents/Repos/Agent-Deck/clients/stream-deck/com.agentdeck.monitor.sdPlugin/bin/index.js:17301:23)
+    at file:///Users/vguillet/Documents/Repos/Agent-Deck/clients/stream-deck/com.agentdeck.monitor.sdPlugin/bin/index.js:32524:22
+    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:639:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)

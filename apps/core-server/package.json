@@ -1,0 +1,23 @@
+{
+  "name": "@agent-deck/core-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@agent-deck/api-contract": "0.1.0",
+    "@agent-deck/domain": "0.1.0",
+    "@agent-deck/event-store": "0.1.0",
+    "@agent-deck/persistence-sqlite": "0.1.0",
+    "@agent-deck/provider-sdk": "0.1.0",
+    "@fastify/websocket": "^11.2.0",
+    "fastify": "^5.4.0",
+    "pino": "^9.7.0",
+    "zod": "^4.0.10"
+  }
+}

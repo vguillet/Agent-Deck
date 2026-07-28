@@ -1,0 +1,22 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 47831
+  },
+  "databasePath": "./.data/demo.sqlite",
+  "retentionDays": 30,
+  "staleAfterMs": 300000,
+  "healthIntervalMs": 30000,
+  "providers": [
+    {
+      "id": "fake",
+      "module": "@agent-deck/testing",
+      "enabled": true,
+      "discoveryIntervalMs": 15000,
+      "config": {
+        "count": 8,
+        "intervalMs": 3000
+      }
+    }
+  ]
+}

@@ -1,0 +1,264 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import type { WebSocket } from "ws";
+import type { AgentDeckConfiguration } from "./config.js";
+import { buildServer, type RunningAgentDeckServer } from "./index.js";
+
+const servers: RunningAgentDeckServer[] = [];
+const directories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((server) => server.close()));
+  await Promise.all(
+    directories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
+});
+
+const configuration = async (): Promise<AgentDeckConfiguration> => {
+  const directory = await mkdtemp(resolve(tmpdir(), "agent-deck-"));
+  directories.push(directory);
+  return {
+    server: { host: "127.0.0.1", port: 47_831 },
+    databasePath: resolve(directory, "test.sqlite"),
+    retentionDays: 30,
+    staleAfterMs: 300_000,
+    healthIntervalMs: 30_000,
+    providers: [
+      {
+        id: "fake",
+        module: "@agent-deck/testing",
+        enabled: true,
+        config: { count: 3, intervalMs: 60_000 },
+        discoveryIntervalMs: 60_000,
+      },
+    ],
+  };
+};
+
+const nextFrame = (
+  socket: WebSocket,
+  type: string,
+  timeoutMs = 2_000,
+): Promise<Record<string, unknown>> =>
+  new Promise((resolvePromise, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error(`Timed out waiting for ${type}`)),
+      timeoutMs,
+    );
+    const listener = (raw: WebSocket.RawData): void => {
+      const frame = JSON.parse(raw.toString()) as Record<string, unknown>;
+      if (frame.type !== type) return;
+      clearTimeout(timeout);
+      socket.off("message", listener);
+      resolvePromise(frame);
+    };
+    socket.on("message", listener);
+  });
+
+const registerAndSubscribe = async (
+  socket: WebSocket,
+  id: string,
+  topic: "agents.summary" | "attention",
+  afterSequence: number,
+): Promise<void> => {
+  socket.send(
+    JSON.stringify({
+      type: "register",
+      client: {
+        id,
+        type: "automation",
+        name: id,
+        version: "0.1.0",
+        capabilities: {
+          notifications: false,
+          images: false,
+          animations: false,
+          textInput: false,
+          approvalActions: false,
+        },
+      },
+    }),
+  );
+  await nextFrame(socket, "registered");
+  socket.send(
+    JSON.stringify({
+      type: "subscribe",
+      topics: [topic],
+      afterSequence,
+    }),
+  );
+  await nextFrame(socket, "subscribed");
+};
+
+describe("Agent Deck HTTP API", () => {
+  it("serves canonical provider and agent snapshots", async () => {
+    const server = await buildServer(await configuration());
+    servers.push(server);
+    const agents = await server.app.inject({
+      method: "GET",
+      url: "/api/v1/agents?limit=2",
+    });
+    expect(agents.statusCode).toBe(200);
+    expect(agents.json()).toMatchObject({
+      items: [{ providerId: "fake" }, { providerId: "fake" }],
+    });
+    expect(agents.json().nextCursor).toBeTypeOf("string");
+
+    const health = await server.app.inject({
+      method: "GET",
+      url: "/api/v1/system/health",
+    });
+    expect(health.statusCode).toBe(200);
+    expect(health.json().status).toBe("healthy");
+
+    const openapi = await server.app.inject({
+      method: "GET",
+      url: "/api/v1/openapi.json",
+    });
+    expect(openapi.json().components.schemas.Agent).toMatchObject({
+      properties: {
+        links: {
+          items: {
+            properties: {
+              rel: { enum: ["focus", "view"] },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("enforces optimistic client configuration updates", async () => {
+    const server = await buildServer(await configuration());
+    servers.push(server);
+    const first = await server.app.inject({
+      method: "PUT",
+      url: "/api/v1/clients/test/configuration",
+      payload: { schema: "test/v1", data: { page: 1 } },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.headers.etag).toBe('"1"');
+    const conflict = await server.app.inject({
+      method: "PUT",
+      url: "/api/v1/clients/test/configuration",
+      headers: { "if-match": '"0"' },
+      payload: { schema: "test/v1", data: { page: 2 } },
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json().error.code).toBe("revision_conflict");
+  });
+
+  it("broadcasts one canonical update to simultaneous selective clients", async () => {
+    const config = await configuration();
+    const provider = config.providers[0];
+    if (!provider) throw new Error("Fake provider configuration missing");
+    provider.config = { count: 3, intervalMs: 250 };
+    const server = await buildServer(config);
+    servers.push(server);
+    const snapshot = await server.app.inject({
+      method: "GET",
+      url: "/api/v1/agents",
+    });
+    const sequence = Number(snapshot.json().asOfSequence);
+    const agentsSocket = await server.app.injectWS("/api/v1/stream");
+    const attentionSocket = await server.app.injectWS("/api/v1/stream");
+    await Promise.all([
+      registerAndSubscribe(
+        agentsSocket,
+        "automation:agents",
+        "agents.summary",
+        sequence,
+      ),
+      registerAndSubscribe(
+        attentionSocket,
+        "automation:attention",
+        "attention",
+        sequence,
+      ),
+    ]);
+    const [agentFrame, attentionFrame] = await Promise.all([
+      nextFrame(agentsSocket, "event"),
+      nextFrame(attentionSocket, "event"),
+    ]);
+    expect(agentFrame.event).toMatchObject({
+      type: "agent.state.changed",
+    });
+    expect(attentionFrame.event).toMatchObject({
+      sequence: (agentFrame.event as { sequence: number }).sequence,
+    });
+    agentsSocket.close();
+    attentionSocket.close();
+  });
+
+  it("ingests Cursor local hooks and publishes canonical agents", async () => {
+    const config = await configuration();
+    config.providers = [
+      {
+        id: "cursor-local",
+        module: "@agent-deck/provider-cursor-local",
+        enabled: true,
+        config: {},
+        discoveryIntervalMs: 60_000,
+      },
+    ];
+    const server = await buildServer(config);
+    servers.push(server);
+    const before = await server.app.inject({
+      method: "GET",
+      url: "/api/v1/agents",
+    });
+    const socket = await server.app.injectWS("/api/v1/stream");
+    await registerAndSubscribe(
+      socket,
+      "automation:cursor-local",
+      "agents.summary",
+      Number(before.json().asOfSequence),
+    );
+    const framePromise = nextFrame(socket, "event");
+    const hook = await server.app.inject({
+      method: "POST",
+      url: "/internal/providers/cursor-local/hooks",
+      payload: {
+        hook_event_name: "beforeSubmitPrompt",
+        conversation_id: "conversation-integration",
+        generation_id: "generation-integration",
+        workspace_roots: ["/workspace/integration"],
+        prompt: "SECRET PROMPT",
+      },
+    });
+    expect(hook.statusCode).toBe(202);
+    const frame = await framePromise;
+    expect(frame.event).toMatchObject({
+      type: "agent.upserted",
+      payload: {
+        agent: {
+          providerId: "cursor-local",
+          externalId: "conversation-integration",
+          state: "running",
+        },
+      },
+    });
+    expect(JSON.stringify(frame)).not.toContain("SECRET");
+
+    const agents = await server.app.inject({
+      method: "GET",
+      url: "/api/v1/agents?providerId=cursor-local",
+    });
+    expect(agents.json().items).toEqual([
+      expect.objectContaining({
+        links: [
+          {
+            rel: "focus",
+            label: "Open in Cursor",
+            href: "cursor://agent-deck.focus/open?conversationId=conversation-integration",
+          },
+        ],
+      }),
+    ]);
+    socket.close();
+  });
+});

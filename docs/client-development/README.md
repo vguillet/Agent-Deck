@@ -1,0 +1,21 @@
+# Client development
+
+Clients depend on `@agent-deck/client-sdk` and `@agent-deck/api-contract`, never
+on a provider plugin or server implementation.
+
+Each process or physical device supplies a stable `ClientDescriptor`. Several
+clients may observe the same canonical registry concurrently; registration does
+not grant ownership of agents.
+
+Use REST for snapshots and WebSocket for changes. Rendering decisions such as
+colors, icons, animation, pagination, truncation, and notification policy stay
+inside the client.
+
+Agent links are semantic. Clients may open a link with `rel: "focus"` to switch
+to its application, but must allowlist schemes appropriate to their platform
+and must not treat navigation as a provider command. The macOS Stream Deck
+client accepts only `codex:` and `cursor:` focus links.
+
+Client-specific configuration can be stored at
+`/api/v1/clients/<clientId>/configuration`. The core treats the `schema` and
+`data` fields as opaque and only enforces revision concurrency.

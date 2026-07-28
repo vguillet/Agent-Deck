@@ -1,0 +1,19 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/domain" },
+    { "path": "packages/api-contract" },
+    { "path": "packages/provider-sdk" },
+    { "path": "packages/event-store" },
+    { "path": "packages/persistence-sqlite" },
+    { "path": "packages/client-sdk" },
+    { "path": "packages/testing" },
+    { "path": "plugins/codex" },
+    { "path": "plugins/cursor-cloud" },
+    { "path": "plugins/cursor-local" },
+    { "path": "apps/core-server" },
+    { "path": "apps/cli" },
+    { "path": "clients/cursor-focus" },
+    { "path": "clients/stream-deck" }
+  ]
+}
