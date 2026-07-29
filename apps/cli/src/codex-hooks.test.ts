@@ -1,6 +1,13 @@
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   codexHookStatus,
@@ -8,15 +15,23 @@ import {
   uninstallCodexHooks,
 } from "./codex-hooks.js";
 
-const temporaryHooksPath = async (): Promise<string> =>
-  resolve(
+const reporterPathFor = (path: string): string =>
+  resolve(dirname(path), "codex", "dist", "hook-reporter.js");
+
+const temporaryHooksPath = async (): Promise<string> => {
+  const path = resolve(
     await mkdtemp(resolve(tmpdir(), "agent-deck-codex-hooks-")),
     "hooks.json",
   );
+  const reporterPath = reporterPathFor(path);
+  await mkdir(dirname(reporterPath), { recursive: true });
+  await writeFile(reporterPath, "");
+  return path;
+};
 
 const options = (path: string) => ({
   path,
-  reporterPath: "/Applications/Agent Deck/plugins/codex/dist/hook-reporter.js",
+  reporterPath: reporterPathFor(path),
   nodePath: "/Applications/Node Runtime/node",
   now: () => new Date("2026-07-29T10:00:00.000Z"),
 });
@@ -93,5 +108,18 @@ describe("Codex hook installer", () => {
       ],
     });
     expect(await codexHookStatus(options(path))).toContain("not installed");
+  });
+
+  it("reports and rejects an installation whose reporter is missing", async () => {
+    const path = await temporaryHooksPath();
+    await installCodexHooks(options(path));
+    await unlink(reporterPathFor(path));
+
+    expect(await codexHookStatus(options(path))).toContain(
+      "reporter is missing",
+    );
+    await expect(installCodexHooks(options(path))).rejects.toThrow(
+      "Codex hook reporter is missing",
+    );
   });
 });

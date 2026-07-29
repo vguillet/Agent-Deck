@@ -4,6 +4,7 @@ import {
   mkdir,
   readFile,
   rename,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -68,6 +69,14 @@ const defaultReporterPath = (): string => {
   return fileURLToPath(url);
 };
 
+const reporterAvailable = async (path: string): Promise<boolean> => {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+};
+
 const isAgentDeckHandler = (handler: HookHandler): boolean =>
   typeof handler.command === "string" && handler.command.includes(MARKER);
 
@@ -78,9 +87,7 @@ const hasAgentDeckHandler = (file: HooksFile): boolean =>
 
 const hasCompleteAgentDeckInstallation = (file: HooksFile): boolean =>
   EVENTS.every((event) =>
-    file.hooks?.[event]?.some((group) =>
-      group.hooks?.some(isAgentDeckHandler),
-    ),
+    file.hooks?.[event]?.some((group) => group.hooks?.some(isAgentDeckHandler)),
   );
 
 const validate = (file: HooksFile, path: string): void => {
@@ -119,6 +126,11 @@ export const installCodexHooks = async (
   options: CodexHookOptions = {},
 ): Promise<string> => {
   const path = options.path ?? defaultHooksPath();
+  const reporterPath = options.reporterPath ?? defaultReporterPath();
+  if (!(await reporterAvailable(reporterPath)))
+    throw new Error(
+      `Codex hook reporter is missing at ${reporterPath}. Build Agent Deck before installing hooks.`,
+    );
   const file = await load(path);
   validate(file, path);
   const missingEvents = EVENTS.filter(
@@ -145,7 +157,7 @@ export const installCodexHooks = async (
   }
   const command = `${JSON.stringify(
     options.nodePath ?? process.execPath,
-  )} ${JSON.stringify(options.reporterPath ?? defaultReporterPath())}`;
+  )} ${JSON.stringify(reporterPath)}`;
   file.hooks ??= {};
   for (const event of missingEvents) {
     file.hooks[event] ??= [];
@@ -199,7 +211,10 @@ export const codexHookStatus = async (
   const path = options.path ?? defaultHooksPath();
   const file = await load(path);
   validate(file, path);
-  return hasCompleteAgentDeckInstallation(file)
+  if (!hasCompleteAgentDeckInstallation(file))
+    return `Agent Deck hooks are not installed in ${path}`;
+  const reporterPath = options.reporterPath ?? defaultReporterPath();
+  return (await reporterAvailable(reporterPath))
     ? `Agent Deck hooks are installed in ${path}`
-    : `Agent Deck hooks are not installed in ${path}`;
+    : `Agent Deck hooks are configured in ${path}, but the reporter is missing at ${reporterPath}`;
 };

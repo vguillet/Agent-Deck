@@ -178,6 +178,32 @@ describe("Codex provider hook ingestion", () => {
     await plugin.dispose();
   });
 
+  it("treats an in-progress thinking turn as running despite an idle thread status", async () => {
+    vi.spyOn(CodexAppServerClient.prototype, "listThreads").mockResolvedValue([
+      {
+        id: "thr_thinking",
+        cwd: "/workspace/aquila",
+        updatedAt: 1_785_256_000,
+        status: { type: "idle" },
+        turns: [{ id: "turn_thinking", status: "inProgress" }],
+      },
+    ]);
+    const plugin = createProviderPlugin();
+    await plugin.initialise(contextFor(() => undefined));
+
+    const snapshot = await plugin.discover();
+
+    expect(snapshot.agents[0]).toMatchObject({
+      state: "running",
+      activeRunId: "codex:thr_thinking:turn_thinking",
+      requiresAttention: false,
+    });
+    expect(snapshot.runs[0]).toMatchObject({
+      state: "running",
+    });
+    await plugin.dispose();
+  });
+
   it("detects a manually interrupted turn when Codex unloads it", async () => {
     vi.spyOn(CodexAppServerClient.prototype, "listThreads").mockResolvedValue([
       {

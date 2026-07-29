@@ -107,6 +107,16 @@ const cursorCodexFocusLink = (threadId: string, cwd: string): string => {
   return url.href;
 };
 
+const waitingState = (
+  status: z.infer<typeof ThreadSchema>["status"],
+  previousState?: Agent["state"],
+): Agent["state"] | undefined => {
+  if (previousState === "waiting_for_input") return "waiting_for_input";
+  if (status?.activeFlags?.includes("waitingOnApproval"))
+    return "waiting_for_approval";
+  return undefined;
+};
+
 const mapState = (
   status: z.infer<typeof ThreadSchema>["status"],
   previousState?: Agent["state"],
@@ -114,15 +124,13 @@ const mapState = (
 ): Agent["state"] => {
   if (turnStatus === "failed") return "failed";
   if (turnStatus === "interrupted") return "cancelled";
-  if (turnStatus && turnStatus !== "inProgress") return "ready_for_review";
+  if (turnStatus === "inProgress")
+    return waitingState(status, previousState) ?? "running";
+  if (turnStatus) return "ready_for_review";
   if (!status) return "unknown";
   if (status.type === "systemError") return "failed";
-  if (status.type === "active") {
-    if (previousState === "waiting_for_input") return "waiting_for_input";
-    if (status.activeFlags?.includes("waitingOnApproval"))
-      return "waiting_for_approval";
-    return "running";
-  }
+  if (status.type === "active")
+    return waitingState(status, previousState) ?? "running";
   if (status.type === "idle") return "ready_for_review";
   if (status.type === "notLoaded") return previousState ?? "idle";
   return "unknown";
