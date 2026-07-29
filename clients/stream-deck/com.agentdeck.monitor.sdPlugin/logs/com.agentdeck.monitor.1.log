@@ -1,4 +1,4 @@
-2026-07-29T09:22:03.054Z DEBUG RegistrationParameters: port=28196
-2026-07-29T09:22:03.063Z DEBUG RegistrationParameters: pluginUUID=4dea02f6a1fc39e1b19f524a1476d70f
-2026-07-29T09:22:03.063Z DEBUG RegistrationParameters: registerEvent=registerPlugin
-2026-07-29T09:22:03.063Z DEBUG RegistrationParameters: info={"application":{"font":".AppleSystemUIFont","language":"en","platform":"mac","platformVersion":"26.5.2","version":"7.5.1.22901"},"colors":{"buttonPressedBackgroundColor":"#303030FF","buttonPressedBorderColor":"#646464FF","buttonPressedTextColor":"#969696FF","disabledColor":"#F7821B59","highlightColor":"#F7821BFF","mouseDownColor":"#D06405FF"},"devicePixelRatio":2,"devices":[{"id":"64cd441f9caf98662fb56c9adc341172","name":"Stream Deck","size":{"columns":5,"rows":3},"type":0}],"plugin":{"uuid":"com.agentdeck.monitor","version":"0.1.0.0"}}
+2026-07-29T09:27:42.617Z DEBUG RegistrationParameters: port=28196
+2026-07-29T09:27:42.623Z DEBUG RegistrationParameters: pluginUUID=0ceed0d4f3c8c3321310e72fc179f15a
+2026-07-29T09:27:42.623Z DEBUG RegistrationParameters: registerEvent=registerPlugin
+2026-07-29T09:27:42.623Z DEBUG RegistrationParameters: info={"application":{"font":".AppleSystemUIFont","language":"en","platform":"mac","platformVersion":"26.5.2","version":"7.5.1.22901"},"colors":{"buttonPressedBackgroundColor":"#303030FF","buttonPressedBorderColor":"#646464FF","buttonPressedTextColor":"#969696FF","disabledColor":"#F7821B59","highlightColor":"#F7821BFF","mouseDownColor":"#D06405FF"},"devicePixelRatio":2,"devices":[{"id":"64cd441f9caf98662fb56c9adc341172","name":"Stream Deck","size":{"columns":5,"rows":3},"type":0}],"plugin":{"uuid":"com.agentdeck.monitor","version":"0.1.0.0"}}

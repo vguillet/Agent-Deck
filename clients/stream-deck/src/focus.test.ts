@@ -123,17 +123,14 @@ describe("Stream Deck agent focus", () => {
     const calls: Array<[string, string[]]> = [];
     const launch = createMacOSFocusLauncher(async (file, arguments_) => {
       calls.push([file, arguments_]);
-    }, "/Applications/Cursor.app/bin/cursor");
+    });
     const href =
       "cursor://agent-deck.focus/open?conversationId=conversation-1&workspace=%2Fworkspace%2Falpha%20project&window=%2Fworkspace%2Falpha.code-workspace";
 
     await launch(href);
 
     expect(calls).toEqual([
-      [
-        "/Applications/Cursor.app/bin/cursor",
-        ["/workspace/alpha.code-workspace"],
-      ],
+      ["/usr/bin/open", ["-a", "Cursor", "/workspace/alpha.code-workspace"]],
       ["/usr/bin/open", [href]],
     ]);
   });

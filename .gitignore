@@ -10,3 +10,17 @@ coverage/
 clients/stream-deck/release/
 clients/stream-deck/com.agentdeck.monitor.sdPlugin/bin/
 clients/cursor-focus/release/
+
+# Runtime logs
+*.log
+**/logs/
+
+# Local configuration and personal files
+agent-deck.config.json
+agent-deck.*.local.json
+.env
+.env.*
+!.env.example
+!.env.*.example
+personal/
+private/

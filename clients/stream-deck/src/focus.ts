@@ -12,9 +12,6 @@ export type ProcessLauncher = (
   arguments_: string[],
 ) => Promise<void>;
 
-const DEFAULT_CURSOR_BINARY =
-  "/Applications/Cursor.app/Contents/Resources/app/bin/cursor";
-
 export class RenderedAgentTargets {
   private readonly targets = new Map<string, string>();
 
@@ -105,7 +102,6 @@ const spawnCommand: ProcessLauncher = (file, arguments_) =>
 
 export const createMacOSFocusLauncher = (
   run: ProcessLauncher = spawnCommand,
-  cursorBinary = DEFAULT_CURSOR_BINARY,
 ): FocusLauncher => {
   return async (href) => {
     const url = new URL(href);
@@ -126,7 +122,8 @@ export const createMacOSFocusLauncher = (
       throw new Error("Cursor agent focus workspace must be an absolute path");
     if (windowTarget !== undefined && !isAbsolute(windowTarget))
       throw new Error("Cursor agent focus window must be an absolute path");
-    if (windowTarget) await run(cursorBinary, [windowTarget]);
+    if (windowTarget)
+      await run("/usr/bin/open", ["-a", "Cursor", windowTarget]);
     await run("/usr/bin/open", [url.href]);
   };
 };
