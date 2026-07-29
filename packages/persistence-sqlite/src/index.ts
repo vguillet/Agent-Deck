@@ -59,6 +59,12 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS agents_order_idx
   ON agents(requires_attention DESC, last_activity_at DESC, id ASC);
+CREATE TABLE IF NOT EXISTS deleted_agents (
+  agent_id TEXT PRIMARY KEY,
+  provider_id TEXT NOT NULL,
+  last_activity_at TEXT NOT NULL,
+  deleted_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
@@ -143,11 +149,11 @@ export class SqliteEventStore implements EventStore {
 
   migrate(): void {
     this.db.exec(MIGRATION);
-    this.db
-      .prepare(
-        "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, ?)",
-      )
-      .run(new Date().toISOString());
+    const recordMigration = this.db.prepare(
+      "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+    );
+    const appliedAt = new Date().toISOString();
+    for (const version of [1, 2]) recordMigration.run(version, appliedAt);
   }
 
   close(): void {
@@ -172,6 +178,8 @@ export class SqliteEventStore implements EventStore {
 
   applyProviderEvent(input: ProviderEvent): CanonicalEvent | undefined {
     return this.db.transaction((event: ProviderEvent) => {
+      if (event.agentId && this.suppressDeletedAgentEvent(event))
+        return undefined;
       if (
         event.providerEventId &&
         this.db
@@ -323,8 +331,12 @@ export class SqliteEventStore implements EventStore {
         return this.upsertProject(event.payload);
       case "agent.upserted":
       case "agent.state.changed":
-      case "agent.freshness.changed":
         return this.upsertAgent(event.payload, event.occurredAt);
+      case "agent.freshness.changed": {
+        const agent = { ...(event.payload.agent as Agent) };
+        delete agent.sourceRevision;
+        return this.upsertAgent({ agent }, event.occurredAt);
+      }
       case "run.upserted":
       case "run.state.changed":
         return this.upsertRun(event.payload);
@@ -441,9 +453,19 @@ export class SqliteEventStore implements EventStore {
   } {
     const incoming = payload.agent as Agent;
     const existing = this.getAgent(incoming.id);
+    if (
+      existing?.sourceRevision !== undefined &&
+      incoming.sourceRevision !== undefined &&
+      incoming.sourceRevision <= existing.sourceRevision
+    )
+      return { changed: false, payload };
     const candidate: Agent = {
       ...incoming,
       revision: existing?.revision ?? 0,
+      ...(incoming.sourceRevision === undefined &&
+      existing?.sourceRevision !== undefined
+        ? { sourceRevision: existing.sourceRevision }
+        : {}),
     };
     if (existing && equivalent(existing, candidate))
       return { changed: false, payload };
@@ -569,6 +591,12 @@ export class SqliteEventStore implements EventStore {
   } {
     const incoming = payload.run as AgentRun;
     const existing = this.getRun(incoming.id);
+    if (
+      existing?.sourceRevision !== undefined &&
+      incoming.sourceRevision !== undefined &&
+      incoming.sourceRevision <= existing.sourceRevision
+    )
+      return { changed: false, payload };
     const candidate: AgentRun = {
       ...incoming,
       revision: existing?.revision ?? 0,
@@ -684,6 +712,30 @@ export class SqliteEventStore implements EventStore {
 
   getAgent(id: string): Agent | undefined {
     return this.getDocument("agents", id);
+  }
+
+  deleteAgent(id: string): boolean {
+    return this.db.transaction((agentId: string) => {
+      const agent = this.getAgent(agentId);
+      if (!agent) return false;
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `INSERT INTO deleted_agents(
+            agent_id, provider_id, last_activity_at, deleted_at
+          ) VALUES (?, ?, ?, ?)
+          ON CONFLICT(agent_id) DO UPDATE SET
+            provider_id = excluded.provider_id,
+            last_activity_at = excluded.last_activity_at,
+            deleted_at = excluded.deleted_at`,
+        )
+        .run(agent.id, agent.providerId, agent.lastActivityAt, now);
+      this.db.prepare("DELETE FROM attention WHERE agent_id = ?").run(agent.id);
+      this.db.prepare("DELETE FROM events WHERE agent_id = ?").run(agent.id);
+      this.db.prepare("DELETE FROM runs WHERE agent_id = ?").run(agent.id);
+      this.db.prepare("DELETE FROM agents WHERE id = ?").run(agent.id);
+      return true;
+    })(id);
   }
 
   listRuns(agentId: string, page: PageRequest): StorePage<AgentRun> {
@@ -855,6 +907,26 @@ export class SqliteEventStore implements EventStore {
       .prepare(`SELECT document FROM ${table} WHERE ${key} = ?`)
       .get(id) as Row | undefined;
     return row ? parse<T>(row.document) : undefined;
+  }
+
+  private suppressDeletedAgentEvent(event: ProviderEvent): boolean {
+    const tombstone = this.db
+      .prepare("SELECT last_activity_at FROM deleted_agents WHERE agent_id = ?")
+      .get(event.agentId) as Row | undefined;
+    if (!tombstone) return false;
+    const agent = event.payload.agent as Agent | undefined;
+    if (
+      agent &&
+      agent.id === event.agentId &&
+      Date.parse(agent.lastActivityAt) >
+        Date.parse(String(tombstone.last_activity_at))
+    ) {
+      this.db
+        .prepare("DELETE FROM deleted_agents WHERE agent_id = ?")
+        .run(event.agentId);
+      return false;
+    }
+    return true;
   }
 
   private listDocuments<T>(

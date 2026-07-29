@@ -69,7 +69,7 @@ class CursorCloudProvider implements AgentProviderPlugin {
     capabilities: {
       discovery: true,
       liveEvents: true,
-      commands: [],
+      commands: ["cancel", "archive"],
     },
   };
   readonly configSchema = ConfigSchema;
@@ -146,7 +146,7 @@ class CursorCloudProvider implements AgentProviderPlugin {
             capabilities: {
               messages: false,
               approvals: false,
-              cancellation: false,
+              cancellation: true,
               creation: false,
             },
             links: [
@@ -193,11 +193,104 @@ class CursorCloudProvider implements AgentProviderPlugin {
   }
 
   async execute(command: ProviderCommand): Promise<CommandResult> {
-    return {
-      commandId: command.commandId,
-      status: "unsupported",
-      message: "Agent Deck developer preview is observation-only",
+    if (command.action === "archive") return this.archive(command);
+    if (command.action !== "cancel")
+      return {
+        commandId: command.commandId,
+        status: "unsupported",
+        message: `Cursor Cloud does not support ${command.action}`,
+      };
+    const agent = this.agents.get(command.agentId);
+    const run = agent?.activeRunId
+      ? this.runs.get(agent.activeRunId)
+      : undefined;
+    if (!agent || !run || agent.state !== "running")
+      return {
+        commandId: command.commandId,
+        status: "failed",
+        message: "Cursor Cloud agent is not running",
+      };
+    try {
+      await Agent.cancelRun(run.externalId, {
+        runtime: "cloud",
+        agentId: agent.externalId,
+        apiKey: this.requireApiKey(),
+      });
+    } catch (error) {
+      return {
+        commandId: command.commandId,
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const now = this.context?.now() ?? new Date().toISOString();
+    const cancelledAgent: CanonicalAgent = {
+      ...agent,
+      state: "cancelled",
+      requiresAttention: false,
+      lastActivityAt: now,
     };
+    const cancelledRun: AgentRun = {
+      ...run,
+      state: "cancelled",
+      finishedAt: now,
+    };
+    this.agents.set(cancelledAgent.id, cancelledAgent);
+    this.runs.set(cancelledRun.id, cancelledRun);
+    await this.emit?.({
+      providerId: "cursor-cloud",
+      providerEventId: `command:${command.commandId}:agent`,
+      type: "agent.state.changed",
+      occurredAt: now,
+      agentId: cancelledAgent.id,
+      runId: cancelledRun.id,
+      payload: { agent: cancelledAgent },
+    });
+    await this.emit?.({
+      providerId: "cursor-cloud",
+      providerEventId: `command:${command.commandId}:run`,
+      type: "run.state.changed",
+      occurredAt: now,
+      agentId: cancelledAgent.id,
+      runId: cancelledRun.id,
+      payload: { run: cancelledRun },
+    });
+    return { commandId: command.commandId, status: "succeeded" };
+  }
+
+  private async archive(command: ProviderCommand): Promise<CommandResult> {
+    const agent = this.agents.get(command.agentId);
+    if (!agent)
+      return {
+        commandId: command.commandId,
+        status: "failed",
+        message: "Cursor Cloud agent was not found",
+      };
+    try {
+      await Agent.archive(agent.externalId, {
+        apiKey: this.requireApiKey(),
+      });
+    } catch (error) {
+      return {
+        commandId: command.commandId,
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const archivedAgent: CanonicalAgent = {
+      ...agent,
+      archived: true,
+    };
+    this.agents.set(archivedAgent.id, archivedAgent);
+    await this.emit?.({
+      providerId: "cursor-cloud",
+      providerEventId: `command:${command.commandId}:archive`,
+      type: "agent.upserted",
+      occurredAt: this.context?.now() ?? new Date().toISOString(),
+      agentId: archivedAgent.id,
+      payload: { agent: archivedAgent },
+    });
+    return { commandId: command.commandId, status: "succeeded" };
   }
 
   async healthCheck(): Promise<ProviderHealth> {

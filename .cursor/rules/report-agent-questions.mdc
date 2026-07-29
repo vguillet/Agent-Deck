@@ -1,0 +1,16 @@
+---
+description: Report interactive questions to Agent Deck
+alwaysApply: true
+---
+
+# Report Questions
+
+Immediately before every `AskQuestion` call, run this exact shell command:
+
+```sh
+true # agent-deck:question-start
+```
+
+Do not combine it with other shell commands. After it succeeds, call
+`AskQuestion` normally. Agent Deck will clear the waiting state on the next
+normal agent event.

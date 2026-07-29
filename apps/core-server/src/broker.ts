@@ -127,6 +127,16 @@ export class SubscriptionBroker {
     }
   }
 
+  requestResync(): void {
+    const currentSequence = this.store.currentSequence();
+    for (const connection of this.connections.values()) {
+      this.send(connection, {
+        type: "stream.resync_required",
+        currentSequence,
+      });
+    }
+  }
+
   heartbeat(): void {
     const now = new Date().toISOString();
     for (const connection of this.connections.values()) {

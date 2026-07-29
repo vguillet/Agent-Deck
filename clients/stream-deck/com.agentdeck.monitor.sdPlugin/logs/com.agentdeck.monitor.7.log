@@ -1,11 +1,6 @@
-2026-07-28T12:53:29.839Z ERROR Process encountered uncaught exception 
-Error: Unable to establish a connection with Stream Deck, missing command line arguments: -port, -pluginUUID, -registerEvent, -info
-    at Connection.getRegistrationParameters (file:///Users/vguillet/Documents/Repos/Agent-Deck/clients/stream-deck/com.agentdeck.monitor.sdPlugin/bin/index.js:15795:13)
-    at get registrationParameters (file:///Users/vguillet/Documents/Repos/Agent-Deck/clients/stream-deck/com.agentdeck.monitor.sdPlugin/bin/index.js:15707:50)
-    at Connection.connect (file:///Users/vguillet/Documents/Repos/Agent-Deck/clients/stream-deck/com.agentdeck.monitor.sdPlugin/bin/index.js:15723:68)
-    at Object.connect (file:///Users/vguillet/Documents/Repos/Agent-Deck/clients/stream-deck/com.agentdeck.monitor.sdPlugin/bin/index.js:17301:23)
-    at file:///Users/vguillet/Documents/Repos/Agent-Deck/clients/stream-deck/com.agentdeck.monitor.sdPlugin/bin/index.js:32524:22
-    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
-    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:639:26)
-    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+2026-07-29T06:52:27.938Z DEBUG RegistrationParameters: port=28196
+2026-07-29T06:52:27.942Z DEBUG RegistrationParameters: pluginUUID=6a279e1241d0c4ee2fcc8e6f8ba0b209
+2026-07-29T06:52:27.942Z DEBUG RegistrationParameters: registerEvent=registerPlugin
+2026-07-29T06:52:27.942Z DEBUG RegistrationParameters: info={"application":{"font":".AppleSystemUIFont","language":"en","platform":"mac","platformVersion":"26.5.2","version":"7.5.1.22901"},"colors":{"buttonPressedBackgroundColor":"#303030FF","buttonPressedBorderColor":"#646464FF","buttonPressedTextColor":"#969696FF","disabledColor":"#F7821B59","highlightColor":"#F7821BFF","mouseDownColor":"#D06405FF"},"devicePixelRatio":2,"devices":[{"id":"64cd441f9caf98662fb56c9adc341172","name":"Stream Deck","size":{"columns":5,"rows":3},"type":0}],"plugin":{"uuid":"com.agentdeck.monitor","version":"0.1.0.0"}}
+2026-07-29T06:53:02.076Z WARN  Agent Deck stop failed: Cursor agent is not running
+2026-07-29T06:53:10.397Z WARN  Agent Deck stop failed: Cursor agent is not running

@@ -62,6 +62,13 @@
         min="0"
         placeholder="Automatic key position"
     /></label>
+    <label id="lookField"
+      ><span>Agent key look</span
+      ><select id="look">
+        <option value="classic">Classic</option>
+        <option value="agent">Agent characters</option>
+      </select></label
+    >
     <label id="summaryProviderField" hidden
       ><span>Recap scope</span
       ><select id="summaryProviderId">
@@ -69,8 +76,9 @@
       </select></label
     >
     <small
-      >Agent slots are dynamic placeholders. Provider identity sets the accent;
-      current state sets the main colour. Agent state is read-only.</small
+      >Agent slots are dynamic placeholders. Classic uses the status design;
+      Agent characters uses animated state scenes. Agent state is
+      read-only.</small
     >
     <script>
       let websocket;
@@ -80,6 +88,7 @@
       let settings = {};
       const defaults = {
         states: [
+          "idle",
           "running",
           "waiting_for_input",
           "waiting_for_approval",
@@ -96,6 +105,8 @@
         const slot = document.querySelector("#slot").value;
         if (slot === "") delete settings.slot;
         else settings.slot = Number(slot);
+        if (actionId === "com.agentdeck.monitor.agent-slot")
+          settings.look = document.querySelector("#look").value;
         settings.summaryProviderId =
           document.querySelector("#summaryProviderId").value;
         send("setSettings", settings);
@@ -170,9 +181,12 @@
         actionId = parsed.action;
         settings = parsed.payload?.settings ?? {};
         document.querySelector("#slot").value = settings.slot ?? "";
+        document.querySelector("#look").value = settings.look ?? "classic";
         document.querySelector("#summaryProviderId").value =
           settings.summaryProviderId ?? "";
         document.querySelector("#slotField").hidden =
+          actionId !== "com.agentdeck.monitor.agent-slot";
+        document.querySelector("#lookField").hidden =
           actionId !== "com.agentdeck.monitor.agent-slot";
         document.querySelector("#summaryProviderField").hidden =
           actionId !== "com.agentdeck.monitor.agent-summary";

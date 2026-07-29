@@ -152,6 +152,66 @@ describe("Agent Deck HTTP API", () => {
     expect(conflict.json().error.code).toBe("revision_conflict");
   });
 
+  it("dispatches cancellation commands to the owning provider", async () => {
+    const server = await buildServer(await configuration());
+    servers.push(server);
+    const snapshot = await server.app.inject({
+      method: "GET",
+      url: "/api/v1/agents?providerId=fake",
+    });
+    const agent = snapshot.json().items[0] as {
+      id: string;
+      revision: number;
+    };
+    const command = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/agents/${encodeURIComponent(agent.id)}/commands`,
+      payload: {
+        action: "cancel",
+        expectedRevision: agent.revision,
+      },
+    });
+    expect(command.statusCode).toBe(200);
+    expect(command.json()).toMatchObject({ status: "succeeded" });
+
+    const cancelled = await server.app.inject({
+      method: "GET",
+      url: `/api/v1/agents/${encodeURIComponent(agent.id)}`,
+    });
+    expect(cancelled.json()).toMatchObject({
+      state: "cancelled",
+      requiresAttention: false,
+    });
+  });
+
+  it("deletes an agent and returns not found after tombstoning it", async () => {
+    const server = await buildServer(await configuration());
+    servers.push(server);
+    const snapshot = await server.app.inject({
+      method: "GET",
+      url: "/api/v1/agents?providerId=fake",
+    });
+    const agent = snapshot.json().items[0] as { id: string };
+
+    const deleted = await server.app.inject({
+      method: "DELETE",
+      url: `/api/v1/agents/${encodeURIComponent(agent.id)}`,
+    });
+    expect(deleted.statusCode).toBe(204);
+
+    const missing = await server.app.inject({
+      method: "GET",
+      url: `/api/v1/agents/${encodeURIComponent(agent.id)}`,
+    });
+    expect(missing.statusCode).toBe(404);
+
+    const repeated = await server.app.inject({
+      method: "DELETE",
+      url: `/api/v1/agents/${encodeURIComponent(agent.id)}`,
+    });
+    expect(repeated.statusCode).toBe(404);
+  });
+
   it("broadcasts one canonical update to simultaneous selective clients", async () => {
     const config = await configuration();
     const provider = config.providers[0];

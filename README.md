@@ -5,9 +5,9 @@ translate Codex, local Cursor, and Cursor Cloud state into one canonical
 registry; CLI and Stream Deck clients render that state without
 provider-specific logic.
 
-This developer preview is intentionally read-only and binds only to
-`127.0.0.1`. It does not store prompts, messages, tool arguments, command
-output, diffs, or artifacts.
+This developer preview is metadata-only and binds only to `127.0.0.1`. Its
+only control operation is an explicit request to stop an agent. It does not
+store prompts, messages, tool arguments, command output, diffs, or artifacts.
 
 ## Requirements
 
@@ -68,10 +68,10 @@ node apps/cli/dist/index.js cursor-focus install
 ```
 
 The extension receives only the native conversation ID. It checks that the
-installed Cursor version exposes the required local conversation command and
-shows an in-app error instead of silently opening the wrong conversation when
-it cannot complete the switch. Cursor Agent CLI terminal sessions remain
-observable but are not focus targets.
+installed Cursor version exposes the required local conversation commands and
+shows an in-app error instead of silently opening or stopping the wrong
+conversation. Cursor Agent CLI terminal sessions remain observable but are not
+focus targets.
 
 For a credential-free demo:
 
@@ -96,9 +96,16 @@ appear and disappear. Slots use their physical key position automatically, with
 an optional explicit index for custom layouts. Agent Recap actions can summarize
 every agent or a selected provider such as Codex/OpenAI or Cursor. Provider
 accents distinguish agent types while the key's main colour reflects lifecycle
-state. Pressing an occupied Agent Slot opens that exact Codex, local Cursor, or
-Cursor Cloud conversation. Encoder rotation changes pages; keypad presses do
-not page.
+state. Each Agent Slot can keep that Classic look or opt into animated Agent
+characters rendered as flat white silhouettes, with stable variants for idle,
+working, input, approval, review, failed, cancelled, and unknown states.
+Working variants use energetic tool and writing loops; review variants jump and
+present their finished work. Empty character-mode slots use the same restful
+idle scenes. Pressing an occupied Agent Slot opens that exact Codex, local
+Cursor, or Cursor Cloud conversation. A double press stops its active run. A
+long press deletes the Agent Deck record and its history, suppressing provider
+rediscovery until that external agent reports newer activity. Encoder rotation
+changes pages; keypad presses do not page.
 
 ## Commands
 

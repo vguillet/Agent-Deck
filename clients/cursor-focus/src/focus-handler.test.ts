@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  CURSOR_CANCEL_CHAT_COMMAND,
   CURSOR_OPEN_COMPOSER_COMMAND,
   focusCursorConversation,
   type FocusHandlerDependencies,
@@ -27,6 +28,24 @@ describe("Cursor focus URI handler", () => {
     ).resolves.toBe(true);
     expect(deps.executeCommand).toHaveBeenCalledWith(
       CURSOR_OPEN_COMPOSER_COMMAND,
+      "conversation-123",
+    );
+    expect(deps.showError).not.toHaveBeenCalled();
+  });
+
+  it("stops the exact local conversation", async () => {
+    const deps = dependencies([
+      CURSOR_OPEN_COMPOSER_COMMAND,
+      CURSOR_CANCEL_CHAT_COMMAND,
+    ]);
+    await expect(
+      focusCursorConversation(
+        "cursor://agent-deck.focus/stop?conversationId=conversation-123",
+        deps,
+      ),
+    ).resolves.toBe(true);
+    expect(deps.executeCommand).toHaveBeenCalledWith(
+      CURSOR_CANCEL_CHAT_COMMAND,
       "conversation-123",
     );
     expect(deps.showError).not.toHaveBeenCalled();

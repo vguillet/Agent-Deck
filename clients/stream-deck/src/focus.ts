@@ -23,25 +23,63 @@ export class RenderedAgentTargets {
   }
 }
 
-export class DoublePressDetector {
-  private readonly pending = new Map<string, NodeJS.Timeout>();
+interface PressCallbacks {
+  onDoublePress(): void;
+  onLongPress(): void;
+}
 
-  constructor(private readonly windowMs: number) {}
+interface ActivePress {
+  longPressTimer?: NodeJS.Timeout;
+  handled: boolean;
+}
 
-  press(actionId: string, onSinglePress: () => void): boolean {
-    const pending = this.pending.get(actionId);
-    if (pending) {
-      clearTimeout(pending);
-      this.pending.delete(actionId);
-      return true;
+interface PendingSinglePress {
+  timer: NodeJS.Timeout;
+}
+
+export class AgentPressDetector {
+  private readonly active = new Map<string, ActivePress>();
+  private readonly pendingSingles = new Map<string, PendingSinglePress>();
+
+  constructor(
+    private readonly doublePressWindowMs: number,
+    private readonly longPressDurationMs: number,
+  ) {}
+
+  keyDown(actionId: string, callbacks: PressCallbacks): void {
+    if (this.active.has(actionId)) return;
+    const pendingSingle = this.pendingSingles.get(actionId);
+    if (pendingSingle) {
+      clearTimeout(pendingSingle.timer);
+      this.pendingSingles.delete(actionId);
+      this.active.set(actionId, { handled: true });
+      callbacks.onDoublePress();
+      return;
     }
+
+    const active: ActivePress = { handled: false };
     const timer = setTimeout(() => {
-      this.pending.delete(actionId);
-      onSinglePress();
-    }, this.windowMs);
+      active.handled = true;
+      callbacks.onLongPress();
+    }, this.longPressDurationMs);
     timer.unref();
-    this.pending.set(actionId, timer);
-    return false;
+    active.longPressTimer = timer;
+    this.active.set(actionId, active);
+  }
+
+  keyUp(actionId: string, onSinglePress: () => void): void {
+    const active = this.active.get(actionId);
+    if (!active) return;
+    this.active.delete(actionId);
+    if (active.longPressTimer) clearTimeout(active.longPressTimer);
+    if (active.handled) return;
+
+    const timer = setTimeout(() => {
+      this.pendingSingles.delete(actionId);
+      onSinglePress();
+    }, this.doublePressWindowMs);
+    timer.unref();
+    this.pendingSingles.set(actionId, { timer });
   }
 }
 

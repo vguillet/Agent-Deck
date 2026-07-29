@@ -31,7 +31,7 @@ class FakeProvider implements AgentProviderPlugin {
     capabilities: {
       discovery: true,
       liveEvents: true,
-      commands: [],
+      commands: ["cancel"],
     },
   };
   readonly configSchema = ConfigSchema;
@@ -87,11 +87,57 @@ class FakeProvider implements AgentProviderPlugin {
   }
 
   async execute(command: ProviderCommand): Promise<CommandResult> {
-    return {
-      commandId: command.commandId,
-      status: "unsupported",
-      message: "Fake provider is observation-only",
+    if (command.action !== "cancel")
+      return {
+        commandId: command.commandId,
+        status: "unsupported",
+        message: `Fake provider does not support ${command.action}`,
+      };
+    const previous = this.agents.get(command.agentId);
+    if (!previous)
+      return {
+        commandId: command.commandId,
+        status: "failed",
+        message: "Agent was not found",
+      };
+    const now = this.context?.now() ?? new Date().toISOString();
+    const agent: Agent = {
+      ...previous,
+      state: "cancelled",
+      requiresAttention: false,
+      lastActivityAt: now,
     };
+    this.agents.set(agent.id, agent);
+    await this.emit?.({
+      providerId: "fake",
+      providerEventId: `command:${command.commandId}:agent`,
+      type: "agent.state.changed",
+      occurredAt: now,
+      agentId: agent.id,
+      ...(agent.activeRunId ? { runId: agent.activeRunId } : {}),
+      payload: { agent },
+    });
+    const previousRun = agent.activeRunId
+      ? this.runs.get(agent.activeRunId)
+      : undefined;
+    if (previousRun) {
+      const run: AgentRun = {
+        ...previousRun,
+        state: "cancelled",
+        finishedAt: now,
+      };
+      this.runs.set(run.id, run);
+      await this.emit?.({
+        providerId: "fake",
+        providerEventId: `command:${command.commandId}:run`,
+        type: "run.state.changed",
+        occurredAt: now,
+        agentId: agent.id,
+        runId: run.id,
+        payload: { run },
+      });
+    }
+    return { commandId: command.commandId, status: "succeeded" };
   }
 
   async healthCheck(): Promise<ProviderHealth> {
@@ -137,7 +183,7 @@ class FakeProvider implements AgentProviderPlugin {
         capabilities: {
           messages: false,
           approvals: false,
-          cancellation: false,
+          cancellation: true,
           creation: false,
         },
         links: [],

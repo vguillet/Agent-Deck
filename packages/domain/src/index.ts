@@ -32,6 +32,7 @@ export type AttentionSeverity = "info" | "warning" | "critical";
 
 export interface ProviderCapabilities {
   discovery: boolean;
+  discoveryMode?: "poll" | "startup";
   liveEvents: boolean;
   commands: string[];
 }
@@ -90,6 +91,7 @@ export interface Agent {
   requiresAttention: boolean;
   lastActivityAt: string;
   revision: number;
+  sourceRevision?: number;
   archived: boolean;
   capabilities: AgentCapabilities;
   links: AgentLink[];
@@ -106,6 +108,7 @@ export interface AgentRun {
   startedAt?: string;
   finishedAt?: string;
   revision: number;
+  sourceRevision?: number;
   metadata: Record<string, unknown>;
 }
 

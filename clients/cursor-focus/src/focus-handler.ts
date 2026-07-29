@@ -1,4 +1,5 @@
 export const CURSOR_OPEN_COMPOSER_COMMAND = "composer.openComposer";
+export const CURSOR_CANCEL_CHAT_COMMAND = "composer.cancelChat";
 
 export interface FocusHandlerDependencies {
   getCommands(filterInternal: boolean): Promise<string[]>;
@@ -20,10 +21,16 @@ export const focusCursorConversation = async (
     return false;
   }
   const conversationId = parsed.searchParams.get("conversationId") ?? "";
+  const command =
+    parsed.pathname === "/open"
+      ? CURSOR_OPEN_COMPOSER_COMMAND
+      : parsed.pathname === "/stop"
+        ? CURSOR_CANCEL_CHAT_COMMAND
+        : undefined;
   if (
     parsed.protocol !== "cursor:" ||
     parsed.hostname !== "agent-deck.focus" ||
-    parsed.pathname !== "/open" ||
+    !command ||
     !CONVERSATION_ID.test(conversationId)
   ) {
     await dependencies.showError(
@@ -33,22 +40,19 @@ export const focusCursorConversation = async (
   }
 
   const commands = await dependencies.getCommands(true);
-  if (!commands.includes(CURSOR_OPEN_COMPOSER_COMMAND)) {
+  if (!commands.includes(command)) {
     await dependencies.showError(
-      "This Cursor version cannot open Agent Deck conversation links. Update Cursor or reinstall Agent Deck Focus.",
+      `This Cursor version cannot ${command === CURSOR_CANCEL_CHAT_COMMAND ? "stop" : "open"} Agent Deck conversations. Update Cursor or reinstall Agent Deck Focus.`,
     );
     return false;
   }
 
   try {
-    await dependencies.executeCommand(
-      CURSOR_OPEN_COMPOSER_COMMAND,
-      conversationId,
-    );
+    await dependencies.executeCommand(command, conversationId);
     return true;
   } catch {
     await dependencies.showError(
-      "Cursor could not open this Agent Deck conversation. It may no longer exist.",
+      `Cursor could not ${command === CURSOR_CANCEL_CHAT_COMMAND ? "stop" : "open"} this Agent Deck conversation. It may no longer exist.`,
     );
     return false;
   }

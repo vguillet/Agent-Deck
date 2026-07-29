@@ -1,7 +1,7 @@
 {
   "name": "focus",
   "displayName": "Agent Deck Focus",
-  "description": "Opens a specific local Cursor conversation from Agent Deck.",
+  "description": "Opens or stops a specific local Cursor conversation from Agent Deck.",
   "version": "0.1.0",
   "private": true,
   "publisher": "agent-deck",

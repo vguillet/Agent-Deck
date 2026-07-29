@@ -3,6 +3,7 @@ import { basename } from "node:path";
 import { z } from "zod";
 import {
   canonicalId,
+  isActiveAgentState,
   type Agent,
   type AgentRun,
   type CommandResult,
@@ -109,7 +110,7 @@ class CodexProvider implements AgentProviderPlugin {
     capabilities: {
       discovery: true,
       liveEvents: true,
-      commands: [],
+      commands: ["cancel"],
     },
   };
   readonly configSchema = ConfigSchema;
@@ -188,7 +189,7 @@ class CodexProvider implements AgentProviderPlugin {
           capabilities: {
             messages: false,
             approvals: false,
-            cancellation: false,
+            cancellation: true,
             creation: false,
           },
           links: [
@@ -247,11 +248,70 @@ class CodexProvider implements AgentProviderPlugin {
   }
 
   async execute(command: ProviderCommand): Promise<CommandResult> {
-    return {
-      commandId: command.commandId,
-      status: "unsupported",
-      message: "Agent Deck developer preview is observation-only",
+    if (command.action !== "cancel")
+      return {
+        commandId: command.commandId,
+        status: "unsupported",
+        message: `Codex does not support ${command.action}`,
+      };
+    const agent = this.agents.get(command.agentId);
+    const run = agent?.activeRunId
+      ? this.runs.get(agent.activeRunId)
+      : undefined;
+    if (!agent || !run || !isActiveAgentState(agent.state))
+      return {
+        commandId: command.commandId,
+        status: "failed",
+        message: "Codex agent is not running",
+      };
+    if (!this.client)
+      return {
+        commandId: command.commandId,
+        status: "failed",
+        message: "Codex provider is not initialised",
+      };
+    try {
+      await this.client.interruptTurn(agent.externalId, run.externalId);
+    } catch (error) {
+      return {
+        commandId: command.commandId,
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const now = this.context?.now() ?? new Date().toISOString();
+    const cancelledAgent: Agent = {
+      ...agent,
+      state: "cancelled",
+      requiresAttention: false,
+      lastActivityAt: now,
     };
+    const cancelledRun: AgentRun = {
+      ...run,
+      state: "cancelled",
+      finishedAt: now,
+    };
+    this.agents.set(cancelledAgent.id, cancelledAgent);
+    this.runs.set(cancelledRun.id, cancelledRun);
+    await this.emitEvent({
+      providerId: "codex",
+      providerEventId: `command:${command.commandId}:agent`,
+      type: "agent.state.changed",
+      occurredAt: now,
+      agentId: cancelledAgent.id,
+      runId: cancelledRun.id,
+      payload: { agent: cancelledAgent },
+    });
+    await this.emitEvent({
+      providerId: "codex",
+      providerEventId: `command:${command.commandId}:run`,
+      type: "run.state.changed",
+      occurredAt: now,
+      agentId: cancelledAgent.id,
+      runId: cancelledRun.id,
+      payload: { run: cancelledRun },
+    });
+    return { commandId: command.commandId, status: "succeeded" };
   }
 
   async healthCheck(): Promise<ProviderHealth> {
@@ -312,7 +372,7 @@ class CodexProvider implements AgentProviderPlugin {
       capabilities: {
         messages: false,
         approvals: false,
-        cancellation: false,
+        cancellation: true,
         creation: false,
       },
       links: [

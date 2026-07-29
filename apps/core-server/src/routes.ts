@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
+  AgentCommandRequestSchema,
   AgentListQuerySchema,
   AgentJsonSchema,
   ListQuerySchema,
@@ -9,6 +11,7 @@ import {
 import type { EventStore, StorePage } from "@agent-deck/event-store";
 import { RevisionConflictError } from "@agent-deck/event-store";
 import type { SubscriptionBroker } from "./broker.js";
+import type { ProviderManager } from "./provider-manager.js";
 
 const pageResponse = <T>(
   store: EventStore,
@@ -47,6 +50,7 @@ export const registerApiRoutes = (
   app: FastifyInstance,
   store: EventStore,
   broker: SubscriptionBroker,
+  providers: ProviderManager,
 ): void => {
   app.get("/healthz", async () => ({ status: "ok" }));
   app.get("/readyz", async () => ({
@@ -79,6 +83,16 @@ export const registerApiRoutes = (
     },
   );
 
+  app.delete<{ Params: { id: string } }>(
+    "/api/v1/agents/:id",
+    async (request, reply) => {
+      if (!store.deleteAgent(request.params.id))
+        return notFound(request, reply, "Agent");
+      broker.requestResync();
+      return reply.code(204).send();
+    },
+  );
+
   app.get<{ Params: { id: string } }>(
     "/api/v1/agents/:id/runs",
     async (request, reply) => {
@@ -108,6 +122,34 @@ export const registerApiRoutes = (
       );
     },
   );
+
+  app.post<{
+    Params: { id: string };
+    Body: { action?: unknown; expectedRevision?: unknown };
+  }>("/api/v1/agents/:id/commands", async (request, reply) => {
+    const agent = store.getAgent(request.params.id);
+    if (!agent) return notFound(request, reply, "Agent");
+    const input = AgentCommandRequestSchema.parse(request.body);
+    if (
+      input.expectedRevision !== undefined &&
+      input.expectedRevision !== agent.revision
+    )
+      return reply.code(409).send({
+        error: {
+          code: "revision_conflict",
+          message: `Expected agent revision ${input.expectedRevision}, found ${agent.revision}`,
+          requestId: request.id,
+        },
+      });
+    return providers.execute({
+      commandId: randomUUID(),
+      action: input.action,
+      agentId: agent.id,
+      ...(input.expectedRevision === undefined
+        ? {}
+        : { expectedRevision: input.expectedRevision }),
+    });
+  });
 
   app.get<{ Params: { id: string } }>(
     "/api/v1/runs/:id",
@@ -227,6 +269,7 @@ export const registerApiRoutes = (
         "/api/v1/agents/{id}",
         "/api/v1/agents/{id}/runs",
         "/api/v1/agents/{id}/events",
+        "/api/v1/agents/{id}/commands",
         "/api/v1/runs/{id}",
         "/api/v1/providers",
         "/api/v1/workspaces",
@@ -237,7 +280,14 @@ export const registerApiRoutes = (
         "/api/v1/system/health",
       ].map((path) => [
         path,
-        { get: { responses: { "200": { description: "OK" } } } },
+        path === "/api/v1/agents/{id}"
+          ? {
+              get: { responses: { "200": { description: "OK" } } },
+              delete: { responses: { "204": { description: "Deleted" } } },
+            }
+          : path.endsWith("/commands")
+            ? { post: { responses: { "200": { description: "OK" } } } }
+            : { get: { responses: { "200": { description: "OK" } } } },
       ]),
     ),
   }));

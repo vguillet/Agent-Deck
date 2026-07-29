@@ -4,9 +4,12 @@
     {
       "UUID": "com.agentdeck.monitor.agent-slot",
       "Name": "Agent Slot",
-      "Tooltip": "A placeholder filled dynamically by a canonical agent",
+      "Tooltip": "Press to focus, double press to stop, or long press to delete an agent and its history",
       "Icon": "assets/action-agent",
-      "Controllers": ["Keypad", "Encoder"],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
       "Encoder": {
         "layout": "$B1"
       },
@@ -22,7 +25,10 @@
       "Name": "Agent Recap",
       "Tooltip": "Summarize all agents or one provider type",
       "Icon": "assets/action-summary",
-      "Controllers": ["Keypad", "Encoder"],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
       "Encoder": {
         "layout": "$B1"
       },
@@ -38,7 +44,10 @@
       "Name": "Attention Queue",
       "Tooltip": "Show and browse attention items",
       "Icon": "assets/action-attention",
-      "Controllers": ["Keypad", "Encoder"],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
       "Encoder": {
         "layout": "$B1"
       },
@@ -54,7 +63,10 @@
       "Name": "Provider Health",
       "Tooltip": "Show provider health",
       "Icon": "assets/action-health",
-      "Controllers": ["Keypad", "Encoder"],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
       "Encoder": {
         "layout": "$B1"
       },
@@ -70,7 +82,10 @@
       "Name": "System Health",
       "Tooltip": "Show Agent Deck system health",
       "Icon": "assets/action-system",
-      "Controllers": ["Keypad", "Encoder"],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
       "Encoder": {
         "layout": "$B1"
       },

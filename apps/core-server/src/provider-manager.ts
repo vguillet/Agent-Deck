@@ -3,7 +3,9 @@ import { resolve } from "node:path";
 import type { FastifyInstance } from "fastify";
 import type {
   CanonicalEvent,
+  CommandResult,
   Provider,
+  ProviderCommand,
   ProviderHealth,
 } from "@agent-deck/domain";
 import type { EventStore } from "@agent-deck/event-store";
@@ -124,6 +126,28 @@ export class ProviderManager {
     }
   }
 
+  async execute(command: ProviderCommand): Promise<CommandResult> {
+    const agent = this.store.getAgent(command.agentId);
+    const managed = agent
+      ? this.providers.find(
+          (candidate) => candidate.provider.id === agent.providerId,
+        )
+      : undefined;
+    if (!agent || !managed)
+      return {
+        commandId: command.commandId,
+        status: "failed",
+        message: "Agent provider is unavailable",
+      };
+    if (!managed.provider.capabilities.commands.includes(command.action))
+      return {
+        commandId: command.commandId,
+        status: "unsupported",
+        message: `${managed.provider.displayName} does not support ${command.action}`,
+      };
+    return managed.plugin.execute(command);
+  }
+
   async start(): Promise<void> {
     for (const managed of this.providers) {
       managed.stopSubscription = await managed.plugin.subscribe(
@@ -133,10 +157,12 @@ export class ProviderManager {
         },
       );
       await this.discover(managed);
-      managed.discoveryTimer = setInterval(() => {
-        void this.discover(managed);
-      }, managed.configuration.discoveryIntervalMs);
-      managed.discoveryTimer.unref();
+      if (managed.plugin.manifest.capabilities.discoveryMode !== "startup") {
+        managed.discoveryTimer = setInterval(() => {
+          void this.discover(managed);
+        }, managed.configuration.discoveryIntervalMs);
+        managed.discoveryTimer.unref();
+      }
       managed.healthTimer = setInterval(() => {
         void this.checkHealth(managed);
       }, this.healthIntervalMs);

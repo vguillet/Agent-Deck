@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "@agent-deck/domain";
 import {
-  DoublePressDetector,
+  AgentPressDetector,
   focusAgent,
   RenderedAgentTargets,
 } from "./focus.js";
@@ -28,21 +28,69 @@ const agent = (id: string, href?: string): Agent => ({
 });
 
 describe("Stream Deck agent focus", () => {
-  it("distinguishes a delayed single press from a double press", () => {
+  it("dispatches one delayed single press", () => {
     vi.useFakeTimers();
-    const detector = new DoublePressDetector(350);
+    const detector = new AgentPressDetector(350, 650);
     const singlePress = vi.fn();
+    const doublePress = vi.fn();
+    const longPress = vi.fn();
 
-    expect(detector.press("key-1", singlePress)).toBe(false);
+    detector.keyDown("key-1", {
+      onDoublePress: doublePress,
+      onLongPress: longPress,
+    });
+    detector.keyUp("key-1", singlePress);
     vi.advanceTimersByTime(349);
     expect(singlePress).not.toHaveBeenCalled();
-    expect(detector.press("key-1", singlePress)).toBe(true);
-    vi.advanceTimersByTime(350);
-    expect(singlePress).not.toHaveBeenCalled();
-
-    expect(detector.press("key-1", singlePress)).toBe(false);
-    vi.advanceTimersByTime(350);
+    vi.advanceTimersByTime(1);
     expect(singlePress).toHaveBeenCalledOnce();
+    expect(doublePress).not.toHaveBeenCalled();
+    expect(longPress).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("dispatches a double press without a single press", () => {
+    vi.useFakeTimers();
+    const detector = new AgentPressDetector(350, 650);
+    const singlePress = vi.fn();
+    const doublePress = vi.fn();
+    const longPress = vi.fn();
+    const callbacks = {
+      onDoublePress: doublePress,
+      onLongPress: longPress,
+    };
+
+    detector.keyDown("key-1", callbacks);
+    detector.keyUp("key-1", singlePress);
+    vi.advanceTimersByTime(100);
+    detector.keyDown("key-1", callbacks);
+    detector.keyUp("key-1", singlePress);
+    vi.advanceTimersByTime(650);
+    expect(doublePress).toHaveBeenCalledOnce();
+    expect(singlePress).not.toHaveBeenCalled();
+    expect(longPress).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("dispatches a long press without a single or double press", () => {
+    vi.useFakeTimers();
+    const detector = new AgentPressDetector(350, 650);
+    const singlePress = vi.fn();
+    const doublePress = vi.fn();
+    const longPress = vi.fn();
+
+    detector.keyDown("key-1", {
+      onDoublePress: doublePress,
+      onLongPress: longPress,
+    });
+    vi.advanceTimersByTime(649);
+    expect(longPress).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    detector.keyUp("key-1", singlePress);
+    vi.advanceTimersByTime(350);
+    expect(longPress).toHaveBeenCalledOnce();
+    expect(singlePress).not.toHaveBeenCalled();
+    expect(doublePress).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 

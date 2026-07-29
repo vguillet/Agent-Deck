@@ -47,9 +47,38 @@ describe("Cursor hook installer", () => {
         .filter((hook) =>
           hook.command.includes("--agent-deck-cursor-local-hook"),
         ),
-    ).toHaveLength(7);
+    ).toHaveLength(8);
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect(await cursorHookStatus(options(path))).toContain("are installed");
+  });
+
+  it("adds newly supported events to an existing installation", async () => {
+    const path = await temporaryHooksPath();
+    const command =
+      '"/Applications/Node Runtime/node" "/Applications/Agent Deck/reporter.js" --agent-deck-cursor-local-hook';
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 1,
+        hooks: {
+          sessionStart: [{ command }],
+        },
+      }),
+    );
+
+    await installCursorHooks(options(path));
+    const file = JSON.parse(await readFile(path, "utf8")) as {
+      hooks: Record<string, Array<{ command: string }>>;
+    };
+    expect(file.hooks.sessionStart).toHaveLength(1);
+    expect(file.hooks.subagentStart).toHaveLength(1);
+    expect(
+      Object.values(file.hooks)
+        .flat()
+        .filter((hook) =>
+          hook.command.includes("--agent-deck-cursor-local-hook"),
+        ),
+    ).toHaveLength(8);
   });
 
   it("uninstalls only Agent Deck hooks", async () => {

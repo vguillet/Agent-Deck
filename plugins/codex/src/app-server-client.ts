@@ -35,6 +35,11 @@ export class CodexAppServerClient {
     return "available";
   }
 
+  async interruptTurn(threadId: string, turnId: string): Promise<void> {
+    await this.ensureStarted();
+    await this.request("turn/interrupt", { threadId, turnId });
+  }
+
   dispose(): void {
     this.process?.kill("SIGTERM");
     this.process = undefined;

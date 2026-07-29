@@ -1,5 +1,6 @@
 import {
   AgentSchema,
+  CommandResultSchema,
   AttentionSchema,
   EventSchema,
   ProviderSchema,
@@ -13,6 +14,7 @@ import type {
   CanonicalEvent,
   ClientConfigurationDocument,
   ClientDescriptor,
+  CommandResult,
   Provider,
 } from "@agent-deck/domain";
 
@@ -116,6 +118,50 @@ export class AgentDeckClient {
     return this.get("/api/v1/system/health");
   }
 
+  async cancelAgent(
+    id: string,
+    expectedRevision?: number,
+  ): Promise<CommandResult> {
+    return this.commandAgent(id, "cancel", expectedRevision);
+  }
+
+  async archiveAgent(
+    id: string,
+    expectedRevision?: number,
+  ): Promise<CommandResult> {
+    return this.commandAgent(id, "archive", expectedRevision);
+  }
+
+  private async commandAgent(
+    id: string,
+    action: "cancel" | "archive",
+    expectedRevision?: number,
+  ): Promise<CommandResult> {
+    const response = await fetch(
+      `${this.baseUrl}/api/v1/agents/${encodeURIComponent(id)}/commands`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action,
+          ...(expectedRevision === undefined ? {} : { expectedRevision }),
+        }),
+      },
+    );
+    if (!response.ok) throw await responseError(response);
+    return CommandResultSchema.parse(await response.json()) as CommandResult;
+  }
+
+  async deleteAgent(id: string): Promise<boolean> {
+    const response = await fetch(
+      `${this.baseUrl}/api/v1/agents/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+    if (response.status === 404) return false;
+    if (!response.ok) throw await responseError(response);
+    return true;
+  }
+
   async getClientConfiguration(
     clientId: string,
   ): Promise<ClientConfigurationDocument | undefined> {
@@ -167,6 +213,7 @@ export class AgentDeckClient {
         const frame = JSON.parse(String(message.data)) as {
           type?: string;
           event?: unknown;
+          currentSequence?: number;
         };
         if (frame.type === "registered") {
           socket?.send(
@@ -185,6 +232,10 @@ export class AgentDeckClient {
           sequence = Math.max(sequence, event.sequence);
           options.onEvent(event);
         } else if (frame.type === "stream.resync_required") {
+          if (typeof frame.currentSequence === "number")
+            sequence = Math.max(sequence, frame.currentSequence);
+          retry = 250;
+          options.onStatus?.("connected");
           options.onResyncRequired?.();
         }
       });

@@ -14,6 +14,7 @@ export interface ProviderManifest {
   sdkVersion: 1;
   capabilities: {
     discovery: boolean;
+    discoveryMode?: "poll" | "startup";
     liveEvents: boolean;
     commands: string[];
   };

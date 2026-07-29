@@ -1,9 +1,12 @@
 import streamDeck, {
   action,
   type Action,
+  type DialAction,
   type DialRotateEvent,
   type DidReceiveSettingsEvent,
+  type KeyAction,
   type KeyDownEvent,
+  type KeyUpEvent,
   SingletonAction,
   type WillAppearEvent,
 } from "@elgato/streamdeck";
@@ -15,13 +18,29 @@ import type {
   Provider,
 } from "@agent-deck/domain";
 import {
-  DoublePressDetector,
+  AgentPressDetector,
   focusAgent,
   RenderedAgentTargets,
 } from "./focus.js";
+import { preserveAgentSlotOrder, streamDeckAgents } from "./agent-filter.js";
+import {
+  agentLookScene,
+  emptyAgentLookScene,
+  normalizeAgentKeyLook,
+  REMOVED_AGENT_ANIMATION_MS,
+  removedAgentLookScene,
+  type AgentKeyLook,
+} from "./agent-look.js";
+import { agentLabelOverflows, agentLabelSvg } from "./agent-label.js";
+import {
+  CLASSIC_AGENT_STATE_COLOUR,
+  CLASSIC_EMPTY_AGENT_COLOUR,
+} from "./agent-palette.js";
+import { AnimationFrameScheduler } from "./animation-scheduler.js";
 
 interface ActionSettings {
   slot?: number;
+  look?: AgentKeyLook;
   summaryProviderId?: string;
   [key: string]: string | number | boolean | null | undefined;
 }
@@ -48,18 +67,11 @@ interface DeviceSession {
   attentionIndex: number;
   watch?: WatchHandle;
   refreshTimer: NodeJS.Timeout | undefined;
-  refreshGeneration: number;
-  animationTimer: NodeJS.Timeout | undefined;
+  refreshPromise: Promise<void> | undefined;
+  refreshDirty: boolean;
+  lastSnapshotSequence: number;
+  animationStartedAt: number;
   animationAngle: number;
-  animationRenderPending: boolean;
-}
-
-interface SessionSnapshot {
-  allAgents: Agent[];
-  agents: Agent[];
-  attention: Attention[];
-  providers: Provider[];
-  health: Record<string, unknown>;
 }
 
 const DEFAULT_CONFIGURATION: DeviceConfiguration = {
@@ -68,6 +80,7 @@ const DEFAULT_CONFIGURATION: DeviceConfiguration = {
   role: "agent-monitor",
   providers: [],
   states: [
+    "idle",
     "running",
     "waiting_for_input",
     "waiting_for_approval",
@@ -76,19 +89,21 @@ const DEFAULT_CONFIGURATION: DeviceConfiguration = {
   ],
 };
 
-const ANIMATION_INTERVAL_MS = 50;
 const ANIMATION_REVOLUTION_MS = 1_800;
-const DOUBLE_PRESS_WINDOW_MS = 350;
+const DOUBLE_PRESS_WINDOW_MS = 200;
+const LONG_PRESS_DURATION_MS = 650;
 
-const stateColour: Record<Agent["state"], string> = {
-  idle: "#64748b",
-  running: "#2563eb",
-  waiting_for_input: "#f59e0b",
-  waiting_for_approval: "#f97316",
-  ready_for_review: "#10b981",
-  failed: "#dc2626",
-  cancelled: "#64748b",
-  unknown: "#475569",
+type CursorMode = "ask" | "plan" | "debug";
+
+interface CursorModeStyle {
+  colour: string;
+  icon: string;
+}
+
+const cursorModeStyles: Record<CursorMode, CursorModeStyle> = {
+  plan: { colour: "#f1b467", icon: "plan" },
+  debug: { colour: "#e34671", icon: "debug" },
+  ask: { colour: "#3fa266", icon: "ask" },
 };
 
 interface ProviderStyle {
@@ -96,6 +111,23 @@ interface ProviderStyle {
   label: string;
   mark: string;
 }
+
+interface IconOptions {
+  showStrip?: boolean;
+  showBadge?: boolean;
+  muted?: boolean;
+}
+
+const muteSvgContent = (content: string, muted: boolean): string =>
+  muted
+    ? `<defs>
+        <filter id="agent-slot-muted">
+          <feColorMatrix type="saturate" values="0"/>
+        </filter>
+      </defs>
+      <g filter="url(#agent-slot-muted)" opacity=".55">${content}</g>
+      <rect width="144" height="144" rx="24" fill="#64748b" opacity=".32"/>`
+    : content;
 
 const providerStyle = (providerId: string): ProviderStyle => {
   const id = providerId.toLowerCase();
@@ -121,16 +153,27 @@ const icon = (
   symbol: string,
   accent = "#94a3b8",
   badge?: string,
-): string =>
-  `data:image/svg+xml,${encodeURIComponent(
+  options: IconOptions = {},
+): string => {
+  const showStrip = options.showStrip ?? true;
+  const showBadge = options.showBadge ?? true;
+  return `data:image/svg+xml,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
-    <rect width="144" height="144" rx="24" fill="${colour}"/>
-    <rect width="144" height="13" rx="7" fill="${accent}"/>
-    <circle cx="114" cy="31" r="20" fill="${accent}"/>
-    <text x="114" y="37" text-anchor="middle" font-family="system-ui" font-size="15" font-weight="800" fill="white">${badge ?? ""}</text>
-    <text x="72" y="98" text-anchor="middle" font-family="system-ui" font-size="58" font-weight="700" fill="white">${symbol}</text>
+    ${muteSvgContent(
+      `<rect width="144" height="144" rx="24" fill="${colour}"/>
+    ${showStrip ? `<rect width="144" height="13" rx="7" fill="${accent}"/>` : ""}
+    ${
+      showBadge
+        ? `<circle cx="114" cy="31" r="20" fill="${accent}"/>
+    <text x="114" y="37" text-anchor="middle" font-family="system-ui" font-size="15" font-weight="800" fill="white">${badge ?? ""}</text>`
+        : ""
+    }
+    <text x="72" y="${showBadge ? 98 : 93}" text-anchor="middle" font-family="system-ui" font-size="58" font-weight="700" fill="white">${symbol}</text>`,
+      options.muted ?? false,
+    )}
   </svg>`,
   )}`;
+};
 
 const title = (value: string, max = 18): string =>
   value.length <= max ? value : `${value.slice(0, max - 1)}…`;
@@ -144,7 +187,7 @@ const escapeXml = (value: string): string =>
 
 const stateSymbol: Record<Exclude<Agent["state"], "running">, string> = {
   idle: "✓",
-  waiting_for_input: "↻",
+  waiting_for_input: "?",
   waiting_for_approval: "↻",
   ready_for_review: "✓",
   failed: "×",
@@ -164,8 +207,11 @@ const providerLogo = (providerId: string): string => {
       <path d="M104 35L118.5 27.5V43.5L104 35Z" fill="#85847f"/>
     </g>`;
   if (id.includes("codex") || id.includes("openai") || id.includes("chatgpt"))
-    return `<g transform="translate(101 9) scale(.18)">
-      <path d="M60.87 57.26V42.31c0-1.26.47-2.2 1.57-2.83l30.05-17.3c4.09-2.36 8.97-3.46 14-3.46 18.88 0 30.83 14.63 30.83 30.2 0 1.1 0 2.36-.16 3.62l-31.14-18.25c-1.89-1.1-3.78-1.1-5.66 0L60.87 57.26Zm70.16 58.2V79.75c0-2.2-.94-3.78-2.83-4.88L88.71 51.91l12.9-7.39c1.1-.63 2.05-.63 3.15 0l30.04 17.3c8.65 5.03 14.47 15.73 14.47 26.11 0 11.95-7.08 22.97-18.24 27.53ZM51.59 84 38.7 76.45c-1.1-.63-1.58-1.58-1.58-2.84v-34.6c0-16.83 12.9-29.57 30.36-29.57 6.61 0 12.74 2.2 17.93 6.13L54.43 33.5c-1.89 1.1-2.83 2.67-2.83 4.88V84Zm27.77 16.04L60.87 89.66V67.64l18.49-10.38 18.48 10.38v22.02l-18.48 10.38Zm11.87 47.82c-6.61 0-12.74-2.2-17.93-6.13l30.99-17.94c1.89-1.1 2.83-2.67 2.83-4.88V73.3l13.05 7.55c1.1.63 1.58 1.57 1.58 2.83v34.61c0 16.83-13.06 29.57-30.52 29.57Zm-37.28-35.08L23.91 95.48c-8.65-5.03-14.47-15.73-14.47-26.11 0-12.11 7.24-22.97 18.4-27.53v35.87c0 2.2.94 3.77 2.83 4.87L70 105.39l-12.9 7.39c-1.1.63-2.05.63-3.15 0Zm-1.73 25.8c-17.77 0-30.83-13.37-30.83-29.89 0-1.26.16-2.52.32-3.77l30.98 17.93c1.89 1.1 3.78 1.1 5.67 0l39.48-22.81v14.95c0 1.26-.47 2.2-1.58 2.83l-30.04 17.3c-4.09 2.36-8.97 3.46-14 3.46Z" fill="white"/>
+    return `<g>
+      <rect x="98" y="5" width="41" height="41" rx="10" fill="#11100d"/>
+      <g transform="translate(104 11) scale(.18)">
+        <path d="M60.87 57.26V42.31c0-1.26.47-2.2 1.57-2.83l30.05-17.3c4.09-2.36 8.97-3.46 14-3.46 18.88 0 30.83 14.63 30.83 30.2 0 1.1 0 2.36-.16 3.62l-31.14-18.25c-1.89-1.1-3.78-1.1-5.66 0L60.87 57.26Zm70.16 58.2V79.75c0-2.2-.94-3.78-2.83-4.88L88.71 51.91l12.9-7.39c1.1-.63 2.05-.63 3.15 0l30.04 17.3c8.65 5.03 14.47 15.73 14.47 26.11 0 11.95-7.08 22.97-18.24 27.53ZM51.59 84 38.7 76.45c-1.1-.63-1.58-1.58-1.58-2.84v-34.6c0-16.83 12.9-29.57 30.36-29.57 6.61 0 12.74 2.2 17.93 6.13L54.43 33.5c-1.89 1.1-2.83 2.67-2.83 4.88V84Zm27.77 16.04L60.87 89.66V67.64l18.49-10.38 18.48 10.38v22.02l-18.48 10.38Zm11.87 47.82c-6.61 0-12.74-2.2-17.93-6.13l30.99-17.94c1.89-1.1 2.83-2.67 2.83-4.88V73.3l13.05 7.55c1.1.63 1.58 1.57 1.58 2.83v34.61c0 16.83-13.06 29.57-30.52 29.57Zm-37.28-35.08L23.91 95.48c-8.65-5.03-14.47-15.73-14.47-26.11 0-12.11 7.24-22.97 18.4-27.53v35.87c0 2.2.94 3.77 2.83 4.87L70 105.39l-12.9 7.39c-1.1.63-2.05.63-3.15 0Zm-1.73 25.8c-17.77 0-30.83-13.37-30.83-29.89 0-1.26.16-2.52.32-3.77l30.98 17.93c1.89 1.1 3.78 1.1 5.67 0l39.48-22.81v14.95c0 1.26-.47 2.2-1.58 2.83l-30.04 17.3c-4.09 2.36-8.97 3.46-14 3.46Z" fill="white"/>
+      </g>
     </g>`;
   const mark = escapeXml(providerStyle(providerId).mark);
   return `<circle cx="116" cy="24" r="17" fill="#000" opacity=".3"/>
@@ -186,21 +232,137 @@ const agentStateIndicator = (
   return `<text x="72" y="91" text-anchor="middle" font-family="system-ui" font-size="64" font-weight="700" fill="white">${stateSymbol[state]}</text>`;
 };
 
-const agentIcon = (agent: Agent, animationAngle: number): string =>
-  `data:image/svg+xml,${encodeURIComponent(
+const cursorModeStyle = (agent: Agent): CursorModeStyle | undefined => {
+  if (!agent.providerId.toLowerCase().includes("cursor")) return undefined;
+  const mode = agent.metadata.cursorMode;
+  return typeof mode === "string" && mode in cursorModeStyles
+    ? cursorModeStyles[mode as CursorMode]
+    : undefined;
+};
+
+const cursorModeIcon = (style: CursorModeStyle): string => {
+  const common = `fill="none" stroke="${style.colour}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"`;
+  let glyph: string;
+  if (style.icon === "plan")
+    glyph = `<path transform="translate(10 42) scale(.115 -.115)" fill="${style.colour}" d="M75 170Q63 170 52 176.5Q41 183 34.5 194Q28 205 28 218Q28 231 34.5 241.5Q41 252 52 258.5Q63 265 75.5 265Q88 265 99 258.5Q110 252 116.5 241.5Q123 231 123 218Q123 205 116.5 194Q110 183 99 176.5Q88 170 75 170ZM75 186Q84 186 91 190.5Q98 195 102.5 202Q107 209 107 217.5Q107 226 102.5 233Q98 240 91 244.5Q84 249 75.5 249Q67 249 60 244.5Q53 240 48.5 233Q44 226 44 217.5Q44 209 48.5 202Q53 195 60 190.5Q67 186 75 186ZM75 43Q63 43 52 49.5Q41 56 34.5 67Q28 78 28 90.5Q28 103 34.5 114Q41 125 52 131.5Q63 138 75.5 138Q88 138 99 131.5Q110 125 116.5 114.5Q123 104 123 91Q123 78 116.5 67Q110 56 99 49.5Q88 43 75 43ZM75 59Q84 59 91 63.5Q98 68 102.5 75Q107 82 107 90.5Q107 99 102.5 106Q98 113 91 117.5Q84 122 75.5 122Q67 122 60 117.5Q53 113 48.5 106Q44 99 44 90.5Q44 82 48.5 75Q53 68 60 63.5Q67 59 75 59ZM156 209Q152 209 149.5 211.5Q147 214 147 217.5Q147 221 149.5 223.5Q152 226 156 226H265Q269 226 271.5 223.5Q274 221 274 217.5Q274 214 271.5 211.5Q269 209 265 209ZM156 82Q152 82 149.5 84.5Q147 87 147 90.5Q147 94 149.5 96.5Q152 99 156 99H265Q269 99 271.5 96.5Q274 94 274 90.5Q274 87 271.5 84.5Q269 82 265 82Z"/>`;
+  else if (style.icon === "debug")
+    glyph = `<path transform="translate(9 43) scale(.115 -.115)" fill="${style.colour}" d="M162 288Q162 295 157.5 297Q153 299 148 295L105 265Q101 262 101 257.5Q101 253 105 250L148 220Q153 216 157.5 218Q162 220 162 227ZM136 0Q173 0 204 18.5Q235 37 253.5 68Q272 99 272 136Q272 173 253.5 204Q235 235 204 253.5Q173 272 136 272Q131 272 128 268.5Q125 265 125 260.5Q125 256 128 252.5Q131 249 136 249Q167 249 193 234Q219 219 234 193Q249 167 249 136Q249 105 234 79Q219 53 193 38Q167 23 136 23Q105 23 79 38Q53 53 38 79Q23 105 23 136Q23 164 35.5 188Q48 212 70 227Q74 231 75 235Q76 239 73.5 243.5Q71 248 66 248.5Q61 249 57 246Q30 227 15 198Q0 169 0 136Q0 99 18.5 68Q37 37 68 18.5Q99 0 136 0ZM121 73Q128 73 132 79L193 175Q196 180 196 183.5Q196 187 193 190Q190 193 185 193Q180 193 176 187L121 98L95 132Q91 138 85.5 138Q80 138 77 134.5Q74 131 74 127Q74 123 77 119L110 79Q115 73 121 73Z"/>`;
+  else
+    glyph = `<g ${common}>
+      <path d="M14 15h24v17H25l-7 6v-6h-4z"/>
+      <path d="M23 21c.4-2 2-3 4-3 2.3 0 4 1.3 4 3.4 0 2.7-3.5 3-3.5 5.4"/>
+      <path d="M27.5 30h.01"/>
+    </g>`;
+  return `<circle cx="26" cy="26" r="19" fill="#000" opacity=".55"/>
+    ${glyph}`;
+};
+
+const agentIcon = (
+  agent: Agent,
+  animationAngle: number,
+  animationElapsedMs: number,
+  look: AgentKeyLook,
+  muted = false,
+): string => {
+  const modeStyle = cursorModeStyle(agent);
+  const scene =
+    look === "agent"
+      ? agentLookScene(agent.state, agent.id, animationElapsedMs)
+      : `<rect width="144" height="144" rx="24" fill="${CLASSIC_AGENT_STATE_COLOUR[agent.state]}"/>
+      ${agentStateIndicator(agent.state, animationAngle)}`;
+  return `data:image/svg+xml,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
-      <rect width="144" height="144" rx="24" fill="${stateColour[agent.state]}"/>
+      ${muteSvgContent(
+        `${scene}
       ${providerLogo(agent.providerId)}
-      ${agentStateIndicator(agent.state, animationAngle)}
-      <rect x="7" y="111" width="130" height="26" rx="9" fill="#000" opacity=".34"/>
-      <text x="72" y="129" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="650" fill="white">${escapeXml(title(agent.title, 21))}</text>
+      ${modeStyle ? cursorModeIcon(modeStyle) : ""}
+      <defs>
+        <clipPath id="agent-key-clip">
+          <rect width="144" height="144" rx="24"/>
+        </clipPath>
+      </defs>
+      <rect x="0" y="111" width="144" height="26" fill="#000" opacity=".34" clip-path="url(#agent-key-clip)"/>
+      ${agentLabelSvg(agent.title, animationElapsedMs)}
+      ${
+        modeStyle
+          ? `<rect x="3.5" y="3.5" width="137" height="137" rx="21" fill="none" stroke="${modeStyle.colour}" stroke-width="7"/>`
+          : ""
+      }
+      `,
+        muted,
+      )}
     </svg>`,
   )}`;
+};
+
+const emptyAgentIcon = (
+  label: string,
+  seed: string,
+  animationElapsedMs: number,
+  muted = false,
+): string =>
+  `data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
+      ${muteSvgContent(
+        `${emptyAgentLookScene(seed, animationElapsedMs)}
+      <defs>
+        <clipPath id="agent-key-clip">
+          <rect width="144" height="144" rx="24"/>
+        </clipPath>
+      </defs>
+      <rect x="0" y="111" width="144" height="26" fill="#000" opacity=".34" clip-path="url(#agent-key-clip)"/>
+      ${agentLabelSvg(label, animationElapsedMs)}
+      `,
+        muted,
+      )}
+    </svg>`,
+  )}`;
+
+const removedAgentIcon = (
+  seed: string,
+  elapsedMs: number,
+  muted = false,
+): string =>
+  `data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
+      ${muteSvgContent(removedAgentLookScene(seed, elapsedMs), muted)}
+    </svg>`,
+  )}`;
+
+interface AnimatedAgentTarget {
+  actionContext: DialAction<ActionSettings> | KeyAction<ActionSettings>;
+  session: DeviceSession;
+}
+
+interface AgentRemovalTransition {
+  agentId: string;
+  seed: string;
+  startedAt: number;
+}
 
 class DeviceManager {
   private readonly sessions = new Map<string, DeviceSession>();
   private readonly pendingSessions = new Map<string, Promise<DeviceSession>>();
   private readonly renderedAgents = new RenderedAgentTargets();
+  private readonly renderedAgentLooks = new Map<string, AgentKeyLook>();
+  private readonly renderedAgentLabels = new Map<string, string>();
+  private readonly removalTransitions = new Map<
+    string,
+    AgentRemovalTransition
+  >();
+  private readonly animationScheduler =
+    new AnimationFrameScheduler<AnimatedAgentTarget>({
+      targets: () => this.animatedAgentTargets(),
+      key: (target) => target.actionContext.id,
+      render: (target) => this.renderAnimatedAgent(target),
+      onError: (error) => {
+        streamDeck.logger.error(
+          `Agent Deck animation failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      },
+    });
 
   async ensure(actionContext: Action<ActionSettings>): Promise<DeviceSession> {
     const deviceId = actionContext.device.id;
@@ -235,6 +397,9 @@ class DeviceManager {
       name: actionContext.device.name || DEFAULT_CONFIGURATION.name,
       ...(document?.data ?? {}),
     };
+    configuration.states = Array.from(
+      new Set<Agent["state"]>(["idle", ...configuration.states]),
+    );
     const session: DeviceSession = {
       deviceId,
       client,
@@ -248,10 +413,11 @@ class DeviceManager {
       page: 0,
       attentionIndex: 0,
       refreshTimer: undefined,
-      refreshGeneration: 0,
-      animationTimer: undefined,
+      refreshPromise: undefined,
+      refreshDirty: false,
+      lastSnapshotSequence: 0,
+      animationStartedAt: Date.now(),
       animationAngle: 0,
-      animationRenderPending: false,
     };
     this.sessions.set(deviceId, session);
     await this.refresh(session);
@@ -271,6 +437,7 @@ class DeviceManager {
         metadata: { role: configuration.role },
       },
       {
+        afterSequence: session.lastSnapshotSequence,
         topics: [
           "agents.summary",
           "attention",
@@ -281,33 +448,21 @@ class DeviceManager {
           ...(configuration.providers.length
             ? { providers: configuration.providers }
             : {}),
-          states: configuration.states,
         },
         onEvent: (event) => this.onEvent(session, event),
         onResyncRequired: () => {
           void this.refresh(session);
         },
         onStatus: (status) => {
+          const previousStatus = session.connectionStatus;
           session.connectionStatus = status;
-          void this.renderVisible(session.deviceId);
+          if (status === "connected" && previousStatus !== "connected")
+            void this.refresh(session);
+          else void this.renderVisible(session.deviceId);
         },
       },
     );
-    session.animationTimer = setInterval(() => {
-      if (
-        session.animationRenderPending ||
-        !session.agents.some((agent) => agent.state === "running")
-      )
-        return;
-      session.animationAngle =
-        ((Date.now() % ANIMATION_REVOLUTION_MS) / ANIMATION_REVOLUTION_MS) *
-        360;
-      session.animationRenderPending = true;
-      void this.renderRunningAgents(session).finally(() => {
-        session.animationRenderPending = false;
-      });
-    }, ANIMATION_INTERVAL_MS);
-    session.animationTimer.unref();
+    this.animationScheduler.start();
     return session;
   }
 
@@ -325,27 +480,90 @@ class DeviceManager {
     const pageSize =
       actionContext.device.size.columns * actionContext.device.size.rows || 1;
     const agent = session.agents[session.page * pageSize + slot];
+    const look = normalizeAgentKeyLook(settings.look);
+    const label = agent?.title ?? `Agent ${slot + 1}`;
+    const muted = session.connectionStatus !== "connected";
+    const removal = this.removalTransitions.get(actionContext.id);
+    if (removal) {
+      this.renderedAgents.set(actionContext.id, undefined);
+      this.renderedAgentLooks.set(actionContext.id, look);
+      this.renderedAgentLabels.set(actionContext.id, "Removed");
+      const image = removedAgentIcon(
+        removal.seed,
+        Date.now() - removal.startedAt,
+        muted,
+      );
+      if (actionContext.isKey())
+        await Promise.all([
+          actionContext.setTitle(""),
+          actionContext.setImage(image),
+        ]);
+      else if (actionContext.isDial())
+        await Promise.all([
+          actionContext.setTitle(""),
+          actionContext.setImage(image),
+        ]);
+      return;
+    }
     this.renderedAgents.set(actionContext.id, agent?.id);
+    this.renderedAgentLooks.set(actionContext.id, look);
+    this.renderedAgentLabels.set(actionContext.id, label);
     if (!agent) {
+      if (look === "agent") {
+        const image = emptyAgentIcon(
+          label,
+          actionContext.id,
+          Date.now() - session.animationStartedAt,
+          muted,
+        );
+        if (actionContext.isKey())
+          await Promise.all([
+            actionContext.setTitle(""),
+            actionContext.setImage(image),
+          ]);
+        else if (actionContext.isDial())
+          await Promise.all([
+            actionContext.setTitle(""),
+            actionContext.setImage(image),
+          ]);
+        return;
+      }
       await this.render(
         actionContext,
-        `Agent ${slot + 1}`,
-        "#1e293b",
-        "+",
+        label,
+        CLASSIC_EMPTY_AGENT_COLOUR,
+        "💤",
         "#475569",
         "AG",
+        { showStrip: false, showBadge: false, muted },
       );
       return;
     }
     if (actionContext.isKey())
       await Promise.all([
         actionContext.setTitle(""),
-        actionContext.setImage(agentIcon(agent, session.animationAngle)),
+        actionContext.setImage(
+          agentIcon(
+            agent,
+            session.animationAngle,
+            Date.now() - session.animationStartedAt,
+            look,
+            muted,
+          ),
+        ),
       ]);
     else if (actionContext.isDial())
       await Promise.all([
         actionContext.setTitle(""),
-        actionContext.setImage(agentIcon(agent, session.animationAngle)),
+        actionContext.setImage(
+          agentIcon(
+            agent,
+            session.animationAngle,
+            Date.now() - session.animationStartedAt,
+            look,
+            muted,
+          ),
+        ),
       ]);
   }
 
@@ -370,14 +588,14 @@ class DeviceManager {
       (agent) => agent.state === "ready_for_review",
     );
     const colour = failed
-      ? stateColour.failed
+      ? CLASSIC_AGENT_STATE_COLOUR.failed
       : waiting
-        ? stateColour.waiting_for_input
+        ? CLASSIC_AGENT_STATE_COLOUR.waiting_for_input
         : running
-          ? stateColour.running
+          ? CLASSIC_AGENT_STATE_COLOUR.running
           : reviewing
-            ? stateColour.ready_for_review
-            : stateColour.idle;
+            ? CLASSIC_AGENT_STATE_COLOUR.ready_for_review
+            : CLASSIC_AGENT_STATE_COLOUR.idle;
     const style = providerId
       ? providerStyle(providerId)
       : { accent: "#38bdf8", label: "All agents", mark: "Σ" };
@@ -398,7 +616,12 @@ class DeviceManager {
         session.attentionIndex % Math.max(session.attention.length, 1)
       ];
     if (!attention) {
-      await this.render(actionContext, "No attention", "#166534", "✓");
+      await this.render(
+        actionContext,
+        "No attention",
+        CLASSIC_AGENT_STATE_COLOUR.ready_for_review,
+        "✓",
+      );
       return;
     }
     await this.render(
@@ -420,7 +643,9 @@ class DeviceManager {
       unhealthy.length
         ? `${unhealthy.length} provider issue`
         : `${session.providers.length} providers\nhealthy`,
-      unhealthy.length ? "#dc2626" : "#166534",
+      unhealthy.length
+        ? "#dc2626"
+        : CLASSIC_AGENT_STATE_COLOUR.ready_for_review,
       "P",
     );
   }
@@ -448,10 +673,12 @@ class DeviceManager {
     )
       symbol = "×";
     else if (session.connectionStatus === "connected" && status === "healthy") {
-      colour = "#16a34a";
+      colour = CLASSIC_AGENT_STATE_COLOUR.ready_for_review;
       symbol = "✓";
     }
-    await this.render(actionContext, "", colour, symbol, "#0f172a", "D");
+    await this.render(actionContext, "", colour, symbol, "#0f172a", "D", {
+      showStrip: false,
+    });
   }
 
   async changePage(
@@ -474,10 +701,9 @@ class DeviceManager {
       actionContext.id,
       session.allAgents,
     );
+    if (!agent) return;
     const result = await focusAgent(agent);
-    if (result.status === "opened" && actionContext.isKey())
-      await actionContext.showOk();
-    else {
+    if (result.status !== "opened") {
       streamDeck.logger.warn(
         `Agent Deck focus failed: ${result.status === "unavailable" ? result.reason : "unknown error"}`,
       );
@@ -485,7 +711,7 @@ class DeviceManager {
     }
   }
 
-  async removeRenderedAgent(
+  async deleteRenderedAgent(
     actionContext: Action<ActionSettings>,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
@@ -493,7 +719,31 @@ class DeviceManager {
       actionContext.id,
       session.allAgents,
     );
-    if (!agent) {
+    if (!agent) return;
+    if (this.removalTransitions.has(actionContext.id)) return;
+    this.removalTransitions.set(actionContext.id, {
+      agentId: agent.id,
+      seed: agent.id,
+      startedAt: Date.now(),
+    });
+    await this.renderVisible(session.deviceId);
+    await new Promise<void>((resolvePromise) => {
+      const timer = setTimeout(resolvePromise, REMOVED_AGENT_ANIMATION_MS);
+      timer.unref();
+    });
+
+    let deleted: boolean;
+    try {
+      deleted = await session.client.deleteAgent(agent.id);
+    } catch (error) {
+      this.removalTransitions.delete(actionContext.id);
+      await this.renderVisible(session.deviceId);
+      throw error;
+    }
+    this.removalTransitions.delete(actionContext.id);
+    if (!deleted) {
+      streamDeck.logger.warn(`Agent Deck remove failed: agent was not found`);
+      await this.renderVisible(session.deviceId);
       await actionContext.showAlert();
       return;
     }
@@ -514,7 +764,35 @@ class DeviceManager {
     );
     session.page = Math.min(session.page, lastPage);
     await this.renderVisible(session.deviceId);
-    if (actionContext.isKey()) await actionContext.showOk();
+  }
+
+  async stopRenderedAgent(
+    actionContext: Action<ActionSettings>,
+  ): Promise<void> {
+    try {
+      const session = await this.ensure(actionContext);
+      const agent = this.renderedAgents.resolve(
+        actionContext.id,
+        session.allAgents,
+      );
+      if (!agent) return;
+      const result = await session.client.cancelAgent(agent.id, agent.revision);
+      if (result.status !== "succeeded") {
+        streamDeck.logger.warn(
+          `Agent Deck stop failed: ${result.message ?? result.status}`,
+        );
+        await actionContext.showAlert();
+        return;
+      }
+      if (actionContext.isKey()) await actionContext.showOk();
+    } catch (error) {
+      streamDeck.logger.error(
+        `Agent Deck stop failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      await actionContext.showAlert();
+    }
   }
 
   async changeAttention(
@@ -535,28 +813,11 @@ class DeviceManager {
     actionContext: Action<ActionSettings>,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
-    const fallback: SessionSnapshot = {
-      allAgents: session.allAgents,
-      agents: session.agents,
-      attention: session.attention,
-      providers: session.providers,
-      health: session.health,
-    };
     if (session.refreshTimer) {
       clearTimeout(session.refreshTimer);
       session.refreshTimer = undefined;
     }
-    session.refreshGeneration++;
-    session.allAgents = [];
-    session.agents = [];
-    session.attention = [];
-    session.providers = [];
-    session.health = {};
-    session.page = 0;
-    session.attentionIndex = 0;
-    session.animationAngle = 0;
-    await this.renderVisible(session.deviceId);
-    await this.refresh(session, fallback);
+    await this.refresh(session);
   }
 
   private onEvent(session: DeviceSession, _event: CanonicalEvent): void {
@@ -567,24 +828,36 @@ class DeviceManager {
     }, 150);
   }
 
-  private async refresh(
-    session: DeviceSession,
-    fallback?: SessionSnapshot,
-  ): Promise<void> {
-    const generation = ++session.refreshGeneration;
+  private async refresh(session: DeviceSession): Promise<void> {
+    session.refreshDirty = true;
+    if (session.refreshPromise) return session.refreshPromise;
+    const refreshLoop = async (): Promise<void> => {
+      while (session.refreshDirty) {
+        session.refreshDirty = false;
+        await this.refreshOnce(session);
+      }
+    };
+    session.refreshPromise = refreshLoop().finally(() => {
+      session.refreshPromise = undefined;
+    });
+    return session.refreshPromise;
+  }
+
+  private async refreshOnce(session: DeviceSession): Promise<void> {
     const [agents, attention, providers, health] = await Promise.allSettled([
       session.client.listAgents({ limit: 200 }),
       session.client.listAttention(),
       session.client.listProviders(),
       session.client.health(),
     ]);
-    if (generation !== session.refreshGeneration) return;
-    if (agents.status === "fulfilled") {
-      const freshAgents = agents.value.items.filter(
-        (agent) => agent.freshness === "fresh",
-      );
+    if (
+      agents.status === "fulfilled" &&
+      agents.value.asOfSequence >= session.lastSnapshotSequence
+    ) {
+      session.lastSnapshotSequence = agents.value.asOfSequence;
+      const freshAgents = streamDeckAgents(agents.value.items);
       session.allAgents = freshAgents;
-      session.agents = freshAgents
+      const visibleAgents = freshAgents
         .filter(
           (agent) =>
             (!session.configuration.providers.length ||
@@ -597,18 +870,17 @@ class DeviceManager {
             right.lastActivityAt.localeCompare(left.lastActivityAt) ||
             left.id.localeCompare(right.id),
         );
-    } else if (fallback) {
-      session.allAgents = fallback.allAgents;
-      session.agents = fallback.agents;
+      session.agents = preserveAgentSlotOrder(session.agents, visibleAgents);
     }
-    if (attention.status === "fulfilled")
-      session.attention = attention.value.items;
-    else if (fallback) session.attention = fallback.attention;
+    if (attention.status === "fulfilled") {
+      const visibleAgentIds = new Set(session.allAgents.map(({ id }) => id));
+      session.attention = attention.value.items.filter(
+        (item) => !item.agentId || visibleAgentIds.has(item.agentId),
+      );
+    }
     if (providers.status === "fulfilled")
       session.providers = providers.value.items;
-    else if (fallback) session.providers = fallback.providers;
     if (health.status === "fulfilled") session.health = health.value;
-    else if (fallback) session.health = fallback.health;
     for (const [resource, result] of [
       ["agents", agents],
       ["attention", attention],
@@ -627,17 +899,74 @@ class DeviceManager {
     await this.renderVisible(session.deviceId);
   }
 
-  private async renderRunningAgents(session: DeviceSession): Promise<void> {
-    const device = streamDeck.devices.getDeviceById(session.deviceId);
-    if (!device) return;
-    const updates: Promise<void>[] = [];
-    for (const visible of device.actions) {
-      if (visible.manifestId !== "com.agentdeck.monitor.agent-slot") continue;
-      const agent = this.renderedAgents.resolve(visible.id, session.allAgents);
-      if (agent?.state !== "running") continue;
-      updates.push(visible.setImage(agentIcon(agent, session.animationAngle)));
+  private animatedAgentTargets(): AnimatedAgentTarget[] {
+    const targets: AnimatedAgentTarget[] = [];
+    for (const session of this.sessions.values()) {
+      const device = streamDeck.devices.getDeviceById(session.deviceId);
+      if (!device) continue;
+      for (const actionContext of device.actions) {
+        if (
+          actionContext.manifestId !== "com.agentdeck.monitor.agent-slot" ||
+          !this.agentSlotIsAnimated(session, actionContext)
+        )
+          continue;
+        targets.push({ actionContext, session });
+      }
     }
-    await Promise.all(updates);
+    return targets;
+  }
+
+  private agentSlotIsAnimated(
+    session: DeviceSession,
+    actionContext: Action<ActionSettings>,
+  ): boolean {
+    if (session.connectionStatus !== "connected") return false;
+    if (this.removalTransitions.has(actionContext.id)) return true;
+    const look = this.renderedAgentLooks.get(actionContext.id) ?? "classic";
+    if (look === "agent") return true;
+    const agent = this.renderedAgents.resolve(
+      actionContext.id,
+      session.allAgents,
+    );
+    return Boolean(
+      agent && (agent.state === "running" || agentLabelOverflows(agent.title)),
+    );
+  }
+
+  private async renderAnimatedAgent({
+    actionContext,
+    session,
+  }: AnimatedAgentTarget): Promise<void> {
+    const now = Date.now();
+    const animationElapsedMs = now - session.animationStartedAt;
+    const removal = this.removalTransitions.get(actionContext.id);
+    if (removal) {
+      await actionContext.setImage(
+        removedAgentIcon(removal.seed, now - removal.startedAt),
+      );
+      return;
+    }
+    session.animationAngle =
+      ((now % ANIMATION_REVOLUTION_MS) / ANIMATION_REVOLUTION_MS) * 360;
+    const agent = this.renderedAgents.resolve(
+      actionContext.id,
+      session.allAgents,
+    );
+    const look = this.renderedAgentLooks.get(actionContext.id) ?? "classic";
+    if (!agent) {
+      if (look !== "agent") return;
+      await actionContext.setImage(
+        emptyAgentIcon(
+          this.renderedAgentLabels.get(actionContext.id) ?? "Agent",
+          actionContext.id,
+          animationElapsedMs,
+        ),
+      );
+      return;
+    }
+    await actionContext.setImage(
+      agentIcon(agent, session.animationAngle, animationElapsedMs, look),
+    );
   }
 
   private async renderVisible(deviceId: string): Promise<void> {
@@ -665,16 +994,17 @@ class DeviceManager {
     symbol: string,
     accent?: string,
     badge?: string,
+    options: IconOptions = {},
   ): Promise<void> {
     if (actionContext.isKey()) {
       await Promise.all([
         actionContext.setTitle(text),
-        actionContext.setImage(icon(colour, symbol, accent, badge)),
+        actionContext.setImage(icon(colour, symbol, accent, badge, options)),
       ]);
     } else if (actionContext.isDial()) {
       await Promise.all([
         actionContext.setTitle(text),
-        actionContext.setImage(icon(colour, symbol, accent, badge)),
+        actionContext.setImage(icon(colour, symbol, accent, badge, options)),
       ]);
     }
   }
@@ -684,8 +1014,9 @@ const devices = new DeviceManager();
 
 @action({ UUID: "com.agentdeck.monitor.agent-slot" })
 class AgentSlotAction extends SingletonAction<ActionSettings> {
-  private readonly doublePresses = new DoublePressDetector(
+  private readonly presses = new AgentPressDetector(
     DOUBLE_PRESS_WINDOW_MS,
+    LONG_PRESS_DURATION_MS,
   );
 
   override async onWillAppear(
@@ -699,7 +1030,24 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
     await devices.renderAgent(ev.action, ev.payload.settings);
   }
   override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
-    const isDoublePress = this.doublePresses.press(ev.action.id, () => {
+    this.presses.keyDown(ev.action.id, {
+      onDoublePress: () => {
+        void devices.stopRenderedAgent(ev.action);
+      },
+      onLongPress: () => {
+        void devices.deleteRenderedAgent(ev.action).catch((error: unknown) => {
+          streamDeck.logger.error(
+            `Agent Deck remove failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          void ev.action.showAlert();
+        });
+      },
+    });
+  }
+  override async onKeyUp(ev: KeyUpEvent<ActionSettings>): Promise<void> {
+    this.presses.keyUp(ev.action.id, () => {
       void devices.focusRenderedAgent(ev.action).catch((error: unknown) => {
         streamDeck.logger.error(
           `Agent Deck focus failed: ${
@@ -708,7 +1056,6 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
         );
       });
     });
-    if (isDoublePress) await devices.removeRenderedAgent(ev.action);
   }
   override async onDialRotate(
     ev: DialRotateEvent<ActionSettings>,

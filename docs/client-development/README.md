@@ -16,6 +16,10 @@ to its application, but must allowlist schemes appropriate to their platform
 and must not treat navigation as a provider command. The macOS Stream Deck
 client accepts only `codex:` and `cursor:` focus links.
 
+Clients cancel an active run with `AgentDeckClient.cancelAgent`. Passing the
+rendered agent revision protects against acting on a slot whose target changed.
+Navigation and cancellation remain separate actions.
+
 Client-specific configuration can be stored at
 `/api/v1/clients/<clientId>/configuration`. The core treats the `schema` and
 `data` fields as opaque and only enforces revision concurrency.

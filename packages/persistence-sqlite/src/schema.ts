@@ -56,6 +56,13 @@ export const agents = sqliteTable(
   ],
 );
 
+export const deletedAgents = sqliteTable("deleted_agents", {
+  agentId: text("agent_id").primaryKey(),
+  providerId: text("provider_id").notNull(),
+  lastActivityAt: text("last_activity_at").notNull(),
+  deletedAt: text("deleted_at").notNull(),
+});
+
 export const runs = sqliteTable(
   "runs",
   {

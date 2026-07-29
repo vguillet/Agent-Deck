@@ -134,6 +134,110 @@ describe("SqliteEventStore", () => {
     store.close();
   });
 
+  it("deletes agent history and suppresses rediscovery until newer activity", () => {
+    const store = createMemoryStore();
+    const agent = makeAgent("waiting_for_approval", "2026-07-28T09:00:00.000Z");
+    const run = {
+      id: "fake:run:one",
+      agentId: agent.id,
+      providerId: agent.providerId,
+      externalId: "run:one",
+      state: "waiting_for_approval" as const,
+      startedAt: "2026-07-28T08:59:00.000Z",
+      revision: 0,
+      metadata: {},
+    };
+    store.applySnapshot("fake", {
+      complete: true,
+      observedAt: "2026-07-28T09:00:00.000Z",
+      workspaces: [],
+      projects: [],
+      agents: [agent],
+      runs: [run],
+      attention: [],
+    });
+    expect(store.getAgent(agent.id)).toBeDefined();
+    expect(store.getRun(run.id)).toBeDefined();
+    expect(store.listAttention({ offset: 0, limit: 10 }).items).toHaveLength(1);
+
+    expect(store.deleteAgent(agent.id)).toBe(true);
+    expect(store.deleteAgent(agent.id)).toBe(false);
+    expect(store.getAgent(agent.id)).toBeUndefined();
+    expect(store.getRun(run.id)).toBeUndefined();
+    expect(
+      store.listEvents({ agentId: agent.id }, { offset: 0, limit: 10 }).items,
+    ).toHaveLength(0);
+    expect(store.listAttention({ offset: 0, limit: 10 }).items).toHaveLength(0);
+
+    expect(
+      store.applySnapshot("fake", {
+        complete: true,
+        observedAt: "2026-07-28T09:00:30.000Z",
+        workspaces: [],
+        projects: [],
+        agents: [agent],
+        runs: [run],
+        attention: [],
+      }),
+    ).toHaveLength(0);
+    expect(store.getAgent(agent.id)).toBeUndefined();
+    expect(store.getRun(run.id)).toBeUndefined();
+
+    const resumed = makeAgent("running", "2026-07-28T09:01:00.000Z");
+    expect(
+      store.applySnapshot("fake", {
+        complete: true,
+        observedAt: "2026-07-28T09:01:00.000Z",
+        workspaces: [],
+        projects: [],
+        agents: [resumed],
+        runs: [{ ...run, state: "running" }],
+        attention: [],
+      }),
+    ).toHaveLength(2);
+    expect(store.getAgent(agent.id)).toMatchObject({
+      state: "running",
+      lastActivityAt: "2026-07-28T09:01:00.000Z",
+    });
+    expect(store.getRun(run.id)).toBeDefined();
+    store.close();
+  });
+
+  it("rejects regressive provider source revisions", () => {
+    const store = createMemoryStore();
+    const newer = {
+      ...makeAgent("running", "2026-07-28T09:02:00.000Z"),
+      sourceRevision: 2,
+    };
+    const older = {
+      ...makeAgent("idle", "2026-07-28T09:01:00.000Z"),
+      sourceRevision: 1,
+    };
+    expect(
+      store.applyProviderEvent({
+        providerId: "fake",
+        type: "agent.upserted",
+        occurredAt: newer.lastActivityAt,
+        agentId: newer.id,
+        payload: { agent: newer },
+      }),
+    ).toBeDefined();
+    expect(
+      store.applyProviderEvent({
+        providerId: "fake",
+        type: "agent.state.changed",
+        occurredAt: older.lastActivityAt,
+        agentId: older.id,
+        payload: { agent: older },
+      }),
+    ).toBeUndefined();
+    expect(store.getAgent(newer.id)).toMatchObject({
+      state: "running",
+      sourceRevision: 2,
+    });
+    store.close();
+  });
+
   it("uses optimistic revisions for opaque client configuration", () => {
     const store = createMemoryStore();
     const first = store.putClientConfiguration("cli:test", "test/v1", {

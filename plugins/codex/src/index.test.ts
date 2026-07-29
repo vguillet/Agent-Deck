@@ -63,6 +63,26 @@ describe("Codex provider hook ingestion", () => {
         },
       ],
     });
+    const interrupt = vi
+      .spyOn(CodexAppServerClient.prototype, "interruptTurn")
+      .mockResolvedValue();
+    await expect(
+      plugin.execute({
+        commandId: "command-1",
+        action: "cancel",
+        agentId: "codex:thr_test",
+      }),
+    ).resolves.toEqual({
+      commandId: "command-1",
+      status: "succeeded",
+    });
+    expect(interrupt).toHaveBeenCalledWith("thr_test", "turn_test");
+    expect(emitted.at(-2)?.payload.agent).toMatchObject({
+      state: "cancelled",
+    });
+    expect(emitted.at(-1)?.payload.run).toMatchObject({
+      state: "cancelled",
+    });
     await stop();
     await plugin.dispose();
   });

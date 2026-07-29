@@ -30,5 +30,8 @@ Cursor uses user hooks and needs no API key, has no historical backfill, and
 cannot reliably infer approval or input-waiting states. Cursor Cloud uses the
 Cursor SDK catalog and stream APIs.
 
-The `execute` method is reserved for a future control milestone. Preview
-providers return `unsupported`, and the server exposes no command route.
+The `execute` method handles provider commands declared in
+`manifest.capabilities.commands`. The preview server currently exposes only
+`cancel`. Plugins must target the canonical agent ID, return `unsupported` for
+unknown actions, and emit sanitized agent/run state events after a successful
+cancellation.

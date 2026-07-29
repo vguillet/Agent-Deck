@@ -40,7 +40,7 @@ export const buildServer = async (
   );
   await providerManager.initialise();
   providerManager.registerIngressRoutes();
-  registerApiRoutes(app, store, broker);
+  registerApiRoutes(app, store, broker, providerManager);
 
   app.get("/api/v1/stream", { websocket: true }, (socket) => {
     const connectionId = broker.add(socket);

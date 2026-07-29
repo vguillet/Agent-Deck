@@ -23,6 +23,12 @@ persists and serves these links without launching applications or interpreting
 provider-specific URL schemes. A local client decides whether and how to open a
 link, so focusing an app does not become an agent command or state mutation.
 
+Cancellation is a separate provider command. The core validates the target and
+optional expected revision, then dispatches `cancel` only to the provider that
+owns the agent. Codex interrupts the active turn, Cursor Cloud cancels the
+active run, and local Cursor sends the conversation ID to the companion
+extension's cancel command.
+
 ## Local Cursor boundary
 
 Normal Cursor IDE and interactive Agent CLI sessions do not expose a supported
@@ -39,7 +45,7 @@ telemetry stopped, not that the Cursor process is known to have exited.
 
 Exact local IDE focusing is provided by the separately installed Agent Deck
 Focus extension for Cursor. It receives a conversation ID over Cursor's URI
-handler and invokes Cursor's local conversation command. It does not apply to
+handler and invokes Cursor's local open or cancel command. It does not apply to
 interactive Agent CLI terminal sessions.
 
 ## Privacy boundary

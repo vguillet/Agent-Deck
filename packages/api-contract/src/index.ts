@@ -37,6 +37,7 @@ export const AgentSchema = z.object({
   requiresAttention: z.boolean(),
   lastActivityAt: TimestampSchema,
   revision: z.number().int().nonnegative(),
+  sourceRevision: z.number().int().nonnegative().optional(),
   archived: z.boolean(),
   capabilities: z.object({
     messages: z.boolean(),
@@ -66,6 +67,7 @@ export const RunSchema = z.object({
   startedAt: TimestampSchema.optional(),
   finishedAt: TimestampSchema.optional(),
   revision: z.number().int().nonnegative(),
+  sourceRevision: z.number().int().nonnegative().optional(),
   metadata: MetadataSchema,
 });
 
@@ -99,6 +101,7 @@ export const ProviderSchema = z.object({
   consecutiveFailures: z.number().int().nonnegative(),
   capabilities: z.object({
     discovery: z.boolean(),
+    discoveryMode: z.enum(["poll", "startup"]).optional(),
     liveEvents: z.boolean(),
     commands: z.array(z.string()),
   }),
@@ -219,6 +222,17 @@ export const ErrorEnvelopeSchema = z.object({
     details: z.unknown().optional(),
     requestId: z.string(),
   }),
+});
+
+export const AgentCommandRequestSchema = z.object({
+  action: z.enum(["cancel", "archive"]),
+  expectedRevision: z.number().int().nonnegative().optional(),
+});
+
+export const CommandResultSchema = z.object({
+  commandId: z.string().min(1),
+  status: z.enum(["succeeded", "failed", "unsupported"]),
+  message: z.string().optional(),
 });
 
 export interface Page<T> {

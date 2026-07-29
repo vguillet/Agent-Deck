@@ -16,6 +16,7 @@ const EVENTS = [
   "preToolUse",
   "postToolUse",
   "postToolUseFailure",
+  "subagentStart",
   "stop",
   "sessionEnd",
 ] as const;
@@ -106,7 +107,10 @@ export const installCursorHooks = async (
   const path = options.path ?? defaultHooksPath();
   const file = await load(path);
   validate(file, path);
-  if (hasAgentDeckHook(file))
+  const missingEvents = EVENTS.filter(
+    (event) => !file.hooks?.[event]?.some(isAgentDeckHook),
+  );
+  if (!missingEvents.length)
     return `Agent Deck Cursor hooks already installed in ${path}`;
   try {
     await copyFile(
@@ -127,7 +131,7 @@ export const installCursorHooks = async (
   )} ${MARKER}`;
   file.version = 1;
   file.hooks ??= {};
-  for (const event of EVENTS) {
+  for (const event of missingEvents) {
     file.hooks[event] ??= [];
     file.hooks[event].push({
       command,
