@@ -24,11 +24,12 @@ export class RenderedAgentTargets {
     return this.targets.get(actionId);
   }
 
-  resolve(actionId: string, currentAgents: Agent[]): Agent | undefined {
+  resolve(
+    actionId: string,
+    currentAgents: ReadonlyMap<string, Agent>,
+  ): Agent | undefined {
     const agentId = this.targets.get(actionId);
-    return agentId
-      ? currentAgents.find((agent) => agent.id === agentId)
-      : undefined;
+    return agentId ? currentAgents.get(agentId) : undefined;
   }
 }
 

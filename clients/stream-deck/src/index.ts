@@ -68,6 +68,14 @@ import {
   agentWorkspaceBadgeSvg,
   workspaceBadgesNeeded,
 } from "./workspace-badge.js";
+import { ActionOutputWriter } from "./action-output-writer.js";
+import {
+  addRefreshResources,
+  actionManifestIdsForResources,
+  allRefreshResources,
+  refreshResourcesForEvent,
+  type RefreshResource,
+} from "./refresh-plan.js";
 
 interface ActionSettings {
   slot?: number;
@@ -90,17 +98,26 @@ interface DeviceSession {
   configuration: DeviceConfiguration;
   connectionStatus: "connecting" | "connected" | "disconnected";
   allAgents: Agent[];
+  agentById: Map<string, Agent>;
   agents: Agent[];
+  workspaceBadgeByAgentId: Map<string, string>;
+  agentStaticVisuals: Map<string, AgentStaticVisuals>;
+  agentSummaries: Map<string, AgentSummary>;
   attention: Attention[];
   providers: Provider[];
+  providerBubbles: ConnectorBubble[];
+  providerBubblesOverflow: boolean;
+  unhealthyProviderCount: number;
   workspaces: Workspace[];
+  workspaceById: Map<string, Workspace>;
+  visibleWorkspaceIds: string[];
   health: Record<string, unknown>;
   page: number;
   attentionIndex: number;
   watch?: WatchHandle;
   refreshTimer: NodeJS.Timeout | undefined;
   refreshPromise: Promise<void> | undefined;
-  refreshDirty: boolean;
+  refreshResources: Set<RefreshResource>;
   clearingAgents: boolean;
   lastSnapshotSequence: number;
   animationStartedAt: number;
@@ -108,6 +125,22 @@ interface DeviceSession {
     string,
     { activeRunId: string | undefined; startedAt: number }
   >;
+}
+
+interface AgentSummary {
+  attention: number;
+  failed: boolean;
+  reviewing: boolean;
+  running: number;
+  total: number;
+  waiting: boolean;
+}
+
+interface AgentStaticVisuals {
+  modeFrame: string;
+  modeIcon: string;
+  providerLogo: string;
+  workspaceBadge: string;
 }
 
 const ALL_AGENT_STATES: Agent["state"][] = [
@@ -121,26 +154,22 @@ const ALL_AGENT_STATES: Agent["state"][] = [
   "unknown",
 ];
 
-const workspaceBadgeForAgent = (
-  session: DeviceSession,
-  agent: Agent,
-): string => {
-  if (!workspaceBadgesNeeded(session.agents)) return "";
-  const workspace = session.workspaces.find(
-    (candidate) => candidate.id === agent.workspaceId,
-  );
-  const visibleWorkspaceIds = session.agents.flatMap((candidate) =>
-    candidate.workspaceId ? [candidate.workspaceId] : [],
-  );
-  return agentWorkspaceBadgeSvg(agent, workspace, visibleWorkspaceIds);
-};
-
 const DEFAULT_CONFIGURATION: DeviceConfiguration = {
   serverUrl: "http://127.0.0.1:47831",
   name: "Stream Deck",
   role: "agent-monitor",
   providers: [],
   states: ALL_AGENT_STATES,
+};
+
+const settle = async <T>(
+  promise: Promise<T>,
+): Promise<PromiseSettledResult<T>> => {
+  try {
+    return { status: "fulfilled", value: await promise };
+  } catch (reason) {
+    return { status: "rejected", reason };
+  }
 };
 
 const LONG_PRESS_DURATION_MS = 650;
@@ -195,6 +224,87 @@ const providerBubbles = (providers: readonly Provider[]): ConnectorBubble[] =>
     mark: providerStyle(provider.id).mark,
     healthy: provider.health === "healthy",
   }));
+
+const emptyAgentSummary = (): AgentSummary => ({
+  attention: 0,
+  failed: false,
+  reviewing: false,
+  running: 0,
+  total: 0,
+  waiting: false,
+});
+
+const addAgentToSummary = (summary: AgentSummary, agent: Agent): void => {
+  summary.total += 1;
+  summary.running += Number(agent.state === "running");
+  summary.attention += Number(agent.requiresAttention);
+  summary.failed ||= agent.state === "failed";
+  summary.waiting ||=
+    agent.state === "waiting_for_input" ||
+    agent.state === "waiting_for_approval";
+  summary.reviewing ||= agent.state === "ready_for_review";
+};
+
+const rebuildAgentRenderCache = (session: DeviceSession): void => {
+  session.agentById = new Map(
+    session.allAgents.map((agent) => [agent.id, agent]),
+  );
+  session.workspaceById = new Map(
+    session.workspaces.map((workspace) => [workspace.id, workspace]),
+  );
+  session.visibleWorkspaceIds = session.agents.flatMap((agent) =>
+    agent.workspaceId ? [agent.workspaceId] : [],
+  );
+  const badgesNeeded = workspaceBadgesNeeded(session.agents);
+  session.workspaceBadgeByAgentId = new Map(
+    session.agents.map((agent) => [
+      agent.id,
+      badgesNeeded
+        ? agentWorkspaceBadgeSvg(
+            agent,
+            agent.workspaceId
+              ? session.workspaceById.get(agent.workspaceId)
+              : undefined,
+            session.visibleWorkspaceIds,
+          )
+        : "",
+    ]),
+  );
+  session.agentStaticVisuals = new Map(
+    session.agents.map((agent) => [
+      agent.id,
+      buildAgentStaticVisuals(
+        agent,
+        session.workspaceBadgeByAgentId.get(agent.id) ?? "",
+      ),
+    ]),
+  );
+
+  const summaries = new Map<string, AgentSummary>();
+  const all = emptyAgentSummary();
+  summaries.set("", all);
+  for (const agent of session.allAgents) {
+    addAgentToSummary(all, agent);
+    let provider = summaries.get(agent.providerId);
+    if (!provider) {
+      provider = emptyAgentSummary();
+      summaries.set(agent.providerId, provider);
+    }
+    addAgentToSummary(provider, agent);
+  }
+  session.agentSummaries = summaries;
+};
+
+const rebuildProviderRenderCache = (session: DeviceSession): void => {
+  session.providerBubbles = providerBubbles(session.providers);
+  session.providerBubblesOverflow = connectorBubblesOverflow(
+    session.providerBubbles,
+  );
+  session.unhealthyProviderCount = session.providers.filter(
+    (provider) =>
+      provider.health === "unhealthy" || provider.health === "degraded",
+  ).length;
+};
 
 const icon = (
   colour: string,
@@ -283,18 +393,8 @@ const systemIcon = (
   return icon(display.colour, "", "#0f172a", String(session.allAgents.length), {
     showStrip: false,
     glyph: `${systemStatusGlyph(display.state)}
-        ${connectorBubblesSvg(providerBubbles(session.providers), animationElapsedMs)}`,
+        ${connectorBubblesSvg(session.providerBubbles, animationElapsedMs)}`,
   });
-};
-
-const setActionImage = async (
-  actionContext: KeyAction<ActionSettings> | DialAction<ActionSettings>,
-  image: string,
-): Promise<void> => {
-  await Promise.all([
-    actionContext.setTitle(""),
-    actionContext.setImage(image),
-  ]);
 };
 
 const title = (value: string, max = 18): string =>
@@ -307,7 +407,7 @@ const escapeXml = (value: string): string =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 
-const providerLogo = (providerId: string): string => {
+const renderProviderLogo = (providerId: string): string => {
   const id = providerId.toLowerCase();
   if (id.includes("cursor"))
     return `<g transform="translate(0 93)">
@@ -332,6 +432,20 @@ const providerLogo = (providerId: string): string => {
     </g>`;
 };
 
+const providerLogoCache = new Map<string, string>();
+
+const providerLogo = (providerId: string): string => {
+  const cached = providerLogoCache.get(providerId);
+  if (cached) return cached;
+  const logo = renderProviderLogo(providerId);
+  providerLogoCache.set(providerId, logo);
+  if (providerLogoCache.size > 128) {
+    const oldest = providerLogoCache.keys().next().value;
+    if (oldest !== undefined) providerLogoCache.delete(oldest);
+  }
+  return logo;
+};
+
 const agentModeIcon = (style: AgentModeStyle): string => {
   const common = `fill="none" stroke="${style.colour}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"`;
   let glyph: string;
@@ -349,16 +463,28 @@ const agentModeIcon = (style: AgentModeStyle): string => {
     </g>`;
 };
 
-const agentIcon = (
+const buildAgentStaticVisuals = (
   agent: Agent,
   workspaceBadge: string,
+): AgentStaticVisuals => {
+  const modeStyle = agentModeStyle(agent);
+  return {
+    modeFrame: modeStyle ? agentModeFrameSvg(modeStyle) : "",
+    modeIcon: modeStyle ? agentModeIcon(modeStyle) : "",
+    providerLogo: providerLogo(agent.providerId),
+    workspaceBadge,
+  };
+};
+
+const agentIcon = (
+  agent: Agent,
+  staticVisuals: AgentStaticVisuals,
   animation: { elapsedMs: number; stateElapsedMs: number },
   look: AgentKeyLook,
   muted = false,
   pressed = false,
   stateTransition?: AgentStateTransitionFrame,
 ): string => {
-  const modeStyle = agentModeStyle(agent);
   const scene =
     look === "agent"
       ? agentLookScene(agent.state, agent.id, animation.elapsedMs)
@@ -370,10 +496,10 @@ const agentIcon = (
         `${scene}
       ${agentLabelBackgroundSvg()}
       ${agentLabelSvg(agent.title, animation.elapsedMs)}
-      ${modeStyle ? agentModeFrameSvg(modeStyle) : ""}
-      ${providerLogo(agent.providerId)}
-      ${modeStyle ? agentModeIcon(modeStyle) : ""}
-      ${workspaceBadge}
+      ${staticVisuals.modeFrame}
+      ${staticVisuals.providerLogo}
+      ${staticVisuals.modeIcon}
+      ${staticVisuals.workspaceBadge}
       `,
         muted,
       )}
@@ -426,6 +552,7 @@ interface AgentRemovalTransition {
 class DeviceManager {
   private readonly sessions = new Map<string, DeviceSession>();
   private readonly pendingSessions = new Map<string, Promise<DeviceSession>>();
+  private readonly actionSettings = new Map<string, ActionSettings>();
   private readonly renderedAgents = new RenderedAgentTargets();
   private readonly renderedAgentLooks = new Map<string, AgentKeyLook>();
   private readonly renderedAgentLabels = new Map<string, string>();
@@ -436,6 +563,7 @@ class DeviceManager {
     string,
     AgentRemovalTransition
   >();
+  private readonly outputWriter = new ActionOutputWriter();
   private readonly animationScheduler =
     new AnimationFrameScheduler<AnimatedTarget>({
       targets: () => this.animatedTargets(),
@@ -457,6 +585,27 @@ class DeviceManager {
   ): number {
     const animation = session.runningAnimationStarts.get(agent.id);
     return animation ? Math.max(0, now - animation.startedAt) : 0;
+  }
+
+  rememberAction(
+    actionContext: Action<ActionSettings>,
+    settings: ActionSettings,
+  ): void {
+    this.actionSettings.set(actionContext.id, settings);
+  }
+
+  forgetAction(actionId: string): void {
+    this.actionSettings.delete(actionId);
+    this.renderedAgents.set(actionId, undefined);
+    this.renderedAgentLooks.delete(actionId);
+    this.renderedAgentLabels.delete(actionId);
+    this.agentStateTransitions.clear(actionId);
+    this.pressedAgentActions.delete(actionId);
+    const feedbackTimer = this.pressFeedbackTimers.get(actionId);
+    if (feedbackTimer) clearTimeout(feedbackTimer);
+    this.pressFeedbackTimers.delete(actionId);
+    this.removalTransitions.delete(actionId);
+    this.outputWriter.clear(actionId);
   }
 
   async ensure(actionContext: Action<ActionSettings>): Promise<DeviceSession> {
@@ -503,16 +652,25 @@ class DeviceManager {
       configuration,
       connectionStatus: "connecting",
       allAgents: [],
+      agentById: new Map(),
       agents: [],
+      workspaceBadgeByAgentId: new Map(),
+      agentStaticVisuals: new Map(),
+      agentSummaries: new Map([["", emptyAgentSummary()]]),
       attention: [],
       providers: [],
+      providerBubbles: [],
+      providerBubblesOverflow: false,
+      unhealthyProviderCount: 0,
       workspaces: [],
+      workspaceById: new Map(),
+      visibleWorkspaceIds: [],
       health: {},
       page: 0,
       attentionIndex: 0,
       refreshTimer: undefined,
       refreshPromise: undefined,
-      refreshDirty: false,
+      refreshResources: new Set(),
       clearingAgents: false,
       lastSnapshotSequence: 0,
       animationStartedAt: Date.now(),
@@ -561,6 +719,7 @@ class DeviceManager {
             session.attention = [];
             session.page = 0;
             session.attentionIndex = 0;
+            rebuildAgentRenderCache(session);
             void this.renderVisible(session.deviceId);
           } else if (status === "connected" && previousStatus !== "connected")
             void this.refresh(session);
@@ -600,16 +759,8 @@ class DeviceManager {
         Date.now() - removal.startedAt,
         muted,
       );
-      if (actionContext.isKey())
-        await Promise.all([
-          actionContext.setTitle(""),
-          actionContext.setImage(image),
-        ]);
-      else if (actionContext.isDial())
-        await Promise.all([
-          actionContext.setTitle(""),
-          actionContext.setImage(image),
-        ]);
+      if (actionContext.isKey() || actionContext.isDial())
+        await this.outputWriter.write(actionContext, { title: "", image });
       return;
     }
     let stateTransition: AgentStateTransitionFrame | undefined;
@@ -630,16 +781,8 @@ class DeviceManager {
           Date.now() - session.animationStartedAt,
           muted,
         );
-        if (actionContext.isKey())
-          await Promise.all([
-            actionContext.setTitle(""),
-            actionContext.setImage(image),
-          ]);
-        else if (actionContext.isDial())
-          await Promise.all([
-            actionContext.setTitle(""),
-            actionContext.setImage(image),
-          ]);
+        if (actionContext.isKey() || actionContext.isDial())
+          await this.outputWriter.write(actionContext, { title: "", image });
         return;
       }
       await this.render(
@@ -660,42 +803,23 @@ class DeviceManager {
       agent,
       now,
     );
-    if (actionContext.isKey())
-      await Promise.all([
-        actionContext.setTitle(""),
-        actionContext.setImage(
-          agentIcon(
-            agent,
-            workspaceBadgeForAgent(session, agent),
-            {
-              elapsedMs: animationElapsedMs,
-              stateElapsedMs: stateAnimationElapsedMs,
-            },
-            look,
-            muted,
-            this.pressedAgentActions.has(actionContext.id),
-            stateTransition,
-          ),
+    if (actionContext.isKey() || actionContext.isDial())
+      await this.outputWriter.write(actionContext, {
+        title: "",
+        image: agentIcon(
+          agent,
+          session.agentStaticVisuals.get(agent.id) ??
+            buildAgentStaticVisuals(agent, ""),
+          {
+            elapsedMs: animationElapsedMs,
+            stateElapsedMs: stateAnimationElapsedMs,
+          },
+          look,
+          muted,
+          this.pressedAgentActions.has(actionContext.id),
+          stateTransition,
         ),
-      ]);
-    else if (actionContext.isDial())
-      await Promise.all([
-        actionContext.setTitle(""),
-        actionContext.setImage(
-          agentIcon(
-            agent,
-            workspaceBadgeForAgent(session, agent),
-            {
-              elapsedMs: animationElapsedMs,
-              stateElapsedMs: stateAnimationElapsedMs,
-            },
-            look,
-            muted,
-            this.pressedAgentActions.has(actionContext.id),
-            stateTransition,
-          ),
-        ),
-      ]);
+      });
   }
 
   async flashRenderedAgent(
@@ -704,7 +828,7 @@ class DeviceManager {
     const session = await this.ensure(actionContext);
     const agent = this.renderedAgents.resolve(
       actionContext.id,
-      session.allAgents,
+      session.agentById,
     );
     if (!agent) return;
 
@@ -714,23 +838,23 @@ class DeviceManager {
     const timer = setTimeout(() => {
       this.pressFeedbackTimers.delete(actionContext.id);
       this.pressedAgentActions.delete(actionContext.id);
-      void actionContext
-        .getSettings<ActionSettings>()
-        .then((settings) => this.renderAgent(actionContext, settings))
-        .catch((error: unknown) => {
-          streamDeck.logger.error(
-            `Agent Deck press feedback reset failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        });
+      void this.renderAgent(
+        actionContext,
+        this.actionSettings.get(actionContext.id) ?? {},
+      ).catch((error: unknown) => {
+        streamDeck.logger.error(
+          `Agent Deck press feedback reset failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
     }, PRESS_FEEDBACK_DURATION_MS);
     timer.unref();
     this.pressFeedbackTimers.set(actionContext.id, timer);
 
     await this.renderAgent(
       actionContext,
-      await actionContext.getSettings<ActionSettings>(),
+      this.actionSettings.get(actionContext.id) ?? {},
     );
   }
 
@@ -740,20 +864,9 @@ class DeviceManager {
   ): Promise<void> {
     const session = await this.ensure(actionContext);
     const providerId = String(settings.summaryProviderId ?? "").trim();
-    const agents = providerId
-      ? session.allAgents.filter((agent) => agent.providerId === providerId)
-      : session.allAgents;
-    const attention = agents.filter((agent) => agent.requiresAttention).length;
-    const running = agents.filter((agent) => agent.state === "running").length;
-    const failed = agents.some((agent) => agent.state === "failed");
-    const waiting = agents.some(
-      (agent) =>
-        agent.state === "waiting_for_input" ||
-        agent.state === "waiting_for_approval",
-    );
-    const reviewing = agents.some(
-      (agent) => agent.state === "ready_for_review",
-    );
+    const summary =
+      session.agentSummaries.get(providerId) ?? emptyAgentSummary();
+    const { attention, failed, reviewing, running, total, waiting } = summary;
     const colour = failed
       ? CLASSIC_AGENT_STATE_COLOUR.failed
       : waiting
@@ -768,9 +881,9 @@ class DeviceManager {
       : { accent: "#38bdf8", label: "All agents", mark: "Σ" };
     await this.render(
       actionContext,
-      `${style.label} · ${agents.length}\n${running} running · ${attention} alert`,
+      `${style.label} · ${total}\n${running} running · ${attention} alert`,
       colour,
-      attention ? String(Math.min(attention, 9)) : String(agents.length),
+      attention ? String(Math.min(attention, 9)) : String(total),
       style.accent,
       style.mark,
     );
@@ -801,18 +914,13 @@ class DeviceManager {
 
   async renderProvider(actionContext: Action<ActionSettings>): Promise<void> {
     const session = await this.ensure(actionContext);
-    const unhealthy = session.providers.filter(
-      (provider) =>
-        provider.health === "unhealthy" || provider.health === "degraded",
-    );
+    const unhealthy = session.unhealthyProviderCount;
     await this.render(
       actionContext,
-      unhealthy.length
-        ? `${unhealthy.length} provider issue`
+      unhealthy
+        ? `${unhealthy} provider issue`
         : `${session.providers.length} providers\nhealthy`,
-      unhealthy.length
-        ? "#dc2626"
-        : CLASSIC_AGENT_STATE_COLOUR.ready_for_review,
+      unhealthy ? "#dc2626" : CLASSIC_AGENT_STATE_COLOUR.ready_for_review,
       "P",
     );
   }
@@ -821,7 +929,7 @@ class DeviceManager {
     const session = await this.ensure(actionContext);
     const image = systemIcon(session, Date.now() - session.animationStartedAt);
     if (actionContext.isKey() || actionContext.isDial())
-      await setActionImage(actionContext, image);
+      await this.outputWriter.write(actionContext, { title: "", image });
   }
 
   async changePage(
@@ -845,9 +953,7 @@ class DeviceManager {
     agentId: string,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
-    const agent = session.allAgents.find(
-      (candidate) => candidate.id === agentId,
-    );
+    const agent = session.agentById.get(agentId);
     if (!agent) {
       streamDeck.logger.warn(
         `Agent Deck focus failed: displayed agent ${agentId} is gone`,
@@ -872,9 +978,7 @@ class DeviceManager {
     agentId: string,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
-    const agent = session.allAgents.find(
-      (candidate) => candidate.id === agentId,
-    );
+    const agent = session.agentById.get(agentId);
     if (!agent) return;
     if (this.removalTransitions.has(actionContext.id)) return;
     this.removalTransitions.set(actionContext.id, {
@@ -912,6 +1016,7 @@ class DeviceManager {
     session.attention = session.attention.filter(
       (item) => item.agentId !== agent.id,
     );
+    rebuildAgentRenderCache(session);
     const pageSize =
       actionContext.device.size.columns * actionContext.device.size.rows || 1;
     const lastPage = Math.max(
@@ -948,6 +1053,7 @@ class DeviceManager {
     session.allAgents = [];
     session.agents = [];
     session.attention = [];
+    rebuildAgentRenderCache(session);
     session.page = 0;
     session.attentionIndex = 0;
     try {
@@ -962,21 +1068,28 @@ class DeviceManager {
     await this.refresh(session);
   }
 
-  private onEvent(session: DeviceSession, _event: CanonicalEvent): void {
+  private onEvent(session: DeviceSession, event: CanonicalEvent): void {
+    const resources = refreshResourcesForEvent(event.type);
+    if (!resources.size) return;
+    addRefreshResources(session.refreshResources, resources);
     if (session.refreshTimer) return;
     session.refreshTimer = setTimeout(() => {
       session.refreshTimer = undefined;
-      void this.refresh(session);
+      void this.refresh(session, []);
     }, 150);
   }
 
-  private async refresh(session: DeviceSession): Promise<void> {
-    session.refreshDirty = true;
+  private async refresh(
+    session: DeviceSession,
+    resources: Iterable<RefreshResource> = allRefreshResources(),
+  ): Promise<void> {
+    addRefreshResources(session.refreshResources, resources);
     if (session.refreshPromise) return session.refreshPromise;
     const refreshLoop = async (): Promise<void> => {
-      while (session.refreshDirty) {
-        session.refreshDirty = false;
-        await this.refreshOnce(session);
+      while (session.refreshResources.size) {
+        const pendingResources = new Set(session.refreshResources);
+        session.refreshResources.clear();
+        await this.refreshOnce(session, pendingResources);
       }
     };
     session.refreshPromise = refreshLoop().finally(() => {
@@ -985,23 +1098,36 @@ class DeviceManager {
     return session.refreshPromise;
   }
 
-  private async refreshOnce(session: DeviceSession): Promise<void> {
+  private async refreshOnce(
+    session: DeviceSession,
+    resources: ReadonlySet<RefreshResource>,
+  ): Promise<void> {
     const [agents, attention, providers, workspaces, health] =
-      await Promise.allSettled([
-        session.client.listAgents({ limit: 200 }),
-        session.client.listAttention(),
-        session.client.listProviders(),
-        session.client.listWorkspaces(),
-        session.client.health(),
-      ]);
+      await Promise.all([
+        resources.has("agents")
+          ? settle(session.client.listAgents({ limit: 200 }))
+          : Promise.resolve(undefined),
+        resources.has("attention")
+          ? settle(session.client.listAttention())
+          : Promise.resolve(undefined),
+        resources.has("providers")
+          ? settle(session.client.listProviders())
+          : Promise.resolve(undefined),
+        resources.has("workspaces")
+          ? settle(session.client.listWorkspaces())
+          : Promise.resolve(undefined),
+        resources.has("health")
+          ? settle(session.client.health())
+          : Promise.resolve(undefined),
+      ] as const);
     if (session.connectionStatus === "disconnected") {
       await this.renderVisible(session.deviceId);
       return;
     }
-    if (workspaces.status === "fulfilled")
+    if (workspaces?.status === "fulfilled")
       session.workspaces = workspaces.value.items;
     if (
-      agents.status === "fulfilled" &&
+      agents?.status === "fulfilled" &&
       !session.clearingAgents &&
       agents.value.asOfSequence >= session.lastSnapshotSequence
     ) {
@@ -1048,15 +1174,23 @@ class DeviceManager {
         session.workspaces,
       );
     }
-    if (attention.status === "fulfilled" && !session.clearingAgents) {
+    if (attention?.status === "fulfilled" && !session.clearingAgents) {
       const visibleAgentIds = new Set(session.allAgents.map(({ id }) => id));
       session.attention = attention.value.items.filter(
         (item) => !item.agentId || visibleAgentIds.has(item.agentId),
       );
     }
-    if (providers.status === "fulfilled")
+    if (providers?.status === "fulfilled")
       session.providers = providers.value.items;
-    if (health.status === "fulfilled") session.health = health.value;
+    if (health?.status === "fulfilled") session.health = health.value;
+    if (workspaces?.status === "fulfilled" && agents?.status !== "fulfilled")
+      session.agents = sortAgentsByWorkspace(
+        session.agents,
+        session.workspaces,
+      );
+    if (agents?.status === "fulfilled" || workspaces?.status === "fulfilled")
+      rebuildAgentRenderCache(session);
+    if (providers?.status === "fulfilled") rebuildProviderRenderCache(session);
     for (const [resource, result] of [
       ["agents", agents],
       ["attention", attention],
@@ -1064,7 +1198,7 @@ class DeviceManager {
       ["workspaces", workspaces],
       ["health", health],
     ] as const) {
-      if (result.status === "fulfilled") continue;
+      if (!result || result.status === "fulfilled") continue;
       streamDeck.logger.error(
         `Agent Deck ${resource} refresh failed: ${
           result.reason instanceof Error
@@ -1073,7 +1207,19 @@ class DeviceManager {
         }`,
       );
     }
-    await this.renderVisible(session.deviceId);
+    const refreshedResources = new Set<RefreshResource>();
+    for (const [resource, result] of [
+      ["agents", agents],
+      ["attention", attention],
+      ["providers", providers],
+      ["workspaces", workspaces],
+      ["health", health],
+    ] as const)
+      if (result?.status === "fulfilled") refreshedResources.add(resource);
+    await this.renderVisible(
+      session.deviceId,
+      actionManifestIdsForResources(refreshedResources),
+    );
   }
 
   private animatedTargets(): AnimatedTarget[] {
@@ -1089,7 +1235,7 @@ class DeviceManager {
           targets.push({ actionContext, session, kind: "agent" });
         else if (
           actionContext.manifestId === "com.agentdeck.monitor.system-health" &&
-          connectorBubblesOverflow(providerBubbles(session.providers))
+          session.providerBubblesOverflow
         )
           targets.push({ actionContext, session, kind: "system" });
       }
@@ -1109,7 +1255,7 @@ class DeviceManager {
     if (look === "agent") return true;
     const agent = this.renderedAgents.resolve(
       actionContext.id,
-      session.allAgents,
+      session.agentById,
     );
     return Boolean(
       agent &&
@@ -1128,30 +1274,32 @@ class DeviceManager {
     const now = Date.now();
     const animationElapsedMs = now - session.animationStartedAt;
     if (kind === "system") {
-      await actionContext.setImage(systemIcon(session, animationElapsedMs));
+      await this.outputWriter.write(actionContext, {
+        image: systemIcon(session, animationElapsedMs),
+      });
       return;
     }
     const removal = this.removalTransitions.get(actionContext.id);
     if (removal) {
-      await actionContext.setImage(
-        removedAgentIcon(removal.seed, now - removal.startedAt),
-      );
+      await this.outputWriter.write(actionContext, {
+        image: removedAgentIcon(removal.seed, now - removal.startedAt),
+      });
       return;
     }
     const agent = this.renderedAgents.resolve(
       actionContext.id,
-      session.allAgents,
+      session.agentById,
     );
     const look = this.renderedAgentLooks.get(actionContext.id) ?? "classic";
     if (!agent) {
       if (look !== "agent") return;
-      await actionContext.setImage(
-        emptyAgentIcon(
+      await this.outputWriter.write(actionContext, {
+        image: emptyAgentIcon(
           this.renderedAgentLabels.get(actionContext.id) ?? "Agent",
           actionContext.id,
           animationElapsedMs,
         ),
-      );
+      });
       return;
     }
     const stateTransition =
@@ -1162,10 +1310,11 @@ class DeviceManager {
             now,
           )
         : undefined;
-    await actionContext.setImage(
-      agentIcon(
+    await this.outputWriter.write(actionContext, {
+      image: agentIcon(
         agent,
-        workspaceBadgeForAgent(session, agent),
+        session.agentStaticVisuals.get(agent.id) ??
+          buildAgentStaticVisuals(agent, ""),
         {
           elapsedMs: animationElapsedMs,
           stateElapsedMs: this.runningAnimationElapsedMs(session, agent, now),
@@ -1175,25 +1324,36 @@ class DeviceManager {
         this.pressedAgentActions.has(actionContext.id),
         stateTransition,
       ),
-    );
+    });
   }
 
-  private async renderVisible(deviceId: string): Promise<void> {
+  private async renderVisible(
+    deviceId: string,
+    manifestIds?: ReadonlySet<string>,
+  ): Promise<void> {
     const device = streamDeck.devices.getDeviceById(deviceId);
     if (!device) return;
-    for (const visible of device.actions) {
-      const settings = await visible.getSettings<ActionSettings>();
-      if (visible.manifestId === "com.agentdeck.monitor.agent-slot")
-        await this.renderAgent(visible, settings);
-      else if (visible.manifestId === "com.agentdeck.monitor.agent-summary")
-        await this.renderAgentSummary(visible, settings);
-      else if (visible.manifestId === "com.agentdeck.monitor.attention")
-        await this.renderAttention(visible);
-      else if (visible.manifestId === "com.agentdeck.monitor.provider-health")
-        await this.renderProvider(visible);
-      else if (visible.manifestId === "com.agentdeck.monitor.system-health")
-        await this.renderSystem(visible);
-    }
+    await Promise.all(
+      [...device.actions]
+        .filter(
+          (visible) => !manifestIds || manifestIds.has(visible.manifestId),
+        )
+        .map(async (visible) => {
+          const settings = this.actionSettings.get(visible.id) ?? {};
+          if (visible.manifestId === "com.agentdeck.monitor.agent-slot")
+            await this.renderAgent(visible, settings);
+          else if (visible.manifestId === "com.agentdeck.monitor.agent-summary")
+            await this.renderAgentSummary(visible, settings);
+          else if (visible.manifestId === "com.agentdeck.monitor.attention")
+            await this.renderAttention(visible);
+          else if (
+            visible.manifestId === "com.agentdeck.monitor.provider-health"
+          )
+            await this.renderProvider(visible);
+          else if (visible.manifestId === "com.agentdeck.monitor.system-health")
+            await this.renderSystem(visible);
+        }),
+    );
   }
 
   private async render(
@@ -1205,17 +1365,11 @@ class DeviceManager {
     badge?: string,
     options: IconOptions = {},
   ): Promise<void> {
-    if (actionContext.isKey()) {
-      await Promise.all([
-        actionContext.setTitle(text),
-        actionContext.setImage(icon(colour, symbol, accent, badge, options)),
-      ]);
-    } else if (actionContext.isDial()) {
-      await Promise.all([
-        actionContext.setTitle(text),
-        actionContext.setImage(icon(colour, symbol, accent, badge, options)),
-      ]);
-    }
+    if (actionContext.isKey() || actionContext.isDial())
+      await this.outputWriter.write(actionContext, {
+        title: text,
+        image: icon(colour, symbol, accent, badge, options),
+      });
   }
 }
 
@@ -1228,15 +1382,18 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
   override async onWillAppear(
     ev: WillAppearEvent<ActionSettings>,
   ): Promise<void> {
+    devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderAgent(ev.action, ev.payload.settings);
   }
   override async onDidReceiveSettings(
     ev: DidReceiveSettingsEvent<ActionSettings>,
   ): Promise<void> {
+    devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderAgent(ev.action, ev.payload.settings);
   }
   override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
     this.presses.cancel(ev.action.id);
+    devices.forgetAction(ev.action.id);
   }
   override onKeyDown(ev: KeyDownEvent<ActionSettings>): void {
     const agentId = devices.renderedAgentId(ev.action);
@@ -1288,12 +1445,17 @@ class AgentSummaryAction extends SingletonAction<ActionSettings> {
   override async onWillAppear(
     ev: WillAppearEvent<ActionSettings>,
   ): Promise<void> {
+    devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderAgentSummary(ev.action, ev.payload.settings);
   }
   override async onDidReceiveSettings(
     ev: DidReceiveSettingsEvent<ActionSettings>,
   ): Promise<void> {
+    devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderAgentSummary(ev.action, ev.payload.settings);
+  }
+  override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
+    devices.forgetAction(ev.action.id);
   }
   override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
     await devices.refreshFor(ev.action);
@@ -1305,7 +1467,11 @@ class AttentionAction extends SingletonAction<ActionSettings> {
   override async onWillAppear(
     ev: WillAppearEvent<ActionSettings>,
   ): Promise<void> {
+    devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderAttention(ev.action);
+  }
+  override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
+    devices.forgetAction(ev.action.id);
   }
   override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
     await devices.changeAttention(ev.action, 1);
@@ -1322,7 +1488,11 @@ class ProviderHealthAction extends SingletonAction<ActionSettings> {
   override async onWillAppear(
     ev: WillAppearEvent<ActionSettings>,
   ): Promise<void> {
+    devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderProvider(ev.action);
+  }
+  override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
+    devices.forgetAction(ev.action.id);
   }
   override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
     await devices.refreshFor(ev.action);
@@ -1336,10 +1506,12 @@ class SystemHealthAction extends SingletonAction<ActionSettings> {
   override async onWillAppear(
     ev: WillAppearEvent<ActionSettings>,
   ): Promise<void> {
+    devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderSystem(ev.action);
   }
   override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
     this.presses.cancel(ev.action.id);
+    devices.forgetAction(ev.action.id);
   }
   override onKeyDown(ev: KeyDownEvent<ActionSettings>): void {
     this.presses.keyDown(ev.action.id, () => {

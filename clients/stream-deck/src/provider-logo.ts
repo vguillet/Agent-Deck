@@ -30,10 +30,13 @@ const openAiLogo = openAiLogoSource.replace(
   "c1.1-.63 1.58-1.57 1.58-2.83v",
 );
 
-export const providerLogoSvg = (
-  providerId: string,
-  options: ProviderLogoOptions,
-): string => {
+const artworkCache = new Map<string, string>();
+
+const providerArtwork = (providerId: string, mark: string): string => {
+  const key = `${providerId}\0${mark}`;
+  const cached = artworkCache.get(key);
+  if (cached) return cached;
+
   const id = providerId.toLowerCase();
   let artwork: string;
   if (id.includes("cursor")) artwork = cursorLogo;
@@ -45,7 +48,20 @@ export const providerLogoSvg = (
     artwork = openAiLogo;
   else
     artwork = `<circle cx="20.5" cy="20.5" r="17" fill="#000" opacity=".3"/>
-      <text x="20.5" y="25.5" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="800" fill="white">${escapeXml(options.mark)}</text>`;
+      <text x="20.5" y="25.5" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="800" fill="white">${escapeXml(mark)}</text>`;
+  artworkCache.set(key, artwork);
+  if (artworkCache.size > 128) {
+    const oldest = artworkCache.keys().next().value;
+    if (oldest !== undefined) artworkCache.delete(oldest);
+  }
+  return artwork;
+};
+
+export const providerLogoSvg = (
+  providerId: string,
+  options: ProviderLogoOptions,
+): string => {
+  const artwork = providerArtwork(providerId, options.mark);
 
   const ring = options.ring
     ? `<rect x="2" y="2" width="37" height="37" rx="9" fill="none" stroke="${options.ring}" stroke-width="4"/>`

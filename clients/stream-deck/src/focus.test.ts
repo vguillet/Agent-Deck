@@ -106,8 +106,18 @@ describe("Stream Deck agent focus", () => {
     const second = agent("cursor-local:second");
     targets.set("key-1", first.id);
     expect(targets.id("key-1")).toBe(first.id);
-    expect(targets.resolve("key-1", [second, first])).toBe(first);
-    expect(targets.resolve("key-1", [second])).toBeUndefined();
+    expect(
+      targets.resolve(
+        "key-1",
+        new Map([
+          [second.id, second],
+          [first.id, first],
+        ]),
+      ),
+    ).toBe(first);
+    expect(
+      targets.resolve("key-1", new Map([[second.id, second]])),
+    ).toBeUndefined();
   });
 
   it("cancels a gesture when its key disappears", () => {
