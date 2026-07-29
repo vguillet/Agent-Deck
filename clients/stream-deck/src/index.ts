@@ -116,6 +116,7 @@ interface IconOptions {
   showStrip?: boolean;
   showBadge?: boolean;
   muted?: boolean;
+  glyph?: string;
 }
 
 const muteSvgContent = (content: string, muted: boolean): string =>
@@ -168,11 +169,39 @@ const icon = (
     <text x="114" y="37" text-anchor="middle" font-family="system-ui" font-size="15" font-weight="800" fill="white">${badge ?? ""}</text>`
         : ""
     }
-    <text x="72" y="${showBadge ? 98 : 93}" text-anchor="middle" font-family="system-ui" font-size="58" font-weight="700" fill="white">${symbol}</text>`,
+    ${
+      options.glyph ??
+      `<text x="72" y="${showBadge ? 98 : 93}" text-anchor="middle" font-family="system-ui" font-size="58" font-weight="700" fill="white">${symbol}</text>`
+    }`,
       options.muted ?? false,
     )}
   </svg>`,
   )}`;
+};
+
+type SystemDisplayState =
+  "connected" | "connecting" | "disconnected" | "degraded";
+
+const SYSTEM_STATUS_PATHS: Record<SystemDisplayState, string> = {
+  connected: `<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>`,
+  connecting: `<path d="M21 12a9 9 0 0 0-15.5-6.2L3 8"/>
+    <path d="M3 3v5h5"/>
+    <path d="M3 12a9 9 0 0 0 15.5 6.2L21 16"/>
+    <path d="M21 21v-5h-5"/>`,
+  disconnected: `<path d="m16 3 5 5-5 5"/>
+    <path d="M21 8h-8a4 4 0 0 0-4 4v1"/>
+    <path d="m8 21-5-5 5-5"/>
+    <path d="M3 16h8a4 4 0 0 0 4-4v-1"/>`,
+  degraded: `<path d="M10.3 3.7 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z"/>
+    <path d="M12 9v4"/>
+    <path d="M12 17h.01"/>`,
+};
+
+const systemStatusGlyph = (state: SystemDisplayState): string => {
+  return `<g transform="translate(36 36) scale(3)" fill="none" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    ${SYSTEM_STATUS_PATHS[state]}
+  </g>`;
 };
 
 const title = (value: string, max = 18): string =>
@@ -657,7 +686,7 @@ class DeviceManager {
         ? session.health.status
         : "unknown";
     let colour = "#dc2626";
-    let symbol = "!";
+    let displayState: SystemDisplayState = "degraded";
     if (
       session.connectionStatus === "connecting" ||
       status === "connecting" ||
@@ -666,19 +695,28 @@ class DeviceManager {
       status === "starting"
     ) {
       colour = "#f59e0b";
-      symbol = "↻";
+      displayState = "connecting";
     } else if (
       session.connectionStatus === "disconnected" ||
       status === "disconnected"
     )
-      symbol = "×";
+      displayState = "disconnected";
     else if (session.connectionStatus === "connected" && status === "healthy") {
       colour = CLASSIC_AGENT_STATE_COLOUR.ready_for_review;
-      symbol = "✓";
+      displayState = "connected";
     }
-    await this.render(actionContext, "", colour, symbol, "#0f172a", "D", {
-      showStrip: false,
-    });
+    await this.render(
+      actionContext,
+      "",
+      colour,
+      "",
+      "#0f172a",
+      String(session.allAgents.length),
+      {
+        showStrip: false,
+        glyph: systemStatusGlyph(displayState),
+      },
+    );
   }
 
   async changePage(
