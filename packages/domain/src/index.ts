@@ -27,6 +27,28 @@ export const RUN_STATES = [
 
 export type RunState = (typeof RUN_STATES)[number];
 export type Freshness = "fresh" | "stale";
+export const AGENT_PROGRESS_ACTIVITIES = [
+  "planning",
+  "exploring",
+  "researching",
+  "editing",
+  "executing",
+  "delegating",
+  "waiting",
+  "working",
+] as const;
+
+export type AgentProgressActivity = (typeof AGENT_PROGRESS_ACTIVITIES)[number];
+
+export interface AgentProgress {
+  activity: AgentProgressActivity;
+  plan?: {
+    completed: number;
+    total: number;
+  };
+  observedAt: string;
+}
+
 export type ProviderHealthStatus =
   "starting" | "healthy" | "degraded" | "unhealthy" | "stopped";
 export type AttentionType =
@@ -95,6 +117,7 @@ export interface Agent {
   lastActivityAt: string;
   revision: number;
   sourceRevision?: number;
+  progress?: AgentProgress;
   archived: boolean;
   capabilities: AgentCapabilities;
   links: AgentLink[];
@@ -134,6 +157,7 @@ export const CANONICAL_EVENT_TYPES = [
   "project.upserted",
   "agent.upserted",
   "agent.state.changed",
+  "agent.progress.changed",
   "agent.freshness.changed",
   "run.upserted",
   "run.state.changed",

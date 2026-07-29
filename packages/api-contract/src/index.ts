@@ -23,6 +23,26 @@ export const RunStateSchema = z.enum([
 export const FreshnessSchema = z.enum(["fresh", "stale"]);
 export const TimestampSchema = z.iso.datetime({ offset: true });
 export const MetadataSchema = z.record(z.string(), z.unknown());
+export const AgentProgressSchema = z.object({
+  activity: z.enum([
+    "planning",
+    "exploring",
+    "researching",
+    "editing",
+    "executing",
+    "delegating",
+    "waiting",
+    "working",
+  ]),
+  plan: z
+    .object({
+      completed: z.number().int().nonnegative(),
+      total: z.number().int().nonnegative(),
+    })
+    .refine((plan) => plan.completed <= plan.total)
+    .optional(),
+  observedAt: TimestampSchema,
+});
 
 export const AgentSchema = z.object({
   id: z.string().min(3),
@@ -38,6 +58,7 @@ export const AgentSchema = z.object({
   lastActivityAt: TimestampSchema,
   revision: z.number().int().nonnegative(),
   sourceRevision: z.number().int().nonnegative().optional(),
+  progress: AgentProgressSchema.optional(),
   archived: z.boolean(),
   capabilities: z.object({
     messages: z.boolean(),
@@ -135,6 +156,7 @@ export const EventSchema = z.object({
     "project.upserted",
     "agent.upserted",
     "agent.state.changed",
+    "agent.progress.changed",
     "agent.freshness.changed",
     "run.upserted",
     "run.state.changed",

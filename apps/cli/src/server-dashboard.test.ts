@@ -28,6 +28,11 @@ const snapshot = (): ServerDashboardSnapshot => ({
       title: "Implement dashboard",
       state: "running",
       freshness: "fresh",
+      progress: {
+        activity: "editing",
+        plan: { completed: 2, total: 4 },
+        observedAt: "2026-07-29T08:19:59.000Z",
+      },
       archived: false,
       lastActivityAt: "2026-07-29T08:19:50.000Z",
     } as Agent,
@@ -55,6 +60,7 @@ describe("server dashboard", () => {
     expect(output).toContain("Codex: degraded — Hook is unavailable");
     expect(output).toContain("Alive agents (1)");
     expect(output).toContain("Implement dashboard · running");
+    expect(output).toContain("editing 3/4");
     expect(output).not.toContain("Old task");
   });
 });

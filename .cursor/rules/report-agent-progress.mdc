@@ -1,0 +1,17 @@
+---
+description: Report aggregate plan progress to Agent Deck
+alwaysApply: true
+---
+
+# Report Plan Progress
+
+Immediately before every `TodoWrite` or todo-list update call, count completed
+items and total items, then run this shell command with the numeric placeholders
+replaced:
+
+```sh
+true # agent-deck:progress <completed> <total>
+```
+
+Do not combine it with other shell commands. After it succeeds, perform the
+todo update normally. Report numbers only; never include step text.

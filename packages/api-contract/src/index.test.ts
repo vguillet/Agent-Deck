@@ -50,6 +50,37 @@ describe("Agent focus link contract", () => {
   });
 });
 
+describe("Agent progress contract", () => {
+  it("accepts coarse activity and numeric plan counts", () => {
+    expect(
+      AgentSchema.parse({
+        ...agent,
+        progress: {
+          activity: "planning",
+          plan: { completed: 2, total: 4 },
+          observedAt: "2026-07-28T09:01:00.000Z",
+        },
+      }).progress,
+    ).toMatchObject({
+      activity: "planning",
+      plan: { completed: 2, total: 4 },
+    });
+  });
+
+  it("rejects impossible plan counts", () => {
+    expect(() =>
+      AgentSchema.parse({
+        ...agent,
+        progress: {
+          activity: "planning",
+          plan: { completed: 5, total: 4 },
+          observedAt: "2026-07-28T09:01:00.000Z",
+        },
+      }),
+    ).toThrow();
+  });
+});
+
 describe("Cursor window focus contract", () => {
   it("validates live window registration and normalizes root ordering", () => {
     expect(

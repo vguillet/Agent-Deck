@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeCursorHook } from "./hook-payload.js";
+import { cursorHookResponse, sanitizeCursorHook } from "./hook-payload.js";
 
 describe("Cursor hook payload sanitizer", () => {
   it("allowlists lifecycle metadata and drops sensitive content", () => {
@@ -23,7 +23,7 @@ describe("Cursor hook payload sanitizer", () => {
       conversation_id: "conversation-1",
       generation_id: "generation-1",
       tool_use_id: "tool-1",
-      tool_name: "AskQuestion",
+      agent_activity: "waiting",
       workspace_roots: ["/workspace/alpha"],
       composer_mode: "agent",
     });
@@ -56,10 +56,80 @@ describe("Cursor hook payload sanitizer", () => {
       protocol_version: 2,
       hook_event_name: "preToolUse",
       conversation_id: "conversation-question",
-      tool_name: "Shell",
+      agent_activity: "executing",
       agent_signal: "question_started",
       workspace_roots: [],
     });
+    expect(JSON.stringify(sanitized)).not.toContain("SECRET");
+  });
+
+  it("converts the progress sentinel without retaining its command", () => {
+    const sanitized = sanitizeCursorHook({
+      hook_event_name: "preToolUse",
+      conversation_id: "conversation-progress",
+      tool_name: "functions.Shell",
+      tool_input: {
+        arguments: {
+          command: "true # agent-deck:progress 1 3 SECRET",
+        },
+      },
+    });
+
+    expect(sanitized).toEqual({
+      protocol_version: 2,
+      hook_event_name: "preToolUse",
+      conversation_id: "conversation-progress",
+      agent_activity: "planning",
+      plan_progress: { completed: 1, total: 3 },
+      workspace_roots: [],
+    });
+    expect(JSON.stringify(sanitized)).not.toContain("SECRET");
+  });
+
+  it("injects privacy-safe progress reporting guidance at session start", () => {
+    const hook = sanitizeCursorHook({
+      hook_event_name: "sessionStart",
+      conversation_id: "conversation-progress",
+    });
+    const response = cursorHookResponse(hook);
+
+    expect(response.additional_context).toContain("agent-deck:progress");
+    expect(cursorHookResponse(undefined)).toEqual({});
+  });
+
+  it("reduces TodoWrite input to activity and counts", () => {
+    const sanitized = sanitizeCursorHook({
+      hook_event_name: "preToolUse",
+      conversation_id: "conversation-plan",
+      tool_name: "TodoWrite",
+      tool_input: {
+        todos: [
+          { content: "SECRET done", status: "completed" },
+          { content: "SECRET active", status: "in_progress" },
+        ],
+      },
+    });
+
+    expect(sanitized).toMatchObject({
+      agent_activity: "planning",
+      plan_progress: { completed: 1, total: 2 },
+    });
+    expect(JSON.stringify(sanitized)).not.toContain("SECRET");
+    expect(JSON.stringify(sanitized)).not.toContain("TodoWrite");
+  });
+
+  it("drops malformed plan data without dropping coarse activity", () => {
+    const sanitized = sanitizeCursorHook({
+      hook_event_name: "preToolUse",
+      conversation_id: "conversation-plan",
+      tool_name: "TodoWrite",
+      tool_input: {
+        todos: [{ content: "SECRET malformed", status: "unknown" }],
+      },
+    });
+
+    expect(sanitized).toMatchObject({ agent_activity: "planning" });
+    expect(sanitized).not.toHaveProperty("plan_progress");
     expect(JSON.stringify(sanitized)).not.toContain("SECRET");
   });
 

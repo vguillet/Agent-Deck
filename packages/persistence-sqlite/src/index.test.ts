@@ -67,14 +67,63 @@ describe("SqliteEventStore", () => {
     store.close();
   });
 
+  it("reduces progress changes through the agent revision stream", () => {
+    const store = createMemoryStore();
+    const agent = makeAgent("running");
+    store.applyProviderEvent({
+      providerId: "fake",
+      type: "agent.upserted",
+      occurredAt: agent.lastActivityAt,
+      agentId: agent.id,
+      payload: { agent },
+    });
+    const progressEvent = store.applyProviderEvent({
+      providerId: "fake",
+      type: "agent.progress.changed",
+      occurredAt: "2026-07-28T09:01:00.000Z",
+      agentId: agent.id,
+      payload: {
+        agent: {
+          ...agent,
+          progress: {
+            activity: "planning",
+            plan: { completed: 1, total: 3 },
+            observedAt: "2026-07-28T09:01:00.000Z",
+          },
+        },
+      },
+    });
+
+    expect(progressEvent?.agentRevision).toBe(2);
+    expect(store.getAgent(agent.id)?.progress).toMatchObject({
+      activity: "planning",
+      plan: { completed: 1, total: 3 },
+    });
+    expect(
+      store.listEvents({ agentId: agent.id }, { offset: 0, limit: 10 }).items,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "agent.progress.changed" }),
+      ]),
+    );
+    store.close();
+  });
+
   it("marks active agents stale without replacing lifecycle state", () => {
     const store = createMemoryStore();
+    const runningAgent: Agent = {
+      ...makeAgent("running"),
+      progress: {
+        activity: "editing",
+        observedAt: "2026-07-28T09:00:00.000Z",
+      },
+    };
     store.applyProviderEvent({
       providerId: "fake",
       type: "agent.upserted",
       occurredAt: "2026-07-28T09:00:00.000Z",
       agentId: "fake:one",
-      payload: { agent: makeAgent("running") },
+      payload: { agent: runningAgent },
     });
     const events = store.markStale(
       "2026-07-28T09:05:00.000Z",
@@ -86,6 +135,7 @@ describe("SqliteEventStore", () => {
       freshness: "stale",
       requiresAttention: true,
     });
+    expect(store.getAgent("fake:one")?.progress).toBeUndefined();
     expect(store.listAttention({ offset: 0, limit: 10 }).items[0]?.type).toBe(
       "stale",
     );

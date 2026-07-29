@@ -113,6 +113,56 @@ describe("Codex provider hook ingestion", () => {
     await plugin.dispose();
   });
 
+  it("tracks sanitized activity and explicit plan counts", async () => {
+    const plugin = createProviderPlugin();
+    let ingress: ProviderIngressRegistration | undefined;
+    await plugin.initialise(
+      contextFor((registration) => {
+        ingress = registration;
+      }),
+    );
+    const emitted: ProviderEvent[] = [];
+    const stop = await plugin.subscribe(async (event) => {
+      emitted.push(event);
+    });
+    const base = {
+      session_id: "thr_progress",
+      cwd: "/workspace/aquila",
+      turn_id: "turn_progress",
+    };
+    await ingress?.handle({
+      ...base,
+      hook_event_name: "UserPromptSubmit",
+    });
+    await ingress?.handle({
+      ...base,
+      hook_event_name: "PreToolUse",
+      tool_use_id: "tool_plan",
+      agent_activity: "planning",
+      plan_progress: { completed: 1, total: 3 },
+    });
+
+    expect(emitted.at(-2)?.payload.agent).toMatchObject({
+      progress: {
+        activity: "planning",
+        plan: { completed: 1, total: 3 },
+        observedAt: "2026-07-29T10:00:00.000Z",
+      },
+    });
+    expect(
+      emitted.some((event) => event.type === "agent.progress.changed"),
+    ).toBe(true);
+
+    await ingress?.handle({
+      ...base,
+      hook_event_name: "Stop",
+      status: "completed",
+    });
+    expect(emitted.at(-2)?.payload.agent).not.toHaveProperty("progress");
+    await stop();
+    await plugin.dispose();
+  });
+
   it("preserves hook state when a not-loaded thread still has an active turn", async () => {
     vi.spyOn(CodexAppServerClient.prototype, "listThreads").mockResolvedValue([
       {
@@ -258,7 +308,8 @@ describe("Codex provider hook ingestion", () => {
       hook_event_name: "PreToolUse",
       cwd: "/workspace/aquila",
       tool_use_id: "question_1",
-      tool_name: "request_user_input",
+      agent_activity: "waiting",
+      agent_signal: "question_started",
     });
     expect((await plugin.discover()).agents[0]).toMatchObject({
       state: "waiting_for_input",
@@ -270,7 +321,7 @@ describe("Codex provider hook ingestion", () => {
       hook_event_name: "PostToolUse",
       cwd: "/workspace/aquila",
       tool_use_id: "question_1",
-      tool_name: "request_user_input",
+      agent_activity: "waiting",
     });
     expect((await plugin.discover()).agents[0]).toMatchObject({
       state: "running",
@@ -519,7 +570,7 @@ describe("Codex provider hook ingestion", () => {
       cwd: "/workspace/aquila",
       turn_id: "turn_plan",
       tool_use_id: "question_1",
-      tool_name: "request_user_input",
+      agent_activity: "waiting",
       permission_mode: "plan",
       agent_signal: "question_started",
     });
@@ -539,7 +590,7 @@ describe("Codex provider hook ingestion", () => {
       cwd: "/workspace/aquila",
       turn_id: "turn_plan",
       tool_use_id: "question_1",
-      tool_name: "request_user_input",
+      agent_activity: "waiting",
       permission_mode: "plan",
     });
     expect(emitted.at(-2)?.payload.agent).toMatchObject({
@@ -578,7 +629,7 @@ describe("Codex provider hook ingestion", () => {
       cwd: "/workspace/aquila",
       turn_id: "turn_old",
       tool_use_id: "tool_old",
-      tool_name: "Bash",
+      agent_activity: "executing",
     });
     await ingress?.handle(prompt("turn_new"));
     expect(emitted).toHaveLength(count);
@@ -619,7 +670,9 @@ describe("Codex provider hook ingestion", () => {
       cwd: "/workspace/aquila",
       turn_id: "turn_restore",
       tool_use_id: "question_restore",
-      tool_name: "request_user_input",
+      agent_activity: "waiting",
+      agent_signal: "question_started",
+      plan_progress: { completed: 1, total: 2 },
       permission_mode: "plan",
     });
     await first.dispose();
@@ -639,6 +692,10 @@ describe("Codex provider hook ingestion", () => {
       state: "waiting_for_input",
       activeRunId: "codex:thr_restore:turn_restore",
       metadata: { agentMode: "plan" },
+      progress: {
+        activity: "waiting",
+        plan: { completed: 1, total: 2 },
+      },
     });
     expect(snapshot.runs[0]).toMatchObject({
       state: "waiting_for_input",

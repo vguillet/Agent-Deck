@@ -65,7 +65,25 @@ const LifecycleHookSchema = z
     conversation_id: z.string().min(1),
     generation_id: z.string().min(1).optional(),
     tool_use_id: z.string().min(1).optional(),
-    tool_name: z.string().min(1).optional(),
+    agent_activity: z
+      .enum([
+        "planning",
+        "exploring",
+        "researching",
+        "editing",
+        "executing",
+        "delegating",
+        "waiting",
+        "working",
+      ])
+      .optional(),
+    plan_progress: z
+      .object({
+        completed: z.number().int().nonnegative(),
+        total: z.number().int().nonnegative(),
+      })
+      .refine((plan) => plan.completed <= plan.total)
+      .optional(),
     agent_signal: z.enum(["question_started"]).optional(),
     workspace_roots: z.array(z.string().min(1)).default([]),
     status: z.string().optional(),
@@ -152,8 +170,11 @@ const cursorMode = (value: string | undefined): string | undefined => {
   return undefined;
 };
 
-const isQuestionTool = (input: LifecycleHookInput): boolean =>
-  input.tool_name?.replaceAll(/[-_]/g, "").toLowerCase() === "askquestion";
+const withoutProgress = (agent: Agent): Agent => {
+  const copy = { ...agent };
+  delete copy.progress;
+  return copy;
+};
 
 const explicitConversationKind = (
   input: LifecycleHookInput,
@@ -180,7 +201,10 @@ const agentStateForHook = (
     return agentTerminalState(input);
   if ("agent_signal" in input && input.agent_signal === "question_started")
     return "waiting_for_input";
-  if (input.hook_event_name === "preToolUse" && isQuestionTool(input))
+  if (
+    input.hook_event_name === "preToolUse" &&
+    input.agent_activity === "waiting"
+  )
     return "waiting_for_input";
   if (
     input.hook_event_name === "beforeSubmitPrompt" ||
@@ -473,6 +497,25 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const workspaceId = resources.workspace?.id ?? existing?.workspaceId;
     const mode = cursorMode(input.composer_mode);
     const sourceRevision = this.nextSourceRevision(input.conversation_id);
+    const activity =
+      input.agent_signal === "question_started"
+        ? "waiting"
+        : input.agent_activity;
+    const progress = terminal
+      ? undefined
+      : startsGeneration
+        ? { activity: "working" as const, observedAt: now }
+        : activity
+          ? {
+              activity,
+              ...(input.plan_progress
+                ? { plan: input.plan_progress }
+                : existing?.progress?.plan
+                  ? { plan: existing.progress.plan }
+                  : {}),
+              observedAt: now,
+            }
+          : existing?.progress;
     const agent: Agent = {
       id: agentId,
       providerId: PROVIDER_ID,
@@ -491,6 +534,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
       lastActivityAt: now,
       revision: existing?.revision ?? 0,
       sourceRevision,
+      ...(progress ? { progress } : {}),
       archived: false,
       capabilities: {
         messages: false,
@@ -516,7 +560,11 @@ class CursorLocalProvider implements AgentProviderPlugin {
     await this.emitEvent({
       providerId: PROVIDER_ID,
       providerEventId: this.eventId("agent", input),
-      type: existing ? "agent.state.changed" : "agent.upserted",
+      type: existing
+        ? existing.state === agent.state
+          ? "agent.progress.changed"
+          : "agent.state.changed"
+        : "agent.upserted",
       occurredAt: now,
       agentId,
       ...(runId ? { runId } : {}),
@@ -567,7 +615,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
     if (existing && !existing.archived) {
       const sourceRevision = this.nextSourceRevision(conversationId);
       const agent: Agent = {
-        ...existing,
+        ...withoutProgress(existing),
         sourceRevision,
         archived: true,
         requiresAttention: false,
@@ -594,7 +642,9 @@ class CursorLocalProvider implements AgentProviderPlugin {
       input.conversation_id,
       input.generation_id ?? "",
       input.tool_use_id ?? "",
-      input.tool_name ?? "",
+      input.agent_activity ?? "",
+      input.plan_progress?.completed ?? "",
+      input.plan_progress?.total ?? "",
       input.agent_signal ?? "",
       input.status ?? "",
       input.final_status ?? "",
@@ -618,7 +668,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
       if (isAgentActiveOrRecent(agent, now)) continue;
       if (this.conversationKinds.get(agent.externalId) === "top_level")
         expiredAgents.push({
-          ...agent,
+          ...withoutProgress(agent),
           freshness: "stale",
           requiresAttention: false,
           sourceRevision: this.nextSourceRevision(agent.externalId),
@@ -743,7 +793,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
       for (const [id, agent] of this.agents) {
         if (agent.freshness === "stale" && !agent.requiresAttention) continue;
         this.agents.set(id, {
-          ...agent,
+          ...withoutProgress(agent),
           freshness: "stale",
           requiresAttention: false,
           sourceRevision: this.nextSourceRevision(agent.externalId),

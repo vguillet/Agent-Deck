@@ -136,6 +136,12 @@ const stable = (value: unknown): string => {
 const equivalent = (left: unknown, right: unknown): boolean =>
   stable(left) === stable(right);
 
+const withoutAgentProgress = (agent: Agent): Agent => {
+  const copy = { ...agent };
+  delete copy.progress;
+  return copy;
+};
+
 export class SqliteEventStore implements EventStore {
   private readonly db: Database.Database;
 
@@ -274,7 +280,7 @@ export class SqliteEventStore implements EventStore {
         snapshotAgent.freshness === "fresh" &&
         snapshotAgent.lastActivityAt <= existing.lastActivityAt
           ? {
-              ...snapshotAgent,
+              ...withoutAgentProgress(snapshotAgent),
               freshness: "stale" as const,
               requiresAttention: true,
             }
@@ -331,6 +337,7 @@ export class SqliteEventStore implements EventStore {
         return this.upsertProject(event.payload);
       case "agent.upserted":
       case "agent.state.changed":
+      case "agent.progress.changed":
         return this.upsertAgent(event.payload, event.occurredAt);
       case "agent.freshness.changed": {
         const agent = { ...(event.payload.agent as Agent) };
@@ -897,7 +904,7 @@ export class SqliteEventStore implements EventStore {
     const output: CanonicalEvent[] = [];
     for (const row of rows) {
       const agent = {
-        ...parse<Agent>(row.document),
+        ...withoutAgentProgress(parse<Agent>(row.document)),
         freshness: "stale" as const,
         requiresAttention: true,
       };

@@ -12,6 +12,10 @@ describe("Stream Deck refresh planning", () => {
       "agents",
       "attention",
     ]);
+    expect([...refreshResourcesForEvent("agent.progress.changed")]).toEqual([
+      "agents",
+      "attention",
+    ]);
     expect([...refreshResourcesForEvent("provider.health.changed")]).toEqual([
       "providers",
       "attention",

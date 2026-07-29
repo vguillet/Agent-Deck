@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import type { ProviderEvent } from "@agent-deck/domain";
+import type { Agent, ProviderEvent } from "@agent-deck/domain";
 import type {
   ProviderContext,
   ProviderIngressRegistration,
@@ -111,6 +111,55 @@ describe("Cursor local provider", () => {
     await harness.close();
   });
 
+  it("tracks sanitized activity and explicit plan counts", async () => {
+    const harness = await setup();
+    const base = {
+      conversation_id: "conversation-progress",
+      generation_id: "generation-progress",
+      workspace_roots: ["/workspace/alpha"],
+    };
+    await harness.handle({
+      ...base,
+      hook_event_name: "beforeSubmitPrompt",
+    });
+    await harness.handle({
+      ...base,
+      hook_event_name: "preToolUse",
+      tool_use_id: "tool-plan",
+      agent_activity: "planning",
+      plan_progress: { completed: 2, total: 4 },
+    });
+    expect((await harness.plugin.discover()).agents[0]?.progress).toMatchObject(
+      {
+        activity: "planning",
+        plan: { completed: 2, total: 4 },
+      },
+    );
+    expect(
+      harness.events.some((event) => event.type === "agent.progress.changed"),
+    ).toBe(true);
+    expect(
+      (
+        JSON.parse(harness.checkpoint()!) as {
+          agents: Agent[];
+        }
+      ).agents[0]?.progress,
+    ).toMatchObject({
+      activity: "planning",
+      plan: { completed: 2, total: 4 },
+    });
+
+    await harness.handle({
+      ...base,
+      hook_event_name: "stop",
+      status: "completed",
+    });
+    expect(
+      (await harness.plugin.discover()).agents[0]?.progress,
+    ).toBeUndefined();
+    await harness.close();
+  });
+
   it("ignores late events from an older generation", async () => {
     const harness = await setup();
     const base = {
@@ -175,7 +224,7 @@ describe("Cursor local provider", () => {
       generation_id: "generation-question",
       workspace_roots: ["/workspace/alpha"],
       tool_use_id: "tool-question",
-      tool_name: "AskQuestion",
+      agent_activity: "waiting",
     };
     await harness.handle({
       ...base,
@@ -209,7 +258,7 @@ describe("Cursor local provider", () => {
       generation_id: "generation-signalled-question",
       workspace_roots: ["/workspace/alpha"],
       tool_use_id: "tool-signal",
-      tool_name: "Shell",
+      agent_activity: "executing",
       agent_signal: "question_started",
     };
     await harness.handle({ ...base, hook_event_name: "preToolUse" });

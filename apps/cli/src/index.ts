@@ -46,6 +46,16 @@ const option = (name: string): string | undefined => {
   return index >= 0 ? args[index + 1] : undefined;
 };
 
+const progressSteps = (agent: Agent): string => {
+  const plan = agent.progress?.plan;
+  if (!plan) return "";
+  const current = Math.min(
+    plan.total,
+    plan.completed + Number(plan.completed < plan.total),
+  );
+  return `${current}/${plan.total}`;
+};
+
 const printAgents = (agents: Agent[]): void => {
   if (flag("--json")) {
     console.log(JSON.stringify(agents, null, 2));
@@ -57,6 +67,8 @@ const printAgents = (agents: Agent[]): void => {
       state: agent.state,
       fresh: agent.freshness,
       attention: agent.requiresAttention ? "yes" : "",
+      activity: agent.progress?.activity ?? "",
+      steps: progressSteps(agent),
       title: agent.title,
       updated: agent.lastActivityAt,
     })),

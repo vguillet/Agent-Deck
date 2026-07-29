@@ -43,6 +43,7 @@ import {
   agentLabelOverflows,
   agentLabelSvg,
 } from "./agent-label.js";
+import { agentProgressSvg } from "./agent-progress.js";
 import {
   connectorBubblesOverflow,
   connectorBubblesSvg,
@@ -496,6 +497,7 @@ const agentIcon = (
         `${scene}
       ${agentLabelBackgroundSvg()}
       ${agentLabelSvg(agent.title, animation.elapsedMs)}
+      ${agentProgressSvg(agent.progress, agent.state)}
       ${staticVisuals.modeFrame}
       ${staticVisuals.providerLogo}
       ${staticVisuals.modeIcon}

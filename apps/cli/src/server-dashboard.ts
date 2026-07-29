@@ -43,6 +43,16 @@ const truncate = (value: string, length: number): string =>
     ? value
     : `${value.slice(0, Math.max(1, length - 1))}…`;
 
+const planPosition = (agent: Agent): string => {
+  const plan = agent.progress?.plan;
+  if (!plan) return "";
+  const current = Math.min(
+    plan.total,
+    plan.completed + Number(plan.completed < plan.total),
+  );
+  return ` ${current}/${plan.total}`;
+};
+
 export const formatServerDashboard = (
   snapshot: ServerDashboardSnapshot,
   width = 100,
@@ -90,9 +100,12 @@ export const formatServerDashboard = (
     lines.push("  ○ No fresh agents");
   } else {
     for (const agent of alive) {
+      const progress = agent.progress
+        ? ` · ${agent.progress.activity}${planPosition(agent)}`
+        : "";
       lines.push(
         truncate(
-          `  ${symbol(agent.state)} ${agent.title} · ${agent.state} · ${agent.providerId} · ${age(agent.lastActivityAt, now)}`,
+          `  ${symbol(agent.state)} ${agent.title} · ${agent.state}${progress} · ${agent.providerId} · ${age(agent.lastActivityAt, now)}`,
           width,
         ),
       );

@@ -31,6 +31,7 @@ export const refreshResourcesForEvent = (
   if (
     type === "agent.upserted" ||
     type === "agent.state.changed" ||
+    type === "agent.progress.changed" ||
     type === "agent.freshness.changed" ||
     type === "run.upserted" ||
     type === "run.state.changed"

@@ -74,7 +74,25 @@ const HookSchema = z
     cwd: z.string(),
     turn_id: z.string().optional(),
     tool_use_id: z.string().optional(),
-    tool_name: z.string().optional(),
+    agent_activity: z
+      .enum([
+        "planning",
+        "exploring",
+        "researching",
+        "editing",
+        "executing",
+        "delegating",
+        "waiting",
+        "working",
+      ])
+      .optional(),
+    plan_progress: z
+      .object({
+        completed: z.number().int().nonnegative(),
+        total: z.number().int().nonnegative(),
+      })
+      .refine((plan) => plan.completed <= plan.total)
+      .optional(),
     permission_mode: z.string().optional(),
     status: z.string().optional(),
     final_status: z.string().optional(),
@@ -170,16 +188,17 @@ const runTerminalState = (input: HookInput): AgentRun["state"] => {
 };
 
 const isQuestionTool = (input: HookInput): boolean => {
-  const normalized = input.tool_name?.replaceAll(/[-_]/g, "").toLowerCase();
-  return (
-    input.agent_signal === "question_started" ||
-    normalized === "requestuserinput" ||
-    normalized === "askquestion"
-  );
+  return input.agent_signal === "question_started";
 };
 
 const modeFor = (permissionMode: string | undefined): string | undefined =>
   permissionMode?.trim().toLowerCase() === "plan" ? "plan" : undefined;
+
+const withoutProgress = (agent: Agent): Agent => {
+  const copy = { ...agent };
+  delete copy.progress;
+  return copy;
+};
 
 const ACTIVE_HOOK_EVENTS = new Set([
   "UserPromptSubmit",
@@ -333,6 +352,9 @@ class CodexProvider implements AgentProviderPlugin {
           lastActivityAt: updatedAt,
           revision: existing?.revision ?? 0,
           ...(sourceRevision !== undefined ? { sourceRevision } : {}),
+          ...(isActiveAgentState(state) && existing?.progress
+            ? { progress: existing.progress }
+            : {}),
           archived: false,
           capabilities: {
             messages: false,
@@ -449,7 +471,7 @@ class CodexProvider implements AgentProviderPlugin {
       const expiredAgents = [...previousAgents.values()]
         .filter((agent) => !this.agents.has(agent.id))
         .map((agent): Agent => ({
-          ...agent,
+          ...withoutProgress(agent),
           freshness: "stale",
           requiresAttention: false,
           sourceRevision: this.nextSourceRevision(agent.externalId),
@@ -520,7 +542,7 @@ class CodexProvider implements AgentProviderPlugin {
     const now = this.context?.now() ?? new Date().toISOString();
     const sourceRevision = this.nextSourceRevision(agent.externalId);
     const cancelledAgent: Agent = {
-      ...agent,
+      ...withoutProgress(agent),
       sourceRevision,
       state: "cancelled",
       requiresAttention: false,
@@ -633,6 +655,30 @@ class CodexProvider implements AgentProviderPlugin {
                 input.hook_event_name === "PostToolUse"
               ? "running"
               : (existing?.state ?? "idle");
+    const terminal =
+      input.hook_event_name === "Stop" ||
+      input.hook_event_name === "SessionEnd";
+    const activity =
+      input.agent_signal === "question_started"
+        ? "waiting"
+        : completesQuestion
+          ? "working"
+          : input.agent_activity;
+    const progress = terminal
+      ? undefined
+      : startsTurn
+        ? { activity: "working" as const, observedAt: now }
+        : activity
+          ? {
+              activity,
+              ...(input.plan_progress
+                ? { plan: input.plan_progress }
+                : existing?.progress?.plan
+                  ? { plan: existing.progress.plan }
+                  : {}),
+              observedAt: now,
+            }
+          : existing?.progress;
     const runId = input.turn_id
       ? canonicalId(PROVIDER_ID, `${input.session_id}:${input.turn_id}`)
       : existing?.activeRunId;
@@ -668,6 +714,7 @@ class CodexProvider implements AgentProviderPlugin {
       lastActivityAt: now,
       revision: existing?.revision ?? 0,
       sourceRevision,
+      ...(progress ? { progress } : {}),
       archived: false,
       capabilities: {
         messages: false,
@@ -688,7 +735,11 @@ class CodexProvider implements AgentProviderPlugin {
     await this.emitEvent({
       providerId: PROVIDER_ID,
       providerEventId: this.eventId("agent", input, sourceRevision),
-      type: existing ? "agent.state.changed" : "agent.upserted",
+      type: existing
+        ? existing.state === agent.state
+          ? "agent.progress.changed"
+          : "agent.state.changed"
+        : "agent.upserted",
       occurredAt: now,
       agentId: id,
       ...(runId ? { runId } : {}),
@@ -696,9 +747,6 @@ class CodexProvider implements AgentProviderPlugin {
     });
     if (runId) {
       const previous = this.runs.get(runId);
-      const terminal =
-        input.hook_event_name === "Stop" ||
-        input.hook_event_name === "SessionEnd";
       const run: AgentRun = {
         id: runId,
         agentId: id,
@@ -750,7 +798,9 @@ class CodexProvider implements AgentProviderPlugin {
       input.session_id,
       input.turn_id ?? "",
       input.tool_use_id ?? "",
-      input.tool_name ?? "",
+      input.agent_activity ?? "",
+      input.plan_progress?.completed ?? "",
+      input.plan_progress?.total ?? "",
       input.permission_mode ?? "",
       input.status ?? "",
       input.final_status ?? "",

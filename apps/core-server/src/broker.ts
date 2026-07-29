@@ -36,6 +36,7 @@ const topicsForEvent = (event: CanonicalEvent): Topic[] => {
     return ["providers.health", "system.health"];
   if (
     event.type === "agent.state.changed" ||
+    event.type === "agent.progress.changed" ||
     event.type === "agent.freshness.changed" ||
     event.type === "agent.upserted"
   )

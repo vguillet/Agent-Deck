@@ -8,6 +8,9 @@ provider-specific logic.
 This developer preview is metadata-only and binds only to `127.0.0.1`. Its
 only control operation is an explicit request to stop an agent. It does not
 store prompts, messages, tool arguments, command output, diffs, or artifacts.
+For Codex and local Cursor, it can display an allowlisted coarse activity and
+numeric plan completion. Plan counts appear only when a recognized plan/Todo
+tool supplies structured statuses; step text is discarded before ingestion.
 
 ## Requirements
 
@@ -62,6 +65,9 @@ after their next lifecycle or tool event; Agent Deck does not scan Cursor
 transcripts, logs, or internal databases. Local hooks expose running,
 ready-for-review, failed, cancelled, and native question-waiting states. No
 Cursor API key is needed for this provider.
+The fail-open `sessionStart` hook also adds a privacy-safe reporting instruction:
+before todo updates, the agent sends only completed and total counts through a
+no-op shell sentinel. Step text remains local to Cursor.
 
 Install the companion extension that lets Stream Deck keys open exact local
 Cursor IDE conversations and Codex threads:

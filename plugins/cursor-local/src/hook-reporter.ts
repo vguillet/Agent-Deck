@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { sanitizeCursorHook } from "./hook-payload.js";
+import { cursorHookResponse, sanitizeCursorHook } from "./hook-payload.js";
 
 const chunks: Buffer[] = [];
 for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
@@ -27,10 +27,10 @@ if (sanitized) {
       signal: controller.signal,
     });
   } catch {
-    // Observability must never block or steer Cursor.
+    // Reporting transport failures must never block Cursor.
   } finally {
     clearTimeout(timeout);
   }
 }
 
-process.stdout.write("{}\n");
+process.stdout.write(`${JSON.stringify(cursorHookResponse(sanitized))}\n`);

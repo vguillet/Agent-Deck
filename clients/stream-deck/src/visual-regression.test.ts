@@ -7,6 +7,7 @@ import {
   removedAgentLookScene,
 } from "./agent-look.js";
 import { agentLabelSvg } from "./agent-label.js";
+import { agentProgressSvg } from "./agent-progress.js";
 import { agentStateIndicatorSvg } from "./agent-state-indicator.js";
 import { connectorBubblesSvg } from "./connector-bubbles.js";
 import { workspaceBadgeSvg } from "./workspace-badge.js";
@@ -56,5 +57,17 @@ describe("Stream Deck visual regression", () => {
     expect(digest(frames)).toBe(
       "f083359ab549cde276370733d07687c44f3ab63d483a8b70dc27f4d40c7f0239",
     );
+    expect(
+      digest([
+        agentProgressSvg(
+          {
+            activity: "planning",
+            plan: { completed: 2, total: 5 },
+            observedAt: "2026-07-28T09:00:00.000Z",
+          },
+          "running",
+        ),
+      ]),
+    ).toBe("181115196430c368615f11e47020b2f3da9633b4f1c5151111d688c672ea3e44");
   });
 });
