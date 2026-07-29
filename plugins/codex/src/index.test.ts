@@ -127,7 +127,7 @@ describe("Codex provider hook ingestion", () => {
       cwd: "/workspace/aquila",
       updatedAt: 1_785_256_000,
       status: { type: "notLoaded" },
-      turns: [{ id: "turn_test", status: "inProgress" }],
+      turns: [{ id: "turn_previous", status: "completed" }],
     });
     const plugin = createProviderPlugin();
     let ingress: ProviderIngressRegistration | undefined;
@@ -175,6 +175,107 @@ describe("Codex provider hook ingestion", () => {
     });
 
     await stop();
+    await plugin.dispose();
+  });
+
+  it("preserves a thinking session when Codex hooks omit the turn id", async () => {
+    vi.spyOn(CodexAppServerClient.prototype, "listThreads").mockResolvedValue([
+      {
+        id: "thr_without_turn",
+        cwd: "/workspace/aquila",
+        status: { type: "notLoaded" },
+      },
+    ]);
+    vi.spyOn(CodexAppServerClient.prototype, "readThread").mockResolvedValue({
+      id: "thr_without_turn",
+      cwd: "/workspace/aquila",
+      status: { type: "notLoaded" },
+      turns: [{ id: "turn_previous", status: "interrupted" }],
+    });
+    const plugin = createProviderPlugin();
+    let ingress: ProviderIngressRegistration | undefined;
+    await plugin.initialise(
+      contextFor((registration) => {
+        ingress = registration;
+      }),
+    );
+
+    await ingress?.handle({
+      session_id: "thr_without_turn",
+      hook_event_name: "UserPromptSubmit",
+      cwd: "/workspace/aquila",
+    });
+    expect((await plugin.discover()).agents[0]).toMatchObject({
+      state: "running",
+      requiresAttention: false,
+    });
+
+    await ingress?.handle({
+      session_id: "thr_without_turn",
+      hook_event_name: "Stop",
+      cwd: "/workspace/aquila",
+    });
+    expect((await plugin.discover()).agents[0]).toMatchObject({
+      state: "ready_for_review",
+    });
+
+    await ingress?.handle({
+      session_id: "thr_without_turn",
+      hook_event_name: "UserPromptSubmit",
+      cwd: "/workspace/aquila",
+    });
+    expect((await plugin.discover()).agents[0]).toMatchObject({
+      state: "running",
+      requiresAttention: false,
+    });
+    await plugin.dispose();
+  });
+
+  it("keeps tool and question hooks authoritative without a prompt hook", async () => {
+    vi.spyOn(CodexAppServerClient.prototype, "listThreads").mockResolvedValue([
+      {
+        id: "thr_tool_only",
+        cwd: "/workspace/aquila",
+        status: { type: "notLoaded" },
+      },
+    ]);
+    vi.spyOn(CodexAppServerClient.prototype, "readThread").mockResolvedValue({
+      id: "thr_tool_only",
+      cwd: "/workspace/aquila",
+      status: { type: "notLoaded" },
+      turns: [{ id: "turn_previous", status: "interrupted" }],
+    });
+    const plugin = createProviderPlugin();
+    let ingress: ProviderIngressRegistration | undefined;
+    await plugin.initialise(
+      contextFor((registration) => {
+        ingress = registration;
+      }),
+    );
+
+    await ingress?.handle({
+      session_id: "thr_tool_only",
+      hook_event_name: "PreToolUse",
+      cwd: "/workspace/aquila",
+      tool_use_id: "question_1",
+      tool_name: "request_user_input",
+    });
+    expect((await plugin.discover()).agents[0]).toMatchObject({
+      state: "waiting_for_input",
+      requiresAttention: true,
+    });
+
+    await ingress?.handle({
+      session_id: "thr_tool_only",
+      hook_event_name: "PostToolUse",
+      cwd: "/workspace/aquila",
+      tool_use_id: "question_1",
+      tool_name: "request_user_input",
+    });
+    expect((await plugin.discover()).agents[0]).toMatchObject({
+      state: "running",
+      requiresAttention: false,
+    });
     await plugin.dispose();
   });
 

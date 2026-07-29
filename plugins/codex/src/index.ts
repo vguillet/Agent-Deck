@@ -84,11 +84,14 @@ const HookSchema = z
   .strip();
 
 type HookInput = z.infer<typeof HookSchema>;
+type Thread = z.infer<typeof ThreadSchema>;
+type ThreadTurn = NonNullable<Thread["turns"]>[number];
 
 interface Registry {
   version: 1;
   agents: Agent[];
   runs: AgentRun[];
+  activeSessions: string[];
   activeTurns: Array<[string, string]>;
   sourceRevisions: Array<[string, number]>;
   questionToolUses: Array<[string, string]>;
@@ -115,6 +118,19 @@ const waitingState = (
   if (status?.activeFlags?.includes("waitingOnApproval"))
     return "waiting_for_approval";
   return undefined;
+};
+
+const currentTurnForDiscovery = (
+  turns: ThreadTurn[] | undefined,
+  hookTurnId: string | undefined,
+): ThreadTurn | undefined => {
+  if (!hookTurnId) return turns?.at(-1);
+  return (
+    turns?.find((turn) => turn.id === hookTurnId) ?? {
+      id: hookTurnId,
+      status: "inProgress",
+    }
+  );
 };
 
 const mapState = (
@@ -165,6 +181,13 @@ const isQuestionTool = (input: HookInput): boolean => {
 const modeFor = (permissionMode: string | undefined): string | undefined =>
   permissionMode?.trim().toLowerCase() === "plan" ? "plan" : undefined;
 
+const ACTIVE_HOOK_EVENTS = new Set([
+  "UserPromptSubmit",
+  "PreToolUse",
+  "PermissionRequest",
+  "PostToolUse",
+]);
+
 class CodexProvider implements AgentProviderPlugin {
   readonly manifest = {
     id: "codex",
@@ -183,6 +206,7 @@ class CodexProvider implements AgentProviderPlugin {
   private emit: ProviderEventEmitter | undefined;
   private readonly agents = new Map<string, Agent>();
   private readonly runs = new Map<string, AgentRun>();
+  private readonly activeSessions = new Set<string>();
   private readonly activeTurns = new Map<string, string>();
   private readonly sourceRevisions = new Map<string, number>();
   private readonly questionToolUses = new Map<string, string>();
@@ -247,12 +271,15 @@ class CodexProvider implements AgentProviderPlugin {
         );
         const project = resources.projects[0];
         const workspace = resources.workspace;
-        const activeTurn = thread.turns?.at(-1);
-        const state = mapState(
-          thread.status,
-          existing?.state,
-          activeTurn?.status,
-        );
+        const hookTurnId = this.activeTurns.get(thread.id);
+        const hookSessionActive = this.activeSessions.has(thread.id);
+        const hookSessionWithoutTurn = hookSessionActive && !hookTurnId;
+        const activeTurn = hookSessionWithoutTurn
+          ? undefined
+          : currentTurnForDiscovery(thread.turns, hookTurnId);
+        const state = hookSessionWithoutTurn
+          ? (existing?.state ?? "running")
+          : mapState(thread.status, existing?.state, activeTurn?.status);
         const discoveredAt = timestamp(thread.updatedAt, now);
         const updatedAt =
           existing && existing.lastActivityAt > discoveredAt
@@ -352,8 +379,10 @@ class CodexProvider implements AgentProviderPlugin {
             metadata: existingRun?.metadata ?? {},
           };
           nextRuns.set(run.id, run);
-          if (activeTurn.status !== "inProgress")
+          if (activeTurn.status !== "inProgress") {
+            this.activeSessions.delete(thread.id);
             this.activeTurns.delete(thread.id);
+          }
         }
       }
       for (const agent of this.agents.values()) {
@@ -410,6 +439,9 @@ class CodexProvider implements AgentProviderPlugin {
         if (!this.agents.has(canonicalId(PROVIDER_ID, sessionId)))
           this.activeTurns.delete(sessionId);
       }
+      for (const sessionId of this.activeSessions)
+        if (!this.agents.has(canonicalId(PROVIDER_ID, sessionId)))
+          this.activeSessions.delete(sessionId);
       for (const sessionId of this.questionToolUses.keys()) {
         if (!this.agents.has(canonicalId(PROVIDER_ID, sessionId)))
           this.questionToolUses.delete(sessionId);
@@ -502,6 +534,7 @@ class CodexProvider implements AgentProviderPlugin {
     };
     this.agents.set(cancelledAgent.id, cancelledAgent);
     this.runs.set(cancelledRun.id, cancelledRun);
+    this.activeSessions.delete(agent.externalId);
     this.activeTurns.delete(agent.externalId);
     await this.emitEvent({
       providerId: "codex",
@@ -546,8 +579,11 @@ class CodexProvider implements AgentProviderPlugin {
 
   private async consumeHook(input: HookInput): Promise<void> {
     if (!this.context) return;
-    const hookId = this.eventId("hook", input);
-    if (this.seenHooks.has(hookId)) return;
+    const deduplicationId =
+      input.turn_id || input.tool_use_id
+        ? this.eventId("hook", input)
+        : undefined;
+    if (deduplicationId && this.seenHooks.has(deduplicationId)) return;
 
     const currentTurn = this.activeTurns.get(input.session_id);
     const startsTurn = input.hook_event_name === "UserPromptSubmit";
@@ -558,8 +594,12 @@ class CodexProvider implements AgentProviderPlugin {
       input.turn_id !== currentTurn
     )
       return;
-    if (startsTurn && input.turn_id)
-      this.activeTurns.set(input.session_id, input.turn_id);
+    if (ACTIVE_HOOK_EVENTS.has(input.hook_event_name))
+      this.activeSessions.add(input.session_id);
+    if (startsTurn) {
+      if (input.turn_id) this.activeTurns.set(input.session_id, input.turn_id);
+      else this.activeTurns.delete(input.session_id);
+    }
 
     const now = this.context.now();
     const id = canonicalId(PROVIDER_ID, input.session_id);
@@ -647,7 +687,7 @@ class CodexProvider implements AgentProviderPlugin {
     this.agents.set(id, agent);
     await this.emitEvent({
       providerId: PROVIDER_ID,
-      providerEventId: this.eventId("agent", input),
+      providerEventId: this.eventId("agent", input, sourceRevision),
       type: existing ? "agent.state.changed" : "agent.upserted",
       occurredAt: now,
       agentId: id,
@@ -682,7 +722,7 @@ class CodexProvider implements AgentProviderPlugin {
       this.runs.set(runId, run);
       await this.emitEvent({
         providerId: PROVIDER_ID,
-        providerEventId: this.eventId("run", input),
+        providerEventId: this.eventId("run", input, sourceRevision),
         type: previous ? "run.state.changed" : "run.upserted",
         occurredAt: now,
         agentId: id,
@@ -694,14 +734,16 @@ class CodexProvider implements AgentProviderPlugin {
     if (
       (input.hook_event_name === "Stop" ||
         input.hook_event_name === "SessionEnd") &&
-      (!input.turn_id || input.turn_id === currentTurn)
-    )
+      (!currentTurn || !input.turn_id || input.turn_id === currentTurn)
+    ) {
+      this.activeSessions.delete(input.session_id);
       this.activeTurns.delete(input.session_id);
-    this.rememberHook(hookId);
+    }
+    if (deduplicationId) this.rememberHook(deduplicationId);
     await this.persist();
   }
 
-  private eventId(kind: string, input: HookInput): string {
+  private eventId(kind: string, input: HookInput, occurrence?: number): string {
     const material = JSON.stringify([
       kind,
       input.hook_event_name,
@@ -714,6 +756,7 @@ class CodexProvider implements AgentProviderPlugin {
       input.final_status ?? "",
       input.reason ?? "",
       input.agent_signal ?? "",
+      occurrence ?? "",
     ]);
     return `hook:${createHash("sha256").update(material).digest("base64url")}`;
   }
@@ -737,6 +780,7 @@ class CodexProvider implements AgentProviderPlugin {
       version: 1,
       agents: [...this.agents.values()],
       runs: [...this.runs.values()],
+      activeSessions: [...this.activeSessions],
       activeTurns: [...this.activeTurns.entries()],
       sourceRevisions: [...this.sourceRevisions.entries()],
       questionToolUses: [...this.questionToolUses.entries()],
@@ -761,8 +805,12 @@ class CodexProvider implements AgentProviderPlugin {
           this.sourceRevisions.set(agent.externalId, agent.sourceRevision);
       }
       for (const run of registry.runs ?? []) this.runs.set(run.id, run);
-      for (const [session, turn] of registry.activeTurns ?? [])
+      for (const session of registry.activeSessions ?? [])
+        this.activeSessions.add(session);
+      for (const [session, turn] of registry.activeTurns ?? []) {
         this.activeTurns.set(session, turn);
+        this.activeSessions.add(session);
+      }
       for (const [session, revision] of registry.sourceRevisions ?? [])
         this.sourceRevisions.set(session, revision);
       for (const [session, toolUse] of registry.questionToolUses ?? [])
