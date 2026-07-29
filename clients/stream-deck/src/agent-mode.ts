@@ -4,13 +4,14 @@ export type AgentMode = "ask" | "plan" | "debug";
 
 export interface AgentModeStyle {
   colour: string;
+  frameColour?: string;
   icon: AgentMode;
 }
 
 const styles: Record<AgentMode, AgentModeStyle> = {
   plan: { colour: "#f1b467", icon: "plan" },
   debug: { colour: "#e34671", icon: "debug" },
-  ask: { colour: "#3fa266", icon: "ask" },
+  ask: { colour: "#3fa266", frameColour: "#1c492e", icon: "ask" },
 };
 
 export const agentModeStyle = (
@@ -24,3 +25,9 @@ export const agentModeStyle = (
     ? styles[mode as AgentMode]
     : undefined;
 };
+
+export const agentEdgeFrameSvg = (colour: string): string =>
+  `<path d="M0 0H144V144H0Z M7 7H137V137H7Z" fill="${colour}" fill-rule="evenodd"/>`;
+
+export const agentModeFrameSvg = (style: AgentModeStyle): string =>
+  agentEdgeFrameSvg(style.frameColour ?? style.colour);

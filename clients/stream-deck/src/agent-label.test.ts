@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentLabelBackgroundSvg,
   agentLabelOverflows,
   agentLabelSvg,
   agentLabelWidth,
 } from "./agent-label.js";
 
 describe("Stream Deck agent labels", () => {
+  it("renders the label background across the full key width", () => {
+    expect(agentLabelBackgroundSvg()).toBe(
+      '<rect x="0" y="7" width="144" height="26" fill="#000" opacity=".34"/>',
+    );
+    expect(agentLabelBackgroundSvg()).not.toContain("clip-path");
+  });
+
   it("keeps labels that fit centred and static", () => {
     expect(agentLabelOverflows("Fix login")).toBe(false);
     expect(agentLabelSvg("Fix login", 0)).toBe(
@@ -24,14 +32,14 @@ describe("Stream Deck agent labels", () => {
     expect(agentLabelOverflows(label)).toBe(true);
     expect(initial).toContain('clip-path="url(#agent-label-clip)"');
     expect(initial).toContain('x="13.00"');
-    expect(later).toContain('x="-17.00"');
+    expect(later).toContain('x="-32.00"');
     expect(later).not.toBe(initial);
     expect(initial.match(/Implement continuous/g)).toHaveLength(2);
   });
 
   it("wraps back to the same frame after one complete label cycle", () => {
     const label = "A deliberately wide agent label";
-    const cycleMs = ((agentLabelWidth(label) + 28) / 30) * 1_000;
+    const cycleMs = ((agentLabelWidth(label) + 28) / 45) * 1_000;
 
     expect(agentLabelSvg(label, cycleMs)).toBe(agentLabelSvg(label, 0));
   });

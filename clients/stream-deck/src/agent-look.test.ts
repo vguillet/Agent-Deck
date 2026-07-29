@@ -25,7 +25,8 @@ describe("agent key look", () => {
     const first = agentLookScene(state, `agent:${state}`, 0);
     const later = agentLookScene(state, `agent:${state}`, 700);
 
-    expect(first).toContain('<rect width="144" height="144"');
+    expect(first).toContain('<rect width="144" height="144" fill="');
+    expect(first).not.toContain('<rect width="144" height="144" rx="24"');
     expect(first).toContain('fill="#ffffff"');
     expect(first).not.toContain("Gradient");
     expect(first).not.toMatch(/NaN|undefined/);

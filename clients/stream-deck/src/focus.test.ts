@@ -4,6 +4,7 @@ import {
   AgentPressDetector,
   createMacOSFocusLauncher,
   focusAgent,
+  LongPressDetector,
   RenderedAgentTargets,
 } from "./focus.js";
 
@@ -29,6 +30,25 @@ const agent = (id: string, href?: string): Agent => ({
 });
 
 describe("Stream Deck agent focus", () => {
+  it("only dispatches a destructive button action after a long press", () => {
+    vi.useFakeTimers();
+    const detector = new LongPressDetector(650);
+    const longPress = vi.fn();
+
+    detector.keyDown("overview", longPress);
+    vi.advanceTimersByTime(649);
+    detector.keyUp("overview");
+    expect(longPress).not.toHaveBeenCalled();
+
+    detector.keyDown("overview", longPress);
+    vi.advanceTimersByTime(650);
+    detector.keyDown("overview", longPress);
+    vi.advanceTimersByTime(650);
+    detector.keyUp("overview");
+    expect(longPress).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
   it("dispatches a single press immediately for the latched agent", () => {
     vi.useFakeTimers();
     const detector = new AgentPressDetector(650);

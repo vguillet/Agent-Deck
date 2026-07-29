@@ -30,6 +30,15 @@ export class CodexAppServerClient {
     return output;
   }
 
+  async readThread(threadId: string): Promise<unknown> {
+    await this.ensureStarted();
+    const result = (await this.request("thread/read", {
+      threadId,
+      includeTurns: true,
+    })) as { thread?: unknown };
+    return result.thread;
+  }
+
   async version(): Promise<string> {
     await this.ensureStarted();
     return "available";

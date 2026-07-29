@@ -113,7 +113,7 @@ describe("Codex provider hook ingestion", () => {
     await plugin.dispose();
   });
 
-  it("preserves hook state when discovery sees the thread as not loaded", async () => {
+  it("preserves hook state when a not-loaded thread still has an active turn", async () => {
     vi.spyOn(CodexAppServerClient.prototype, "listThreads").mockResolvedValue([
       {
         id: "thr_test",
@@ -122,6 +122,13 @@ describe("Codex provider hook ingestion", () => {
         status: { type: "notLoaded" },
       },
     ]);
+    vi.spyOn(CodexAppServerClient.prototype, "readThread").mockResolvedValue({
+      id: "thr_test",
+      cwd: "/workspace/aquila",
+      updatedAt: 1_785_256_000,
+      status: { type: "notLoaded" },
+      turns: [{ id: "turn_test", status: "inProgress" }],
+    });
     const plugin = createProviderPlugin();
     let ingress: ProviderIngressRegistration | undefined;
     const context: ProviderContext = {
@@ -164,10 +171,54 @@ describe("Codex provider hook ingestion", () => {
       cwd: "/workspace/aquila",
     });
     expect((await plugin.discover()).agents[0]).toMatchObject({
-      state: "idle",
+      state: "ready_for_review",
     });
 
     await stop();
+    await plugin.dispose();
+  });
+
+  it("detects a manually interrupted turn when Codex unloads it", async () => {
+    vi.spyOn(CodexAppServerClient.prototype, "listThreads").mockResolvedValue([
+      {
+        id: "thr_test",
+        cwd: "/workspace/aquila",
+        updatedAt: 1_785_256_000,
+        status: { type: "notLoaded" },
+      },
+    ]);
+    vi.spyOn(CodexAppServerClient.prototype, "readThread").mockResolvedValue({
+      id: "thr_test",
+      cwd: "/workspace/aquila",
+      updatedAt: 1_785_256_000,
+      status: { type: "notLoaded" },
+      turns: [{ id: "turn_test", status: "interrupted" }],
+    });
+    const plugin = createProviderPlugin();
+    let ingress: ProviderIngressRegistration | undefined;
+    await plugin.initialise(
+      contextFor((registration) => {
+        ingress = registration;
+      }),
+    );
+
+    await ingress?.handle({
+      session_id: "thr_test",
+      hook_event_name: "UserPromptSubmit",
+      cwd: "/workspace/aquila",
+      turn_id: "turn_test",
+    });
+    const snapshot = await plugin.discover();
+
+    expect(snapshot.agents[0]).toMatchObject({
+      state: "cancelled",
+      activeRunId: "codex:thr_test:turn_test",
+      requiresAttention: false,
+    });
+    expect(snapshot.runs[0]).toMatchObject({
+      externalId: "turn_test",
+      state: "cancelled",
+    });
     await plugin.dispose();
   });
 

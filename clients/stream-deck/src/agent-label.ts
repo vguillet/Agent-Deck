@@ -4,7 +4,7 @@ const LABEL_VIEWPORT_X = 13;
 const LABEL_VIEWPORT_WIDTH = 118;
 const LABEL_BASELINE_Y = 25;
 const LABEL_GAP = 28;
-const LABEL_SCROLL_SPEED = 30;
+const LABEL_SCROLL_SPEED = 45;
 
 const escapeXml = (value: string): string =>
   value
@@ -33,6 +33,9 @@ export const agentLabelWidth = (value: string): number =>
 
 export const agentLabelOverflows = (value: string): boolean =>
   agentLabelWidth(value) > LABEL_VIEWPORT_WIDTH;
+
+export const agentLabelBackgroundSvg = (): string =>
+  '<rect x="0" y="7" width="144" height="26" fill="#000" opacity=".34"/>';
 
 const labelText = (value: string, x: number, textLength?: number): string =>
   `<text x="${x.toFixed(2)}" y="${LABEL_BASELINE_Y}" text-anchor="${textLength === undefined ? "middle" : "start"}" font-family="system-ui" font-size="${FONT_SIZE}" font-weight="650" fill="white"${textLength === undefined ? "" : ` textLength="${textLength.toFixed(2)}" lengthAdjust="spacingAndGlyphs"`}>${escapeXml(value)}</text>`;

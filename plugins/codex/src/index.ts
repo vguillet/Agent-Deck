@@ -110,7 +110,11 @@ const cursorCodexFocusLink = (threadId: string, cwd: string): string => {
 const mapState = (
   status: z.infer<typeof ThreadSchema>["status"],
   previousState?: Agent["state"],
+  turnStatus?: string,
 ): Agent["state"] => {
+  if (turnStatus === "failed") return "failed";
+  if (turnStatus === "interrupted") return "cancelled";
+  if (turnStatus && turnStatus !== "inProgress") return "ready_for_review";
   if (!status) return "unknown";
   if (status.type === "systemError") return "failed";
   if (status.type === "active") {
@@ -131,7 +135,7 @@ const agentTerminalState = (input: HookInput): Agent["state"] => {
   const status = terminalStatus(input);
   if (status.includes("error") || status.includes("fail")) return "failed";
   if (status.includes("abort") || status.includes("cancel")) return "cancelled";
-  return input.hook_event_name === "Stop" ? "ready_for_review" : "idle";
+  return "ready_for_review";
 };
 
 const runTerminalState = (input: HookInput): AgentRun["state"] => {
@@ -214,9 +218,20 @@ class CodexProvider implements AgentProviderPlugin {
       const nextRuns = new Map<string, AgentRun>();
       const projects = new Map<string, Project>();
       const workspaces = new Map<string, Workspace>();
-      for (const thread of threads) {
+      for (const listedThread of threads) {
+        let thread = listedThread;
         const agentId = canonicalId("codex", thread.id);
         const existing = this.agents.get(agentId);
+        if (
+          thread.status?.type === "notLoaded" &&
+          existing &&
+          isActiveAgentState(existing.state)
+        ) {
+          const detailed = ThreadSchema.safeParse(
+            await this.client.readThread(thread.id).catch(() => undefined),
+          );
+          if (detailed.success) thread = detailed.data;
+        }
         const cwd = thread.cwd ? resolve(thread.cwd) : "";
         const resources = workspaceResourcesForRoots(
           PROVIDER_ID,
@@ -224,13 +239,17 @@ class CodexProvider implements AgentProviderPlugin {
         );
         const project = resources.projects[0];
         const workspace = resources.workspace;
-        const state = mapState(thread.status, existing?.state);
+        const activeTurn = thread.turns?.at(-1);
+        const state = mapState(
+          thread.status,
+          existing?.state,
+          activeTurn?.status,
+        );
         const discoveredAt = timestamp(thread.updatedAt, now);
         const updatedAt =
           existing && existing.lastActivityAt > discoveredAt
             ? existing.lastActivityAt
             : discoveredAt;
-        const activeTurn = thread.turns?.at(-1);
         const discoveredRunId = activeTurn
           ? canonicalId("codex", `${thread.id}:${activeTurn.id}`)
           : undefined;
@@ -325,6 +344,8 @@ class CodexProvider implements AgentProviderPlugin {
             metadata: existingRun?.metadata ?? {},
           };
           nextRuns.set(run.id, run);
+          if (activeTurn.status !== "inProgress")
+            this.activeTurns.delete(thread.id);
         }
       }
       for (const agent of this.agents.values()) {

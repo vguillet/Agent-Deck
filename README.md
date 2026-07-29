@@ -111,9 +111,9 @@ then opens that exact Codex thread in Cursor, local Cursor conversation, or
 Cursor Cloud conversation. A long press deletes the Agent Deck
 record and its history, suppressing provider
 rediscovery until that external agent reports newer activity. Encoder rotation
-changes pages; keypad presses do not page. Pressing System Health clears all
-agent records and the device's in-memory snapshot, then immediately rediscovers
-active agents.
+changes pages; keypad presses do not page. Long-pressing System Health clears
+all agent records and the device's in-memory snapshot, then immediately
+rediscovers active agents.
 
 ## Commands
 

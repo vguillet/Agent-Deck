@@ -42,6 +42,41 @@ interface ActivePress {
   agentId: string;
 }
 
+export class LongPressDetector {
+  private readonly active = new Map<
+    string,
+    { longPressTimer: NodeJS.Timeout | undefined }
+  >();
+
+  constructor(private readonly longPressDurationMs: number) {}
+
+  keyDown(actionId: string, onLongPress: () => void): void {
+    if (this.active.has(actionId)) return;
+
+    const active: { longPressTimer: NodeJS.Timeout | undefined } = {
+      longPressTimer: undefined,
+    };
+    const timer = setTimeout(() => {
+      active.longPressTimer = undefined;
+      onLongPress();
+    }, this.longPressDurationMs);
+    timer.unref();
+    active.longPressTimer = timer;
+    this.active.set(actionId, active);
+  }
+
+  keyUp(actionId: string): void {
+    this.cancel(actionId);
+  }
+
+  cancel(actionId: string): void {
+    const active = this.active.get(actionId);
+    if (!active) return;
+    this.active.delete(actionId);
+    if (active.longPressTimer) clearTimeout(active.longPressTimer);
+  }
+}
+
 export class AgentPressDetector {
   private readonly active = new Map<string, ActivePress>();
 

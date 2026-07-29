@@ -134,7 +134,7 @@ const cube = (
 </g>`;
 
 const sceneBackground = (background: string): string =>
-  `<rect width="144" height="144" rx="24" fill="${background}"/>`;
+  `<rect width="144" height="144" fill="${background}"/>`;
 
 const idleScene = (
   variant: 0 | 1,

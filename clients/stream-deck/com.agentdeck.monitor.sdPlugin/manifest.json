@@ -69,7 +69,7 @@
     {
       "UUID": "com.agentdeck.monitor.system-health",
       "Name": "System Health",
-      "Tooltip": "Show system health; press to clear and rediscover all agents",
+      "Tooltip": "Show system health; long press to clear and rediscover all agents",
       "Icon": "assets/action-system",
       "Controllers": ["Keypad", "Encoder"],
       "Encoder": {

@@ -22,6 +22,7 @@ import type {
 import {
   AgentPressDetector,
   focusAgent,
+  LongPressDetector,
   RenderedAgentTargets,
 } from "./focus.js";
 import {
@@ -37,7 +38,11 @@ import {
   removedAgentLookScene,
   type AgentKeyLook,
 } from "./agent-look.js";
-import { agentLabelOverflows, agentLabelSvg } from "./agent-label.js";
+import {
+  agentLabelBackgroundSvg,
+  agentLabelOverflows,
+  agentLabelSvg,
+} from "./agent-label.js";
 import {
   connectorBubblesOverflow,
   connectorBubblesSvg,
@@ -48,8 +53,17 @@ import {
   CLASSIC_EMPTY_AGENT_COLOUR,
 } from "./agent-palette.js";
 import { AnimationFrameScheduler } from "./animation-scheduler.js";
-import { dottedSpinnerSvg } from "./dotted-spinner.js";
-import { agentModeStyle, type AgentModeStyle } from "./agent-mode.js";
+import {
+  agentEdgeFrameSvg,
+  agentModeFrameSvg,
+  agentModeStyle,
+  type AgentModeStyle,
+} from "./agent-mode.js";
+import {
+  agentStateIndicatorSvg,
+  AgentStateTransitionTracker,
+  type AgentStateTransitionFrame,
+} from "./agent-state-indicator.js";
 import {
   agentWorkspaceBadgeSvg,
   workspaceBadgesNeeded,
@@ -90,6 +104,10 @@ interface DeviceSession {
   clearingAgents: boolean;
   lastSnapshotSequence: number;
   animationStartedAt: number;
+  runningAnimationStarts: Map<
+    string,
+    { activeRunId: string | undefined; startedAt: number }
+  >;
 }
 
 const ALL_AGENT_STATES: Agent["state"][] = [
@@ -149,7 +167,7 @@ const muteSvgContent = (content: string, muted: boolean): string =>
         </filter>
       </defs>
       <g filter="url(#agent-slot-muted)" opacity=".55">${content}</g>
-      <rect width="144" height="144" rx="24" fill="#64748b" opacity=".32"/>`
+      <rect width="144" height="144" fill="#64748b" opacity=".32"/>`
     : content;
 
 const providerStyle = (providerId: string): ProviderStyle => {
@@ -190,7 +208,7 @@ const icon = (
   return `data:image/svg+xml,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
     ${muteSvgContent(
-      `<rect width="144" height="144" rx="24" fill="${colour}"/>
+      `<rect width="144" height="144" fill="${colour}"/>
     ${showStrip ? `<rect width="144" height="13" rx="7" fill="${accent}"/>` : ""}
     ${
       showBadge
@@ -289,16 +307,6 @@ const escapeXml = (value: string): string =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 
-const stateSymbol: Record<Exclude<Agent["state"], "running">, string> = {
-  idle: "✓",
-  waiting_for_input: "?",
-  waiting_for_approval: "↻",
-  ready_for_review: "✓",
-  failed: "×",
-  cancelled: "×",
-  unknown: "?",
-};
-
 const providerLogo = (providerId: string): string => {
   const id = providerId.toLowerCase();
   if (id.includes("cursor"))
@@ -324,20 +332,6 @@ const providerLogo = (providerId: string): string => {
     </g>`;
 };
 
-const agentStateIndicator = (
-  state: Agent["state"],
-  animationElapsedMs: number,
-): string => {
-  if (state === "running") return dottedSpinnerSvg(animationElapsedMs);
-  const opacity =
-    state === "failed" || state === "waiting_for_input"
-      ? animationElapsedMs % 1_000 < 600
-        ? 1
-        : 0.12
-      : 1;
-  return `<text x="72" y="91" text-anchor="middle" font-family="system-ui" font-size="64" font-weight="700" fill="white" opacity="${opacity}">${stateSymbol[state]}</text>`;
-};
-
 const agentModeIcon = (style: AgentModeStyle): string => {
   const common = `fill="none" stroke="${style.colour}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"`;
   let glyph: string;
@@ -358,44 +352,32 @@ const agentModeIcon = (style: AgentModeStyle): string => {
 const agentIcon = (
   agent: Agent,
   workspaceBadge: string,
-  animationElapsedMs: number,
+  animation: { elapsedMs: number; stateElapsedMs: number },
   look: AgentKeyLook,
   muted = false,
   pressed = false,
+  stateTransition?: AgentStateTransitionFrame,
 ): string => {
   const modeStyle = agentModeStyle(agent);
   const scene =
     look === "agent"
-      ? agentLookScene(agent.state, agent.id, animationElapsedMs)
-      : `<rect width="144" height="144" rx="24" fill="${CLASSIC_AGENT_STATE_COLOUR[agent.state]}"/>
-      ${agentStateIndicator(agent.state, animationElapsedMs)}`;
+      ? agentLookScene(agent.state, agent.id, animation.elapsedMs)
+      : `<rect width="144" height="144" fill="${CLASSIC_AGENT_STATE_COLOUR[agent.state]}"/>
+      ${agentStateIndicatorSvg(agent.state, animation.stateElapsedMs, stateTransition)}`;
   return `data:image/svg+xml,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
       ${muteSvgContent(
         `${scene}
+      ${agentLabelBackgroundSvg()}
+      ${agentLabelSvg(agent.title, animation.elapsedMs)}
+      ${modeStyle ? agentModeFrameSvg(modeStyle) : ""}
       ${providerLogo(agent.providerId)}
       ${modeStyle ? agentModeIcon(modeStyle) : ""}
-      <defs>
-        <clipPath id="agent-key-clip">
-          <rect width="144" height="144" rx="24"/>
-        </clipPath>
-      </defs>
-      <rect x="0" y="7" width="144" height="26" fill="#000" opacity=".34" clip-path="url(#agent-key-clip)"/>
-      ${agentLabelOverflows(agent.title) ? agentLabelSvg(agent.title, animationElapsedMs) : ""}
       ${workspaceBadge}
-      ${
-        modeStyle
-          ? `<rect x="3.5" y="3.5" width="137" height="137" rx="21" fill="none" stroke="${modeStyle.colour}" stroke-width="7"/>`
-          : ""
-      }
       `,
         muted,
       )}
-      ${
-        pressed
-          ? `<rect x="3.5" y="3.5" width="137" height="137" rx="21" fill="none" stroke="white" stroke-width="7"/>`
-          : ""
-      }
+      ${pressed ? agentEdgeFrameSvg("#ffffff") : ""}
     </svg>`,
   )}`;
 };
@@ -410,13 +392,8 @@ const emptyAgentIcon = (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
       ${muteSvgContent(
         `${emptyAgentLookScene(seed, animationElapsedMs)}
-      <defs>
-        <clipPath id="agent-key-clip">
-          <rect width="144" height="144" rx="24"/>
-        </clipPath>
-      </defs>
-      <rect x="0" y="7" width="144" height="26" fill="#000" opacity=".34" clip-path="url(#agent-key-clip)"/>
-      ${agentLabelOverflows(label) ? agentLabelSvg(label, animationElapsedMs) : ""}
+      ${agentLabelBackgroundSvg()}
+      ${agentLabelSvg(label, animationElapsedMs)}
       `,
         muted,
       )}
@@ -452,6 +429,7 @@ class DeviceManager {
   private readonly renderedAgents = new RenderedAgentTargets();
   private readonly renderedAgentLooks = new Map<string, AgentKeyLook>();
   private readonly renderedAgentLabels = new Map<string, string>();
+  private readonly agentStateTransitions = new AgentStateTransitionTracker();
   private readonly pressedAgentActions = new Set<string>();
   private readonly pressFeedbackTimers = new Map<string, NodeJS.Timeout>();
   private readonly removalTransitions = new Map<
@@ -471,6 +449,15 @@ class DeviceManager {
         );
       },
     });
+
+  private runningAnimationElapsedMs(
+    session: DeviceSession,
+    agent: Agent,
+    now: number,
+  ): number {
+    const animation = session.runningAnimationStarts.get(agent.id);
+    return animation ? Math.max(0, now - animation.startedAt) : 0;
+  }
 
   async ensure(actionContext: Action<ActionSettings>): Promise<DeviceSession> {
     const deviceId = actionContext.device.id;
@@ -529,6 +516,7 @@ class DeviceManager {
       clearingAgents: false,
       lastSnapshotSequence: 0,
       animationStartedAt: Date.now(),
+      runningAnimationStarts: new Map(),
     };
     this.sessions.set(deviceId, session);
     await this.refresh(session);
@@ -567,7 +555,14 @@ class DeviceManager {
         onStatus: (status) => {
           const previousStatus = session.connectionStatus;
           session.connectionStatus = status;
-          if (status === "connected" && previousStatus !== "connected")
+          if (status === "disconnected") {
+            session.allAgents = [];
+            session.agents = [];
+            session.attention = [];
+            session.page = 0;
+            session.attentionIndex = 0;
+            void this.renderVisible(session.deviceId);
+          } else if (status === "connected" && previousStatus !== "connected")
             void this.refresh(session);
           else void this.renderVisible(session.deviceId);
         },
@@ -596,6 +591,7 @@ class DeviceManager {
     const muted = session.connectionStatus !== "connected";
     const removal = this.removalTransitions.get(actionContext.id);
     if (removal) {
+      this.agentStateTransitions.clear(actionContext.id);
       this.renderedAgents.set(actionContext.id, undefined);
       this.renderedAgentLooks.set(actionContext.id, look);
       this.renderedAgentLabels.set(actionContext.id, "Removed");
@@ -616,6 +612,13 @@ class DeviceManager {
         ]);
       return;
     }
+    let stateTransition: AgentStateTransitionFrame | undefined;
+    if (look === "classic")
+      stateTransition = this.agentStateTransitions.observe(
+        actionContext.id,
+        agent ? { agentId: agent.id, state: agent.state } : undefined,
+      );
+    else this.agentStateTransitions.clear(actionContext.id);
     this.renderedAgents.set(actionContext.id, agent?.id);
     this.renderedAgentLooks.set(actionContext.id, look);
     this.renderedAgentLabels.set(actionContext.id, label);
@@ -629,12 +632,12 @@ class DeviceManager {
         );
         if (actionContext.isKey())
           await Promise.all([
-            actionContext.setTitle(agentLabelOverflows(label) ? "" : label),
+            actionContext.setTitle(""),
             actionContext.setImage(image),
           ]);
         else if (actionContext.isDial())
           await Promise.all([
-            actionContext.setTitle(agentLabelOverflows(label) ? "" : label),
+            actionContext.setTitle(""),
             actionContext.setImage(image),
           ]);
         return;
@@ -650,35 +653,46 @@ class DeviceManager {
       );
       return;
     }
+    const now = Date.now();
+    const animationElapsedMs = now - session.animationStartedAt;
+    const stateAnimationElapsedMs = this.runningAnimationElapsedMs(
+      session,
+      agent,
+      now,
+    );
     if (actionContext.isKey())
       await Promise.all([
-        actionContext.setTitle(
-          agentLabelOverflows(agent.title) ? "" : agent.title,
-        ),
+        actionContext.setTitle(""),
         actionContext.setImage(
           agentIcon(
             agent,
             workspaceBadgeForAgent(session, agent),
-            Date.now() - session.animationStartedAt,
+            {
+              elapsedMs: animationElapsedMs,
+              stateElapsedMs: stateAnimationElapsedMs,
+            },
             look,
             muted,
             this.pressedAgentActions.has(actionContext.id),
+            stateTransition,
           ),
         ),
       ]);
     else if (actionContext.isDial())
       await Promise.all([
-        actionContext.setTitle(
-          agentLabelOverflows(agent.title) ? "" : agent.title,
-        ),
+        actionContext.setTitle(""),
         actionContext.setImage(
           agentIcon(
             agent,
             workspaceBadgeForAgent(session, agent),
-            Date.now() - session.animationStartedAt,
+            {
+              elapsedMs: animationElapsedMs,
+              stateElapsedMs: stateAnimationElapsedMs,
+            },
             look,
             muted,
             this.pressedAgentActions.has(actionContext.id),
+            stateTransition,
           ),
         ),
       ]);
@@ -980,6 +994,10 @@ class DeviceManager {
         session.client.listWorkspaces(),
         session.client.health(),
       ]);
+    if (session.connectionStatus === "disconnected") {
+      await this.renderVisible(session.deviceId);
+      return;
+    }
     if (workspaces.status === "fulfilled")
       session.workspaces = workspaces.value.items;
     if (
@@ -989,6 +1007,27 @@ class DeviceManager {
     ) {
       session.lastSnapshotSequence = agents.value.asOfSequence;
       const freshAgents = streamDeckAgents(agents.value.items);
+      const observedAt = Date.now();
+      const freshAgentIds = new Set(freshAgents.map(({ id }) => id));
+      for (const agent of freshAgents) {
+        if (agent.state !== "running") {
+          session.runningAnimationStarts.delete(agent.id);
+          continue;
+        }
+        const current = session.runningAnimationStarts.get(agent.id);
+        if (current?.activeRunId === agent.activeRunId) continue;
+        const lastActivityAt = Date.parse(agent.lastActivityAt);
+        session.runningAnimationStarts.set(agent.id, {
+          activeRunId: agent.activeRunId,
+          startedAt:
+            Number.isFinite(lastActivityAt) && lastActivityAt <= observedAt
+              ? lastActivityAt
+              : observedAt,
+        });
+      }
+      for (const agentId of session.runningAnimationStarts.keys())
+        if (!freshAgentIds.has(agentId))
+          session.runningAnimationStarts.delete(agentId);
       session.allAgents = freshAgents;
       const visibleAgents = freshAgents
         .filter(
@@ -1065,6 +1104,8 @@ class DeviceManager {
     if (session.connectionStatus !== "connected") return false;
     if (this.removalTransitions.has(actionContext.id)) return true;
     const look = this.renderedAgentLooks.get(actionContext.id) ?? "classic";
+    if (look === "classic" && this.agentStateTransitions.has(actionContext.id))
+      return true;
     if (look === "agent") return true;
     const agent = this.renderedAgents.resolve(
       actionContext.id,
@@ -1113,14 +1154,26 @@ class DeviceManager {
       );
       return;
     }
+    const stateTransition =
+      look === "classic"
+        ? this.agentStateTransitions.frame(
+            actionContext.id,
+            { agentId: agent.id, state: agent.state },
+            now,
+          )
+        : undefined;
     await actionContext.setImage(
       agentIcon(
         agent,
         workspaceBadgeForAgent(session, agent),
-        animationElapsedMs,
+        {
+          elapsedMs: animationElapsedMs,
+          stateElapsedMs: this.runningAnimationElapsedMs(session, agent, now),
+        },
         look,
         false,
         this.pressedAgentActions.has(actionContext.id),
+        stateTransition,
       ),
     );
   }
@@ -1278,13 +1331,30 @@ class ProviderHealthAction extends SingletonAction<ActionSettings> {
 
 @action({ UUID: "com.agentdeck.monitor.system-health" })
 class SystemHealthAction extends SingletonAction<ActionSettings> {
+  private readonly presses = new LongPressDetector(LONG_PRESS_DURATION_MS);
+
   override async onWillAppear(
     ev: WillAppearEvent<ActionSettings>,
   ): Promise<void> {
     await devices.renderSystem(ev.action);
   }
-  override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
-    await devices.clearAndRefreshFor(ev.action);
+  override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
+    this.presses.cancel(ev.action.id);
+  }
+  override onKeyDown(ev: KeyDownEvent<ActionSettings>): void {
+    this.presses.keyDown(ev.action.id, () => {
+      void devices.clearAndRefreshFor(ev.action).catch((error: unknown) => {
+        streamDeck.logger.error(
+          `Agent Deck clear and refresh failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        void ev.action.showAlert();
+      });
+    });
+  }
+  override onKeyUp(ev: KeyUpEvent<ActionSettings>): void {
+    this.presses.keyUp(ev.action.id);
   }
 }
 
