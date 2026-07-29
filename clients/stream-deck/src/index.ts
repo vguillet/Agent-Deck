@@ -16,6 +16,7 @@ import type {
   Attention,
   CanonicalEvent,
   Provider,
+  Workspace,
 } from "@agent-deck/domain";
 import {
   AgentPressDetector,
@@ -42,6 +43,7 @@ import {
   CLASSIC_EMPTY_AGENT_COLOUR,
 } from "./agent-palette.js";
 import { AnimationFrameScheduler } from "./animation-scheduler.js";
+import { workspaceBadgesNeeded, workspaceBadgeSvg } from "./workspace-badge.js";
 
 interface ActionSettings {
   slot?: number;
@@ -67,6 +69,7 @@ interface DeviceSession {
   agents: Agent[];
   attention: Attention[];
   providers: Provider[];
+  workspaces: Workspace[];
   health: Record<string, unknown>;
   page: number;
   attentionIndex: number;
@@ -78,6 +81,20 @@ interface DeviceSession {
   animationStartedAt: number;
   animationAngle: number;
 }
+
+const workspaceBadgeForAgent = (
+  session: DeviceSession,
+  agent: Agent,
+): string => {
+  if (!workspaceBadgesNeeded(session.agents)) return "";
+  const workspace = session.workspaces.find(
+    (candidate) => candidate.id === agent.workspaceId,
+  );
+  const visibleWorkspaceIds = session.agents.flatMap((candidate) =>
+    candidate.workspaceId ? [candidate.workspaceId] : [],
+  );
+  return workspaceBadgeSvg(workspace, visibleWorkspaceIds);
+};
 
 const DEFAULT_CONFIGURATION: DeviceConfiguration = {
   serverUrl: "http://127.0.0.1:47831",
@@ -348,6 +365,7 @@ const cursorModeIcon = (style: CursorModeStyle): string => {
 
 const agentIcon = (
   agent: Agent,
+  workspaceBadge: string,
   animationAngle: number,
   animationElapsedMs: number,
   look: AgentKeyLook,
@@ -372,6 +390,7 @@ const agentIcon = (
       </defs>
       <rect x="0" y="7" width="144" height="26" fill="#000" opacity=".34" clip-path="url(#agent-key-clip)"/>
       ${agentLabelOverflows(agent.title) ? agentLabelSvg(agent.title, animationElapsedMs) : ""}
+      ${workspaceBadge}
       ${
         modeStyle
           ? `<rect x="3.5" y="3.5" width="137" height="137" rx="21" fill="none" stroke="${modeStyle.colour}" stroke-width="7"/>`
@@ -499,6 +518,7 @@ class DeviceManager {
       agents: [],
       attention: [],
       providers: [],
+      workspaces: [],
       health: {},
       page: 0,
       attentionIndex: 0,
@@ -637,6 +657,7 @@ class DeviceManager {
         actionContext.setImage(
           agentIcon(
             agent,
+            workspaceBadgeForAgent(session, agent),
             session.animationAngle,
             Date.now() - session.animationStartedAt,
             look,
@@ -652,6 +673,7 @@ class DeviceManager {
         actionContext.setImage(
           agentIcon(
             agent,
+            workspaceBadgeForAgent(session, agent),
             session.animationAngle,
             Date.now() - session.animationStartedAt,
             look,
@@ -914,12 +936,14 @@ class DeviceManager {
   }
 
   private async refreshOnce(session: DeviceSession): Promise<void> {
-    const [agents, attention, providers, health] = await Promise.allSettled([
-      session.client.listAgents({ limit: 200 }),
-      session.client.listAttention(),
-      session.client.listProviders(),
-      session.client.health(),
-    ]);
+    const [agents, attention, providers, workspaces, health] =
+      await Promise.allSettled([
+        session.client.listAgents({ limit: 200 }),
+        session.client.listAttention(),
+        session.client.listProviders(),
+        session.client.listWorkspaces(),
+        session.client.health(),
+      ]);
     if (
       agents.status === "fulfilled" &&
       agents.value.asOfSequence >= session.lastSnapshotSequence
@@ -950,11 +974,14 @@ class DeviceManager {
     }
     if (providers.status === "fulfilled")
       session.providers = providers.value.items;
+    if (workspaces.status === "fulfilled")
+      session.workspaces = workspaces.value.items;
     if (health.status === "fulfilled") session.health = health.value;
     for (const [resource, result] of [
       ["agents", agents],
       ["attention", attention],
       ["providers", providers],
+      ["workspaces", workspaces],
       ["health", health],
     ] as const) {
       if (result.status === "fulfilled") continue;
@@ -1044,7 +1071,13 @@ class DeviceManager {
       return;
     }
     await actionContext.setImage(
-      agentIcon(agent, session.animationAngle, animationElapsedMs, look),
+      agentIcon(
+        agent,
+        workspaceBadgeForAgent(session, agent),
+        session.animationAngle,
+        animationElapsedMs,
+        look,
+      ),
     );
   }
 

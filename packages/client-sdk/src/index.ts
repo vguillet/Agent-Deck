@@ -5,6 +5,7 @@ import {
   EventSchema,
   ProviderSchema,
   RunSchema,
+  WorkspaceSchema,
   type Page,
 } from "@agent-deck/api-contract";
 import type {
@@ -16,6 +17,7 @@ import type {
   ClientDescriptor,
   CommandResult,
   Provider,
+  Workspace,
 } from "@agent-deck/domain";
 
 export interface AgentListOptions {
@@ -111,6 +113,16 @@ export class AgentDeckClient {
     return {
       ...page,
       items: page.items.map((item) => ProviderSchema.parse(item) as Provider),
+    };
+  }
+
+  async listWorkspaces(limit = 200): Promise<Page<Workspace>> {
+    const page = await this.get<Page<unknown>>(
+      `/api/v1/workspaces?limit=${limit}`,
+    );
+    return {
+      ...page,
+      items: page.items.map((item) => WorkspaceSchema.parse(item)),
     };
   }
 
