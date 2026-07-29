@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { basename, resolve } from "node:path";
+
 export const AGENT_STATES = [
   "idle",
   "running",
@@ -227,10 +230,126 @@ export interface ClientConfigurationDocument {
 export const canonicalId = (providerId: string, externalId: string): string =>
   `${providerId}:${externalId}`;
 
+const WORKSPACE_PROVIDER_ID = "agent-deck";
+
+const stableResourceHash = (values: readonly string[]): string =>
+  createHash("sha256")
+    .update(values.join("\0"))
+    .digest("base64url")
+    .slice(0, 22);
+
+export interface WorkspaceProjectSource {
+  key: string;
+  externalId: string;
+  name: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface WorkspaceResources {
+  workspace?: Workspace;
+  projects: Project[];
+}
+
+export const workspaceResourcesForProjects = (
+  providerId: string,
+  identityKind: string,
+  sources: readonly WorkspaceProjectSource[],
+  workspaceMetadata: Record<string, unknown> = {},
+): WorkspaceResources => {
+  const uniqueSources = [
+    ...new Map(
+      sources
+        .filter((source) => source.key.length > 0)
+        .map((source) => [source.key, source]),
+    ).values(),
+  ].sort((left, right) => left.key.localeCompare(right.key));
+  if (!uniqueSources.length) return { projects: [] };
+
+  const keys = uniqueSources.map((source) => source.key);
+  const externalId = stableResourceHash([identityKind, ...keys]);
+  const firstName = uniqueSources[0]?.name || "Workspace";
+  const workspace: Workspace = {
+    id: canonicalId(WORKSPACE_PROVIDER_ID, `workspace:${externalId}`),
+    providerId: WORKSPACE_PROVIDER_ID,
+    externalId,
+    name:
+      uniqueSources.length === 1
+        ? firstName
+        : `${firstName} +${uniqueSources.length - 1}`,
+    metadata: workspaceMetadata,
+  };
+  const projects = uniqueSources.map((source): Project => ({
+    id: canonicalId(providerId, `project:${source.externalId}`),
+    providerId,
+    externalId: source.externalId,
+    workspaceId: workspace.id,
+    name: source.name,
+    metadata: source.metadata,
+  }));
+  return { workspace, projects };
+};
+
+export const normalizedWorkspaceRoots = (roots: readonly string[]): string[] =>
+  [...new Set(roots.map((root) => resolve(root)))].sort();
+
+export const workspaceResourcesForRoots = (
+  providerId: string,
+  roots: readonly string[],
+): WorkspaceResources => {
+  const normalized = normalizedWorkspaceRoots(roots);
+  return workspaceResourcesForProjects(
+    providerId,
+    "local-root",
+    normalized.map((root) => ({
+      key: root,
+      externalId: stableResourceHash([root]),
+      name: basename(root) || "Workspace",
+      metadata: { root },
+    })),
+    { roots: normalized },
+  );
+};
+
 export const isActiveAgentState = (state: AgentState): boolean =>
   state === "running" ||
   state === "waiting_for_input" ||
   state === "waiting_for_approval";
+
+export const isActiveRunState = (state: AgentRun["state"]): boolean =>
+  state === "queued" ||
+  state === "running" ||
+  state === "waiting_for_input" ||
+  state === "waiting_for_approval";
+
+export const AGENT_RECENCY_WINDOW_MS = 24 * 60 * 60 * 1_000;
+
+export const isAgentActiveOrRecent = (
+  agent: Pick<Agent, "state" | "lastActivityAt">,
+  now: string,
+): boolean => {
+  if (isActiveAgentState(agent.state)) return true;
+  const activityTime = Date.parse(agent.lastActivityAt);
+  const nowTime = Date.parse(now);
+  return (
+    Number.isFinite(activityTime) &&
+    Number.isFinite(nowTime) &&
+    activityTime >= nowTime - AGENT_RECENCY_WINDOW_MS
+  );
+};
+
+export const isRunActiveOrRecent = (
+  run: Pick<AgentRun, "state" | "startedAt" | "finishedAt">,
+  now: string,
+): boolean => {
+  if (isActiveRunState(run.state)) return true;
+  const activityTime = Date.parse(run.finishedAt ?? run.startedAt ?? "");
+  const nowTime = Date.parse(now);
+  return (
+    Number.isFinite(activityTime) &&
+    Number.isFinite(nowTime) &&
+    activityTime >= nowTime - AGENT_RECENCY_WINDOW_MS
+  );
+};
 
 export const attentionForAgentState = (
   agent: Agent,

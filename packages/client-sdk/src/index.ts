@@ -1,12 +1,14 @@
 import {
   AgentSchema,
   CommandResultSchema,
+  CursorFocusResponseSchema,
   AttentionSchema,
   EventSchema,
   ProviderSchema,
   RunSchema,
   WorkspaceSchema,
   type Page,
+  type CursorFocusResult,
 } from "@agent-deck/api-contract";
 import type {
   Agent,
@@ -130,6 +132,15 @@ export class AgentDeckClient {
     return this.get("/api/v1/system/health");
   }
 
+  async focusAgent(id: string): Promise<CursorFocusResult> {
+    const response = await fetch(
+      `${this.baseUrl}/api/v1/agents/${encodeURIComponent(id)}/focus`,
+      { method: "POST" },
+    );
+    if (!response.ok) throw await responseError(response);
+    return CursorFocusResponseSchema.parse(await response.json());
+  }
+
   async cancelAgent(
     id: string,
     expectedRevision?: number,
@@ -172,6 +183,17 @@ export class AgentDeckClient {
     if (response.status === 404) return false;
     if (!response.ok) throw await responseError(response);
     return true;
+  }
+
+  async clearAgents(): Promise<number> {
+    const response = await fetch(`${this.baseUrl}/api/v1/agents`, {
+      method: "DELETE",
+    });
+    if (!response.ok) throw await responseError(response);
+    const result = (await response.json()) as { cleared?: unknown };
+    if (typeof result.cleared !== "number")
+      throw new Error("Agent clear response did not include a count");
+    return result.cleared;
   }
 
   async getClientConfiguration(

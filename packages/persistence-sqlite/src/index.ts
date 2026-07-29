@@ -506,7 +506,9 @@ export class SqliteEventStore implements EventStore {
   }
 
   private reconcileStateAttention(agent: Agent, occurredAt: string): void {
-    let attention = attentionForAgentState(agent, occurredAt);
+    let attention = agent.requiresAttention
+      ? attentionForAgentState(agent, occurredAt)
+      : undefined;
     const id = `${agent.id}:state-attention`;
     if (!attention) {
       const existing = this.db
@@ -561,7 +563,7 @@ export class SqliteEventStore implements EventStore {
 
   private reconcileFreshnessAttention(agent: Agent, occurredAt: string): void {
     const id = `${agent.id}:stale-attention`;
-    if (agent.freshness === "fresh") {
+    if (agent.freshness === "fresh" || !agent.requiresAttention) {
       this.resolveAttention({ attentionId: id, resolvedAt: occurredAt });
       return;
     }
@@ -736,6 +738,21 @@ export class SqliteEventStore implements EventStore {
       this.db.prepare("DELETE FROM agents WHERE id = ?").run(agent.id);
       return true;
     })(id);
+  }
+
+  clearAgents(): number {
+    return this.db.transaction(() => {
+      const result = this.db.prepare("DELETE FROM agents").run();
+      this.db.prepare("DELETE FROM attention WHERE agent_id IS NOT NULL").run();
+      this.db
+        .prepare(
+          "DELETE FROM events WHERE agent_id IS NOT NULL OR run_id IS NOT NULL",
+        )
+        .run();
+      this.db.prepare("DELETE FROM runs").run();
+      this.db.prepare("DELETE FROM deleted_agents").run();
+      return result.changes;
+    })();
   }
 
   listRuns(agentId: string, page: PageRequest): StorePage<AgentRun> {

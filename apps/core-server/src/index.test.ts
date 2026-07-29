@@ -132,6 +132,30 @@ describe("Agent Deck HTTP API", () => {
     });
   });
 
+  it("starts with only agents found by the current discovery", async () => {
+    const config = await configuration();
+    const first = await buildServer(config);
+    servers.push(first);
+    const initial = await first.app.inject({
+      method: "GET",
+      url: "/api/v1/agents",
+    });
+    expect(initial.json().items).toHaveLength(3);
+    await first.close();
+
+    const provider = config.providers[0];
+    if (!provider) throw new Error("Fake provider configuration missing");
+    provider.config = { count: 1, intervalMs: 60_000 };
+    const restarted = await buildServer(config);
+    servers.push(restarted);
+
+    const fresh = await restarted.app.inject({
+      method: "GET",
+      url: "/api/v1/agents",
+    });
+    expect(fresh.json().items).toHaveLength(1);
+  });
+
   it("enforces optimistic client configuration updates", async () => {
     const server = await buildServer(await configuration());
     servers.push(server);

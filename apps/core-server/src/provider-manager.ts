@@ -148,6 +148,10 @@ export class ProviderManager {
     return managed.plugin.execute(command);
   }
 
+  async rediscover(): Promise<void> {
+    await Promise.all(this.providers.map((managed) => this.discover(managed)));
+  }
+
   async start(): Promise<void> {
     for (const managed of this.providers) {
       managed.stopSubscription = await managed.plugin.subscribe(

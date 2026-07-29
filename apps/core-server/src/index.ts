@@ -10,6 +10,8 @@ import {
 import { SqliteEventStore } from "@agent-deck/persistence-sqlite";
 import { SubscriptionBroker } from "./broker.js";
 import { loadConfiguration, type AgentDeckConfiguration } from "./config.js";
+import { activateCursorWindow } from "./cursor-window-activator.js";
+import { CursorWindowBroker } from "./cursor-window-broker.js";
 import { ProviderManager } from "./provider-manager.js";
 import { registerApiRoutes } from "./routes.js";
 
@@ -32,7 +34,9 @@ export const buildServer = async (
   });
   const store = new SqliteEventStore(config.databasePath);
   store.migrate();
+  store.clearAgents();
   const broker = new SubscriptionBroker(store);
+  const cursorWindows = new CursorWindowBroker(activateCursorWindow);
   const providerManager = new ProviderManager(
     config.providers,
     store,
@@ -43,7 +47,33 @@ export const buildServer = async (
   );
   await providerManager.initialise();
   providerManager.registerIngressRoutes();
-  registerApiRoutes(app, store, broker, providerManager);
+  registerApiRoutes(app, store, broker, cursorWindows, providerManager);
+
+  app.get("/internal/cursor-focus", { websocket: true }, (socket) => {
+    const connectionId = cursorWindows.add(socket);
+    const registrationTimeout = setTimeout(() => {
+      if (!cursorWindows.isRegistered(connectionId))
+        socket.close(1008, "Cursor window registration required");
+    }, 10_000);
+    registrationTimeout.unref();
+    socket.on("message", (raw: RawData) => {
+      let value: unknown;
+      try {
+        value = JSON.parse(raw.toString()) as unknown;
+      } catch {
+        socket.close(1008, "Invalid JSON");
+        return;
+      }
+      if (!cursorWindows.handle(connectionId, value))
+        socket.close(1008, "Invalid Cursor window frame");
+      else if (cursorWindows.isRegistered(connectionId))
+        clearTimeout(registrationTimeout);
+    });
+    socket.on("close", () => {
+      clearTimeout(registrationTimeout);
+      cursorWindows.remove(connectionId);
+    });
+  });
 
   app.get("/api/v1/stream", { websocket: true }, (socket) => {
     const connectionId = broker.add(socket);
@@ -181,7 +211,9 @@ export const buildServer = async (
       closed = true;
       clearInterval(heartbeat);
       clearInterval(maintenance);
+      cursorWindows.close();
       await providerManager.dispose();
+      store.clearAgents();
       await app.close();
       store.close();
     },

@@ -4,7 +4,7 @@ const LABEL_VIEWPORT_X = 13;
 const LABEL_VIEWPORT_WIDTH = 118;
 const LABEL_BASELINE_Y = 25;
 const LABEL_GAP = 28;
-const LABEL_SCROLL_SPEED = 24;
+const LABEL_SCROLL_SPEED = 30;
 
 const escapeXml = (value: string): string =>
   value

@@ -9,6 +9,7 @@ import streamDeck, {
   type KeyUpEvent,
   SingletonAction,
   type WillAppearEvent,
+  type WillDisappearEvent,
 } from "@elgato/streamdeck";
 import { AgentDeckClient, type WatchHandle } from "@agent-deck/client-sdk";
 import type {
@@ -47,7 +48,12 @@ import {
   CLASSIC_EMPTY_AGENT_COLOUR,
 } from "./agent-palette.js";
 import { AnimationFrameScheduler } from "./animation-scheduler.js";
-import { workspaceBadgesNeeded, workspaceBadgeSvg } from "./workspace-badge.js";
+import { dottedSpinnerSvg } from "./dotted-spinner.js";
+import { agentModeStyle, type AgentModeStyle } from "./agent-mode.js";
+import {
+  agentWorkspaceBadgeSvg,
+  workspaceBadgesNeeded,
+} from "./workspace-badge.js";
 
 interface ActionSettings {
   slot?: number;
@@ -81,9 +87,9 @@ interface DeviceSession {
   refreshTimer: NodeJS.Timeout | undefined;
   refreshPromise: Promise<void> | undefined;
   refreshDirty: boolean;
+  clearingAgents: boolean;
   lastSnapshotSequence: number;
   animationStartedAt: number;
-  animationAngle: number;
 }
 
 const ALL_AGENT_STATES: Agent["state"][] = [
@@ -108,7 +114,7 @@ const workspaceBadgeForAgent = (
   const visibleWorkspaceIds = session.agents.flatMap((candidate) =>
     candidate.workspaceId ? [candidate.workspaceId] : [],
   );
-  return workspaceBadgeSvg(workspace, visibleWorkspaceIds);
+  return agentWorkspaceBadgeSvg(agent, workspace, visibleWorkspaceIds);
 };
 
 const DEFAULT_CONFIGURATION: DeviceConfiguration = {
@@ -119,23 +125,8 @@ const DEFAULT_CONFIGURATION: DeviceConfiguration = {
   states: ALL_AGENT_STATES,
 };
 
-const ANIMATION_REVOLUTION_MS = 1_800;
-const DOUBLE_PRESS_WINDOW_MS = 200;
 const LONG_PRESS_DURATION_MS = 650;
 const PRESS_FEEDBACK_DURATION_MS = 450;
-
-type CursorMode = "ask" | "plan" | "debug";
-
-interface CursorModeStyle {
-  colour: string;
-  icon: string;
-}
-
-const cursorModeStyles: Record<CursorMode, CursorModeStyle> = {
-  plan: { colour: "#f1b467", icon: "plan" },
-  debug: { colour: "#e34671", icon: "debug" },
-  ask: { colour: "#3fa266", icon: "ask" },
-};
 
 interface ProviderStyle {
   accent: string;
@@ -335,27 +326,19 @@ const providerLogo = (providerId: string): string => {
 
 const agentStateIndicator = (
   state: Agent["state"],
-  animationAngle: number,
+  animationElapsedMs: number,
 ): string => {
-  if (state === "running")
-    return `<g transform="rotate(${-animationAngle} 72 72) translate(36 36) scale(3)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M21 12a9 9 0 0 0-15.5-6.2L3 8"/>
-      <path d="M3 3v5h5"/>
-      <path d="M3 12a9 9 0 0 0 15.5 6.2L21 16"/>
-      <path d="M21 21v-5h-5"/>
-    </g>`;
-  return `<text x="72" y="91" text-anchor="middle" font-family="system-ui" font-size="64" font-weight="700" fill="white">${stateSymbol[state]}</text>`;
+  if (state === "running") return dottedSpinnerSvg(animationElapsedMs);
+  const opacity =
+    state === "failed" || state === "waiting_for_input"
+      ? animationElapsedMs % 1_000 < 600
+        ? 1
+        : 0.12
+      : 1;
+  return `<text x="72" y="91" text-anchor="middle" font-family="system-ui" font-size="64" font-weight="700" fill="white" opacity="${opacity}">${stateSymbol[state]}</text>`;
 };
 
-const cursorModeStyle = (agent: Agent): CursorModeStyle | undefined => {
-  if (!agent.providerId.toLowerCase().includes("cursor")) return undefined;
-  const mode = agent.metadata.cursorMode;
-  return typeof mode === "string" && mode in cursorModeStyles
-    ? cursorModeStyles[mode as CursorMode]
-    : undefined;
-};
-
-const cursorModeIcon = (style: CursorModeStyle): string => {
+const agentModeIcon = (style: AgentModeStyle): string => {
   const common = `fill="none" stroke="${style.colour}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"`;
   let glyph: string;
   if (style.icon === "plan")
@@ -375,24 +358,23 @@ const cursorModeIcon = (style: CursorModeStyle): string => {
 const agentIcon = (
   agent: Agent,
   workspaceBadge: string,
-  animationAngle: number,
   animationElapsedMs: number,
   look: AgentKeyLook,
   muted = false,
   pressed = false,
 ): string => {
-  const modeStyle = cursorModeStyle(agent);
+  const modeStyle = agentModeStyle(agent);
   const scene =
     look === "agent"
       ? agentLookScene(agent.state, agent.id, animationElapsedMs)
       : `<rect width="144" height="144" rx="24" fill="${CLASSIC_AGENT_STATE_COLOUR[agent.state]}"/>
-      ${agentStateIndicator(agent.state, animationAngle)}`;
+      ${agentStateIndicator(agent.state, animationElapsedMs)}`;
   return `data:image/svg+xml,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
       ${muteSvgContent(
         `${scene}
       ${providerLogo(agent.providerId)}
-      ${modeStyle ? cursorModeIcon(modeStyle) : ""}
+      ${modeStyle ? agentModeIcon(modeStyle) : ""}
       <defs>
         <clipPath id="agent-key-clip">
           <rect width="144" height="144" rx="24"/>
@@ -544,9 +526,9 @@ class DeviceManager {
       refreshTimer: undefined,
       refreshPromise: undefined,
       refreshDirty: false,
+      clearingAgents: false,
       lastSnapshotSequence: 0,
       animationStartedAt: Date.now(),
-      animationAngle: 0,
     };
     this.sessions.set(deviceId, session);
     await this.refresh(session);
@@ -677,7 +659,6 @@ class DeviceManager {
           agentIcon(
             agent,
             workspaceBadgeForAgent(session, agent),
-            session.animationAngle,
             Date.now() - session.animationStartedAt,
             look,
             muted,
@@ -694,7 +675,6 @@ class DeviceManager {
           agentIcon(
             agent,
             workspaceBadgeForAgent(session, agent),
-            session.animationAngle,
             Date.now() - session.animationStartedAt,
             look,
             muted,
@@ -842,31 +822,44 @@ class DeviceManager {
     await this.renderVisible(actionContext.device.id);
   }
 
-  async focusRenderedAgent(
+  renderedAgentId(actionContext: Action<ActionSettings>): string | undefined {
+    return this.renderedAgents.id(actionContext.id);
+  }
+
+  async focusAgentById(
     actionContext: Action<ActionSettings>,
+    agentId: string,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
-    const agent = this.renderedAgents.resolve(
-      actionContext.id,
-      session.allAgents,
+    const agent = session.allAgents.find(
+      (candidate) => candidate.id === agentId,
     );
-    if (!agent) return;
-    const result = await focusAgent(agent);
+    if (!agent) {
+      streamDeck.logger.warn(
+        `Agent Deck focus failed: displayed agent ${agentId} is gone`,
+      );
+      await actionContext.showAlert();
+      return;
+    }
+    const result =
+      agent.providerId === "cursor-local" || agent.providerId === "codex"
+        ? await session.client.focusAgent(agent.id)
+        : await focusAgent(agent);
     if (result.status !== "opened") {
       streamDeck.logger.warn(
-        `Agent Deck focus failed: ${result.status === "unavailable" ? result.reason : "unknown error"}`,
+        `Agent Deck focus failed: ${"reason" in result ? result.reason : (result.message ?? result.status)}`,
       );
       await actionContext.showAlert();
     }
   }
 
-  async deleteRenderedAgent(
+  async deleteAgentById(
     actionContext: Action<ActionSettings>,
+    agentId: string,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
-    const agent = this.renderedAgents.resolve(
-      actionContext.id,
-      session.allAgents,
+    const agent = session.allAgents.find(
+      (candidate) => candidate.id === agentId,
     );
     if (!agent) return;
     if (this.removalTransitions.has(actionContext.id)) return;
@@ -915,35 +908,6 @@ class DeviceManager {
     await this.renderVisible(session.deviceId);
   }
 
-  async stopRenderedAgent(
-    actionContext: Action<ActionSettings>,
-  ): Promise<void> {
-    try {
-      const session = await this.ensure(actionContext);
-      const agent = this.renderedAgents.resolve(
-        actionContext.id,
-        session.allAgents,
-      );
-      if (!agent) return;
-      const result = await session.client.cancelAgent(agent.id, agent.revision);
-      if (result.status !== "succeeded") {
-        streamDeck.logger.warn(
-          `Agent Deck stop failed: ${result.message ?? result.status}`,
-        );
-        await actionContext.showAlert();
-        return;
-      }
-      if (actionContext.isKey()) await actionContext.showOk();
-    } catch (error) {
-      streamDeck.logger.error(
-        `Agent Deck stop failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      await actionContext.showAlert();
-    }
-  }
-
   async changeAttention(
     actionContext: Action<ActionSettings>,
     delta: number,
@@ -966,6 +930,21 @@ class DeviceManager {
       clearTimeout(session.refreshTimer);
       session.refreshTimer = undefined;
     }
+    session.clearingAgents = true;
+    session.allAgents = [];
+    session.agents = [];
+    session.attention = [];
+    session.page = 0;
+    session.attentionIndex = 0;
+    try {
+      await this.renderVisible(session.deviceId);
+      await session.client.clearAgents();
+    } catch (error) {
+      session.clearingAgents = false;
+      await this.refresh(session);
+      throw error;
+    }
+    session.clearingAgents = false;
     await this.refresh(session);
   }
 
@@ -1005,6 +984,7 @@ class DeviceManager {
       session.workspaces = workspaces.value.items;
     if (
       agents.status === "fulfilled" &&
+      !session.clearingAgents &&
       agents.value.asOfSequence >= session.lastSnapshotSequence
     ) {
       session.lastSnapshotSequence = agents.value.asOfSequence;
@@ -1029,7 +1009,7 @@ class DeviceManager {
         session.workspaces,
       );
     }
-    if (attention.status === "fulfilled") {
+    if (attention.status === "fulfilled" && !session.clearingAgents) {
       const visibleAgentIds = new Set(session.allAgents.map(({ id }) => id));
       session.attention = attention.value.items.filter(
         (item) => !item.agentId || visibleAgentIds.has(item.agentId),
@@ -1091,7 +1071,11 @@ class DeviceManager {
       session.allAgents,
     );
     return Boolean(
-      agent && (agent.state === "running" || agentLabelOverflows(agent.title)),
+      agent &&
+      (agent.state === "running" ||
+        agent.state === "failed" ||
+        agent.state === "waiting_for_input" ||
+        agentLabelOverflows(agent.title)),
     );
   }
 
@@ -1113,8 +1097,6 @@ class DeviceManager {
       );
       return;
     }
-    session.animationAngle =
-      ((now % ANIMATION_REVOLUTION_MS) / ANIMATION_REVOLUTION_MS) * 360;
     const agent = this.renderedAgents.resolve(
       actionContext.id,
       session.allAgents,
@@ -1135,7 +1117,6 @@ class DeviceManager {
       agentIcon(
         agent,
         workspaceBadgeForAgent(session, agent),
-        session.animationAngle,
         animationElapsedMs,
         look,
         false,
@@ -1189,10 +1170,7 @@ const devices = new DeviceManager();
 
 @action({ UUID: "com.agentdeck.monitor.agent-slot" })
 class AgentSlotAction extends SingletonAction<ActionSettings> {
-  private readonly presses = new AgentPressDetector(
-    DOUBLE_PRESS_WINDOW_MS,
-    LONG_PRESS_DURATION_MS,
-  );
+  private readonly presses = new AgentPressDetector(LONG_PRESS_DURATION_MS);
 
   override async onWillAppear(
     ev: WillAppearEvent<ActionSettings>,
@@ -1204,7 +1182,11 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
   ): Promise<void> {
     await devices.renderAgent(ev.action, ev.payload.settings);
   }
-  override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
+  override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
+    this.presses.cancel(ev.action.id);
+  }
+  override onKeyDown(ev: KeyDownEvent<ActionSettings>): void {
+    const agentId = devices.renderedAgentId(ev.action);
     void devices.flashRenderedAgent(ev.action).catch((error: unknown) => {
       streamDeck.logger.error(
         `Agent Deck press feedback failed: ${
@@ -1212,31 +1194,33 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
         }`,
       );
     });
-    this.presses.keyDown(ev.action.id, {
-      onDoublePress: () => {
-        void devices.stopRenderedAgent(ev.action);
+    this.presses.keyDown(ev.action.id, agentId, {
+      onLongPress: (pressedAgentId) => {
+        void devices
+          .deleteAgentById(ev.action, pressedAgentId)
+          .catch((error: unknown) => {
+            streamDeck.logger.error(
+              `Agent Deck remove failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            void ev.action.showAlert();
+          });
       },
-      onLongPress: () => {
-        void devices.deleteRenderedAgent(ev.action).catch((error: unknown) => {
+    });
+  }
+  override onKeyUp(ev: KeyUpEvent<ActionSettings>): void {
+    this.presses.keyUp(ev.action.id, (agentId) => {
+      void devices
+        .focusAgentById(ev.action, agentId)
+        .catch((error: unknown) => {
           streamDeck.logger.error(
-            `Agent Deck remove failed: ${
+            `Agent Deck focus failed: ${
               error instanceof Error ? error.message : String(error)
             }`,
           );
           void ev.action.showAlert();
         });
-      },
-    });
-  }
-  override async onKeyUp(ev: KeyUpEvent<ActionSettings>): Promise<void> {
-    this.presses.keyUp(ev.action.id, () => {
-      void devices.focusRenderedAgent(ev.action).catch((error: unknown) => {
-        streamDeck.logger.error(
-          `Agent Deck focus failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      });
     });
   }
   override async onDialRotate(

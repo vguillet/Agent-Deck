@@ -29,69 +29,54 @@ const agent = (id: string, href?: string): Agent => ({
 });
 
 describe("Stream Deck agent focus", () => {
-  it("dispatches one delayed single press", () => {
+  it("dispatches a single press immediately for the latched agent", () => {
     vi.useFakeTimers();
-    const detector = new AgentPressDetector(350, 650);
+    const detector = new AgentPressDetector(650);
     const singlePress = vi.fn();
-    const doublePress = vi.fn();
     const longPress = vi.fn();
 
-    detector.keyDown("key-1", {
-      onDoublePress: doublePress,
-      onLongPress: longPress,
-    });
+    detector.keyDown("key-1", "agent-1", { onLongPress: longPress });
     detector.keyUp("key-1", singlePress);
-    vi.advanceTimersByTime(349);
-    expect(singlePress).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(singlePress).toHaveBeenCalledOnce();
-    expect(doublePress).not.toHaveBeenCalled();
+    expect(singlePress).toHaveBeenCalledWith("agent-1");
     expect(longPress).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 
-  it("dispatches a double press without a single press", () => {
+  it("keeps the key-down target across reordering and accepts repeated presses", () => {
     vi.useFakeTimers();
-    const detector = new AgentPressDetector(350, 650);
+    const detector = new AgentPressDetector(650);
+    const targets = new RenderedAgentTargets();
     const singlePress = vi.fn();
-    const doublePress = vi.fn();
-    const longPress = vi.fn();
-    const callbacks = {
-      onDoublePress: doublePress,
-      onLongPress: longPress,
-    };
+    targets.set("key-1", "agent-1");
 
-    detector.keyDown("key-1", callbacks);
+    detector.keyDown("key-1", targets.id("key-1"), {
+      onLongPress: vi.fn(),
+    });
+    targets.set("key-1", "agent-2");
     detector.keyUp("key-1", singlePress);
-    vi.advanceTimersByTime(100);
-    detector.keyDown("key-1", callbacks);
+    detector.keyDown("key-1", targets.id("key-1"), {
+      onLongPress: vi.fn(),
+    });
     detector.keyUp("key-1", singlePress);
-    vi.advanceTimersByTime(650);
-    expect(doublePress).toHaveBeenCalledOnce();
-    expect(singlePress).not.toHaveBeenCalled();
-    expect(longPress).not.toHaveBeenCalled();
+
+    expect(singlePress).toHaveBeenNthCalledWith(1, "agent-1");
+    expect(singlePress).toHaveBeenNthCalledWith(2, "agent-2");
     vi.useRealTimers();
   });
 
-  it("dispatches a long press without a single or double press", () => {
+  it("dispatches a long press without a single press", () => {
     vi.useFakeTimers();
-    const detector = new AgentPressDetector(350, 650);
+    const detector = new AgentPressDetector(650);
     const singlePress = vi.fn();
-    const doublePress = vi.fn();
     const longPress = vi.fn();
 
-    detector.keyDown("key-1", {
-      onDoublePress: doublePress,
-      onLongPress: longPress,
-    });
+    detector.keyDown("key-1", "agent-1", { onLongPress: longPress });
     vi.advanceTimersByTime(649);
     expect(longPress).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     detector.keyUp("key-1", singlePress);
-    vi.advanceTimersByTime(350);
-    expect(longPress).toHaveBeenCalledOnce();
+    expect(longPress).toHaveBeenCalledWith("agent-1");
     expect(singlePress).not.toHaveBeenCalled();
-    expect(doublePress).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 
@@ -100,12 +85,27 @@ describe("Stream Deck agent focus", () => {
     const first = agent("cursor-local:first");
     const second = agent("cursor-local:second");
     targets.set("key-1", first.id);
+    expect(targets.id("key-1")).toBe(first.id);
     expect(targets.resolve("key-1", [second, first])).toBe(first);
     expect(targets.resolve("key-1", [second])).toBeUndefined();
   });
 
+  it("cancels a gesture when its key disappears", () => {
+    vi.useFakeTimers();
+    const detector = new AgentPressDetector(650);
+    const singlePress = vi.fn();
+    const longPress = vi.fn();
+
+    detector.keyDown("key-1", "agent-1", { onLongPress: longPress });
+    detector.cancel("key-1");
+    vi.advanceTimersByTime(650);
+    detector.keyUp("key-1", singlePress);
+    expect(longPress).not.toHaveBeenCalled();
+    expect(singlePress).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
   it.each([
-    "codex://threads/thread-1",
     "cursor://agent-deck.focus/open?conversationId=conversation-1",
     "cursor://anysphere.cursor-deeplink/background-agent?bcId=cloud-1",
   ])("dispatches an allowed focus URL: %s", async (href) => {
@@ -136,7 +136,6 @@ describe("Stream Deck agent focus", () => {
   });
 
   it.each([
-    "codex://threads/thread-1",
     "cursor://agent-deck.focus/open?conversationId=legacy",
     "cursor://anysphere.cursor-deeplink/background-agent?bcId=cloud-1&workspace=%2Fignored",
   ])("opens an untargeted or non-local link directly: %s", async (href) => {
@@ -164,6 +163,9 @@ describe("Stream Deck agent focus", () => {
     await expect(
       focusAgent(agent("fake:one", "https://example.com/agent"), launch),
     ).resolves.toMatchObject({ status: "unavailable" });
+    await expect(
+      focusAgent(agent("codex:one", "codex://threads/one"), launch),
+    ).resolves.toMatchObject({ status: "unavailable" });
     await expect(focusAgent(agent("fake:two"), launch)).resolves.toMatchObject({
       status: "unavailable",
     });
@@ -173,7 +175,10 @@ describe("Stream Deck agent focus", () => {
   it("reports launcher failures", async () => {
     await expect(
       focusAgent(
-        agent("codex:one", "codex://threads/one"),
+        agent(
+          "cursor:one",
+          "cursor://anysphere.cursor-deeplink/background-agent?bcId=one",
+        ),
         vi.fn(async () => {
           throw new Error("open failed");
         }),

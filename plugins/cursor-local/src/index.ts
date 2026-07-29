@@ -3,10 +3,13 @@ import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   canonicalId,
+  isAgentActiveOrRecent,
+  isRunActiveOrRecent,
+  normalizedWorkspaceRoots,
+  workspaceResourcesForRoots,
   type Agent,
   type AgentRun,
   type CommandResult,
@@ -108,20 +111,6 @@ interface Registry {
 
 type ConversationKind = "pending" | "top_level" | "subagent" | "background";
 
-interface CursorWorkspaceTarget {
-  roots: string[];
-  target: string;
-}
-
-const stableHash = (values: string[]): string =>
-  createHash("sha256")
-    .update(values.join("\0"))
-    .digest("base64url")
-    .slice(0, 22);
-
-const normalizedRoots = (roots: string[]): string[] =>
-  [...new Set(roots.map((root) => resolve(root)))].sort();
-
 const agentWorkspaceRoots = (agent: Agent | undefined): string[] => {
   const roots = agent?.metadata.workspaceRoots;
   return Array.isArray(roots)
@@ -131,45 +120,12 @@ const agentWorkspaceRoots = (agent: Agent | undefined): string[] => {
 
 const focusLink = (
   conversationId: string,
-  workspaceRoot?: string,
-  windowTarget?: string,
+  workspaceRoots: string[] = [],
 ): string => {
   const url = new URL("cursor://agent-deck.focus/open");
   url.searchParams.set("conversationId", conversationId);
-  if (workspaceRoot) url.searchParams.set("workspace", workspaceRoot);
-  if (windowTarget && windowTarget !== workspaceRoot)
-    url.searchParams.set("window", windowTarget);
+  for (const root of workspaceRoots) url.searchParams.append("workspace", root);
   return url.href;
-};
-
-const resourcesFor = (
-  roots: string[],
-): { workspace?: Workspace; projects: Project[] } => {
-  const normalized = normalizedRoots(roots);
-  if (!normalized.length) return { projects: [] };
-  const workspaceExternalId = stableHash(normalized);
-  const workspace: Workspace = {
-    id: canonicalId(PROVIDER_ID, `workspace:${workspaceExternalId}`),
-    providerId: PROVIDER_ID,
-    externalId: workspaceExternalId,
-    name:
-      normalized.length === 1
-        ? basename(normalized[0] ?? "") || "Cursor"
-        : `${basename(normalized[0] ?? "") || "Cursor"} +${normalized.length - 1}`,
-    metadata: { roots: normalized },
-  };
-  const projects = normalized.map((root) => {
-    const externalId = stableHash([root]);
-    return {
-      id: canonicalId(PROVIDER_ID, `project:${externalId}`),
-      providerId: PROVIDER_ID,
-      externalId,
-      workspaceId: workspace.id,
-      name: basename(root) || "Cursor",
-      metadata: { root },
-    };
-  });
-  return { workspace, projects };
 };
 
 const terminalStatus = (input: LifecycleHookInput): string =>
@@ -259,7 +215,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
     sdkVersion: 1 as const,
     capabilities: {
       discovery: true,
-      discoveryMode: "startup" as const,
+      discoveryMode: "poll" as const,
       liveEvents: true,
       commands: ["cancel"],
     },
@@ -302,8 +258,10 @@ class CursorLocalProvider implements AgentProviderPlugin {
   }
 
   async discover(): Promise<ProviderSnapshot> {
-    return this.enqueue(() => {
+    return this.enqueue(async () => {
       const observedAt = this.context?.now() ?? new Date().toISOString();
+      const { changed, expiredAgents } = this.pruneRegistry(observedAt);
+      if (changed) await this.persist();
       const agents = [...this.agents.values()].filter(
         (agent) =>
           this.conversationKinds.get(agent.externalId) === "top_level" ||
@@ -316,7 +274,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
         observedAt,
         workspaces: [...this.workspaces.values()],
         projects: [...this.projects.values()],
-        agents,
+        agents: [...agents, ...expiredAgents],
         runs: [...this.runs.values()].filter((run) =>
           agentIds.has(run.agentId),
         ),
@@ -477,9 +435,9 @@ class CursorLocalProvider implements AgentProviderPlugin {
     if (startsGeneration && input.generation_id)
       this.activeGenerations.set(input.conversation_id, input.generation_id);
 
-    const hookRoots = normalizedRoots(input.workspace_roots);
+    const hookRoots = normalizedWorkspaceRoots(input.workspace_roots);
     const roots = hookRoots.length ? hookRoots : agentWorkspaceRoots(existing);
-    const resources = resourcesFor(roots);
+    const resources = workspaceResourcesForRoots(PROVIDER_ID, roots);
     if (resources.workspace)
       this.workspaces.set(resources.workspace.id, resources.workspace);
     for (const project of resources.projects)
@@ -514,7 +472,6 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const projectId = primaryProject?.id ?? existing?.projectId;
     const workspaceId = resources.workspace?.id ?? existing?.workspaceId;
     const mode = cursorMode(input.composer_mode);
-    const windowTarget = this.cursorWindowTarget(roots);
     const sourceRevision = this.nextSourceRevision(input.conversation_id);
     const agent: Agent = {
       id: agentId,
@@ -545,12 +502,12 @@ class CursorLocalProvider implements AgentProviderPlugin {
         {
           rel: "focus",
           label: "Open in Cursor",
-          href: focusLink(input.conversation_id, roots[0], windowTarget),
+          href: focusLink(input.conversation_id, roots),
         },
       ],
       metadata: {
         ...existing?.metadata,
-        ...(mode ? { cursorMode: mode } : {}),
+        ...(mode ? { agentMode: mode, cursorMode: mode } : {}),
         ...(roots.length ? { workspaceRoots: roots } : {}),
       },
     };
@@ -651,6 +608,62 @@ class CursorLocalProvider implements AgentProviderPlugin {
     await this.emit?.(event);
   }
 
+  private pruneRegistry(now: string): {
+    changed: boolean;
+    expiredAgents: Agent[];
+  } {
+    let changed = false;
+    const expiredAgents: Agent[] = [];
+    for (const [id, agent] of this.agents) {
+      if (isAgentActiveOrRecent(agent, now)) continue;
+      if (this.conversationKinds.get(agent.externalId) === "top_level")
+        expiredAgents.push({
+          ...agent,
+          freshness: "stale",
+          requiresAttention: false,
+          sourceRevision: this.nextSourceRevision(agent.externalId),
+        });
+      this.agents.delete(id);
+      this.activeGenerations.delete(agent.externalId);
+      this.questionSignalToolUses.delete(agent.externalId);
+      changed = true;
+    }
+    for (const [id, run] of this.runs) {
+      if (this.agents.has(run.agentId) && isRunActiveOrRecent(run, now))
+        continue;
+      this.runs.delete(id);
+      changed = true;
+    }
+    const workspaceIds = new Set(
+      [...this.agents.values()].flatMap((agent) =>
+        agent.workspaceId ? [agent.workspaceId] : [],
+      ),
+    );
+    const projectIds = new Set(
+      [...this.agents.values()].flatMap((agent) =>
+        agent.projectId ? [agent.projectId] : [],
+      ),
+    );
+    for (const [id, project] of this.projects) {
+      if (
+        projectIds.has(id) ||
+        (project.workspaceId && workspaceIds.has(project.workspaceId))
+      )
+        continue;
+      this.projects.delete(id);
+      changed = true;
+    }
+    for (const project of this.projects.values()) {
+      if (project.workspaceId) workspaceIds.add(project.workspaceId);
+    }
+    for (const id of this.workspaces.keys()) {
+      if (workspaceIds.has(id)) continue;
+      this.workspaces.delete(id);
+      changed = true;
+    }
+    return { changed, expiredAgents };
+  }
+
   private async persist(): Promise<void> {
     if (!this.context) return;
     const registry: Registry = {
@@ -725,7 +738,22 @@ class CursorLocalProvider implements AgentProviderPlugin {
           this.migrationAgents.add(id);
         }
       }
-      if (this.backfillWorkspaceTargets()) await this.persist();
+      const pruned = this.pruneRegistry(this.context.now()).changed;
+      let markedStale = false;
+      for (const [id, agent] of this.agents) {
+        if (agent.freshness === "stale" && !agent.requiresAttention) continue;
+        this.agents.set(id, {
+          ...agent,
+          freshness: "stale",
+          requiresAttention: false,
+          sourceRevision: this.nextSourceRevision(agent.externalId),
+        });
+        markedStale = true;
+      }
+      const repairedResources = this.repairWorkspaceResources();
+      const repairedTargets = this.backfillWorkspaceTargets();
+      if (pruned || markedStale || repairedResources || repairedTargets)
+        await this.persist();
     } catch (error) {
       this.context.logger.warn(
         { error },
@@ -734,38 +762,59 @@ class CursorLocalProvider implements AgentProviderPlugin {
     }
   }
 
-  private backfillWorkspaceTargets(): boolean {
-    const knownWorkspaces = this.knownCursorWorkspaces();
-    const targetsByWorkspace = new Map(
-      knownWorkspaces.map((workspace) => [
-        canonicalId(PROVIDER_ID, `workspace:${stableHash(workspace.roots)}`),
-        workspace,
-      ]),
-    );
-    const targetsByProject = new Map(
-      knownWorkspaces.flatMap((workspace) =>
-        workspace.roots.map((root) => [
-          canonicalId(PROVIDER_ID, `project:${stableHash([root])}`),
-          { roots: [root], target: root } satisfies CursorWorkspaceTarget,
-        ]),
-      ),
-    );
+  private repairWorkspaceResources(): boolean {
     let changed = false;
     for (const [id, agent] of this.agents) {
-      const target =
-        (agent.workspaceId
-          ? targetsByWorkspace.get(agent.workspaceId)
-          : undefined) ??
-        (agent.projectId ? targetsByProject.get(agent.projectId) : undefined);
-      if (!target) continue;
-      const targetHref = focusLink(
-        agent.externalId,
-        target.roots[0],
-        target.target,
+      const resources = workspaceResourcesForRoots(
+        PROVIDER_ID,
+        agentWorkspaceRoots(agent),
       );
+      if (!resources.workspace) continue;
+      const workspace = resources.workspace;
+      if (!this.workspaces.has(workspace.id)) {
+        this.workspaces.set(workspace.id, workspace);
+        changed = true;
+      }
+      for (const project of resources.projects) {
+        if (this.projects.has(project.id)) continue;
+        this.projects.set(project.id, project);
+        changed = true;
+      }
+      const projectId = resources.projects[0]?.id;
+      if (
+        agent.workspaceId !== workspace.id ||
+        (projectId && agent.projectId !== projectId)
+      ) {
+        this.agents.set(id, {
+          ...agent,
+          workspaceId: workspace.id,
+          ...(projectId ? { projectId } : {}),
+        });
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  private backfillWorkspaceTargets(): boolean {
+    let changed = false;
+    for (const [id, agent] of this.agents) {
+      const storedRoots = agent.workspaceId
+        ? this.workspaces.get(agent.workspaceId)?.metadata.roots
+        : undefined;
+      const existingRoots = agentWorkspaceRoots(agent);
+      const roots = existingRoots.length
+        ? existingRoots
+        : Array.isArray(storedRoots)
+          ? storedRoots.filter(
+              (root): root is string => typeof root === "string",
+            )
+          : [];
+      if (!roots.length) continue;
+      const targetHref = focusLink(agent.externalId, roots);
       const currentFocus = agent.links.find((link) => link.rel === "focus");
       if (
-        agentWorkspaceRoots(agent).join("\0") === target.roots.join("\0") &&
+        existingRoots.join("\0") === roots.join("\0") &&
         currentFocus?.href === targetHref
       )
         continue;
@@ -775,82 +824,12 @@ class CursorLocalProvider implements AgentProviderPlugin {
         links: agent.links.map((link) =>
           link.rel === "focus" ? { ...link, href: targetHref } : link,
         ),
-        metadata: { ...agent.metadata, workspaceRoots: target.roots },
+        metadata: { ...agent.metadata, workspaceRoots: roots },
       });
       this.migrationAgents.add(id);
       changed = true;
     }
     return changed;
-  }
-
-  private cursorWindowTarget(roots: string[]): string | undefined {
-    const expected = roots.join("\0");
-    return this.knownCursorWorkspaces().find(
-      (workspace) => workspace.roots.join("\0") === expected,
-    )?.target;
-  }
-
-  private knownCursorWorkspaces(): CursorWorkspaceTarget[] {
-    if (!this.stateDatabasePath) return [];
-    let database: DatabaseSync | undefined;
-    try {
-      database = new DatabaseSync(this.stateDatabasePath, { readOnly: true });
-      const pathValue = (value: unknown): string | undefined => {
-        if (typeof value !== "string" || !value) return;
-        try {
-          const path = value.startsWith("file:") ? fileURLToPath(value) : value;
-          return path.startsWith("/") ? resolve(path) : undefined;
-        } catch {
-          return undefined;
-        }
-      };
-      const parseRow = (key: string): Record<string, unknown> | undefined => {
-        const row = database
-          ?.prepare("SELECT value FROM ItemTable WHERE key = ?")
-          .get(key) as { value?: unknown } | undefined;
-        const json =
-          typeof row?.value === "string"
-            ? row.value
-            : row?.value instanceof Uint8Array
-              ? Buffer.from(row.value).toString("utf8")
-              : undefined;
-        return json ? (JSON.parse(json) as Record<string, unknown>) : undefined;
-      };
-      const metadata = parseRow("workspaceMetadata.entries") as
-        | {
-            entries?: Array<{
-              folderUri?: unknown;
-              configPath?: unknown;
-              paths?: Array<{ uri?: { fsPath?: unknown; path?: unknown } }>;
-            }>;
-          }
-        | undefined;
-      const workspaces: CursorWorkspaceTarget[] = [];
-      for (const entry of metadata?.entries ?? []) {
-        const roots = normalizedRoots(
-          (entry.paths ?? []).flatMap((path) => {
-            const root =
-              pathValue(path.uri?.fsPath) ?? pathValue(path.uri?.path);
-            return root ? [root] : [];
-          }),
-        );
-        const folder = pathValue(entry.folderUri);
-        if (!roots.length && folder) roots.push(folder);
-        const config = pathValue(entry.configPath);
-        const target =
-          roots.length === 1
-            ? (folder ?? roots[0])
-            : config?.endsWith(".code-workspace")
-              ? config
-              : undefined;
-        if (roots.length && target) workspaces.push({ roots, target });
-      }
-      return workspaces;
-    } catch {
-      return [];
-    } finally {
-      database?.close();
-    }
   }
 
   private nextSourceRevision(conversationId: string): number {

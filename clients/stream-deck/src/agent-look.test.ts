@@ -53,6 +53,27 @@ describe("agent key look", () => {
     expect(new Set(frames).size).toBe(10);
   });
 
+  it.each([0, 1] as const)(
+    "blinks the question indicator for input variant %s",
+    (variant) => {
+      const seed = Array.from(
+        { length: 64 },
+        (_, index) => `question:${index}`,
+      ).find(
+        (candidate) =>
+          agentSceneVariant(candidate, "waiting_for_input") === variant,
+      );
+
+      expect(seed).toBeDefined();
+      expect(agentLookScene("waiting_for_input", seed!, 0)).toContain(
+        'opacity="1.00"',
+      );
+      expect(agentLookScene("waiting_for_input", seed!, 700)).toContain(
+        'opacity="0.12"',
+      );
+    },
+  );
+
   it.each([...AGENT_STATES, "empty"] as const)(
     "offers two stable variants for %s",
     (state) => {

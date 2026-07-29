@@ -15,6 +15,7 @@ store prompts, messages, tool arguments, command output, diffs, or artifacts.
 - Node.js 24 or newer
 - Codex CLI for the Codex provider
 - Cursor IDE or Agent CLI for the local Cursor provider
+- OpenAI Codex extension (`openai.chatgpt`) in Cursor for Codex thread focus
 - A Cursor API key for the Cursor Cloud provider
 - Stream Deck 7.1 or newer for the hardware client
 
@@ -41,9 +42,12 @@ Enable live observation for independently launched Codex sessions:
 node apps/cli/dist/index.js codex-hooks install
 ```
 
-Then open `/hooks` inside Codex, review the five Agent Deck hook definitions,
-and trust them. The installation command preserves existing hooks and creates a
-backup before changing `~/.codex/hooks.json`.
+Then open `/hooks` inside Codex, review the seven Agent Deck hook definitions,
+and trust them. The installation command preserves existing hooks, repairs
+partial installations, and creates a backup before changing
+`~/.codex/hooks.json`. Codex plan mode uses the same plan badge as Cursor;
+native `request_user_input` calls appear as waiting-for-input, and approval
+prompts remain visually distinct.
 
 Enable metadata-only observation for normal local Cursor IDE and interactive
 Agent CLI sessions:
@@ -52,26 +56,27 @@ Agent CLI sessions:
 node apps/cli/dist/index.js cursor-hooks install
 ```
 
-The command merges seven fail-open handlers into `~/.cursor/hooks.json`,
+The command merges eight fail-open handlers into `~/.cursor/hooks.json`,
 preserves unrelated hooks, and creates a backup. Existing conversations appear
 after their next lifecycle or tool event; Agent Deck does not scan Cursor
 transcripts, logs, or internal databases. Local hooks expose running,
-ready-for-review, failed, and cancelled states, but do not provide authoritative
-waiting-for-input or waiting-for-approval signals. No Cursor API key is needed
-for this provider.
+ready-for-review, failed, cancelled, and native question-waiting states. No
+Cursor API key is needed for this provider.
 
-Install the companion extension that lets Stream Deck keys open the exact local
-Cursor IDE conversation:
+Install the companion extension that lets Stream Deck keys open exact local
+Cursor IDE conversations and Codex threads:
 
 ```sh
 node apps/cli/dist/index.js cursor-focus install
 ```
 
-The extension receives only the native conversation ID. It checks that the
-installed Cursor version exposes the required local conversation commands and
-shows an in-app error instead of silently opening or stopping the wrong
-conversation. Cursor Agent CLI terminal sessions remain observable but are not
-focus targets.
+The extension receives only the native conversation or thread ID and workspace
+identity. Agent Deck selects one exact Cursor window: local Cursor
+conversations require equal normalized root sets, while Codex chooses the
+unique longest workspace root containing the thread `cwd`. Missing or duplicate
+matches fail safely. Codex focus requires the OpenAI Codex extension in Cursor;
+there is no fallback to the standalone Codex app. Cursor Agent CLI terminal
+sessions remain observable but are not focus targets.
 
 For a credential-free demo:
 
@@ -101,11 +106,14 @@ characters rendered as flat white silhouettes, with stable variants for idle,
 working, input, approval, review, failed, cancelled, and unknown states.
 Working variants use energetic tool and writing loops; review variants jump and
 present their finished work. Empty character-mode slots use the same restful
-idle scenes. Pressing an occupied Agent Slot opens that exact Codex, local
-Cursor, or Cursor Cloud conversation. A double press stops its active run. A
-long press deletes the Agent Deck record and its history, suppressing provider
+idle scenes. A single press latches the agent currently rendered on key-down,
+then opens that exact Codex thread in Cursor, local Cursor conversation, or
+Cursor Cloud conversation. A long press deletes the Agent Deck
+record and its history, suppressing provider
 rediscovery until that external agent reports newer activity. Encoder rotation
-changes pages; keypad presses do not page.
+changes pages; keypad presses do not page. Pressing System Health clears all
+agent records and the device's in-memory snapshot, then immediately rediscovers
+active agents.
 
 ## Commands
 

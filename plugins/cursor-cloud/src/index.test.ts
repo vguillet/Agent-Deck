@@ -33,7 +33,7 @@ describe("Cursor Cloud provider focus links", () => {
           status: "finished",
           lastModified: Date.parse("2026-07-28T09:00:00.000Z"),
           archived: false,
-          repos: [],
+          repos: ["https://github.com/example/agent-deck.git"],
         },
       ],
     } as never);
@@ -66,6 +66,12 @@ describe("Cursor Cloud provider focus links", () => {
         href: "cursor://anysphere.cursor-deeplink/background-agent?bcId=cloud-agent-1",
       },
     ]);
+    expect(snapshot.agents[0]?.workspaceId).toBe(snapshot.workspaces[0]?.id);
+    expect(snapshot.agents[0]?.projectId).toBe(snapshot.projects[0]?.id);
+    expect(snapshot.projects[0]).toMatchObject({
+      workspaceId: snapshot.workspaces[0]?.id,
+      name: "agent-deck",
+    });
     await plugin.dispose();
   });
 

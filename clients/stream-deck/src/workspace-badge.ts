@@ -1,18 +1,21 @@
 import type { Agent, Workspace } from "@agent-deck/domain";
+import { basename } from "node:path";
 
 const BADGE_X = 122;
 const BADGE_Y = 48;
 const BADGE_RADIUS = 13;
 const WORKSPACE_COLOURS = [
-  "#2563eb",
-  "#f97316",
-  "#a855f7",
-  "#14b8a6",
   "#e11d48",
-  "#84cc16",
+  "#f97316",
   "#d97706",
-  "#06b6d4",
+  "#65a30d",
+  "#16a34a",
+  "#0d9488",
+  "#0891b2",
+  "#2563eb",
+  "#4f46e5",
   "#7c3aed",
+  "#a855f7",
   "#db2777",
 ] as const;
 
@@ -51,19 +54,15 @@ export const workspaceColour = (
   workspaceId: string,
   visibleWorkspaceIds: readonly string[] = [workspaceId],
 ): string => {
-  const assigned = new Map<string, number>();
-  const occupied = new Set<number>();
   const ids = Array.from(new Set([...visibleWorkspaceIds, workspaceId])).sort(
     (left, right) => left.localeCompare(right),
   );
-  for (const id of ids) {
-    let slot = hash(id) % WORKSPACE_COLOURS.length;
-    while (occupied.has(slot) && occupied.size < WORKSPACE_COLOURS.length)
-      slot = (slot + 1) % WORKSPACE_COLOURS.length;
-    assigned.set(id, slot);
-    occupied.add(slot);
-  }
-  return WORKSPACE_COLOURS[assigned.get(workspaceId) ?? 0] ?? "#2563eb";
+  const index = ids.indexOf(workspaceId);
+  const slot =
+    ids.length === 1
+      ? hash(workspaceId) % WORKSPACE_COLOURS.length
+      : Math.floor((index * WORKSPACE_COLOURS.length) / ids.length);
+  return WORKSPACE_COLOURS[slot] ?? "#2563eb";
 };
 
 export const workspaceBadgesNeeded = (
@@ -74,7 +73,7 @@ export const workspaceBadgesNeeded = (
   ).size > 1;
 
 export const workspaceBadgeSvg = (
-  workspace?: Workspace,
+  workspace?: Pick<Workspace, "id" | "name">,
   visibleWorkspaceIds: readonly string[] = [],
 ): string => {
   if (!workspace) return "";
@@ -82,4 +81,28 @@ export const workspaceBadgeSvg = (
     <circle cx="${BADGE_X}" cy="${BADGE_Y}" r="${BADGE_RADIUS}" fill="${workspaceColour(workspace.id, visibleWorkspaceIds)}" stroke="white" stroke-opacity=".7" stroke-width="1.5"/>
     <text x="${BADGE_X}" y="${BADGE_Y + 4}" text-anchor="middle" font-family="system-ui" font-size="10" font-weight="800" fill="white">${workspaceAcronym(workspace.name)}</text>
   </g>`;
+};
+
+export const agentWorkspaceBadgeSvg = (
+  agent: Pick<Agent, "workspaceId" | "metadata">,
+  workspace?: Pick<Workspace, "id" | "name">,
+  visibleWorkspaceIds: readonly string[] = [],
+): string => {
+  if (workspace) return workspaceBadgeSvg(workspace, visibleWorkspaceIds);
+  if (!agent.workspaceId) return "";
+  const roots = agent.metadata.workspaceRoots;
+  if (!Array.isArray(roots)) return "";
+  const workspaceRoots = roots.filter(
+    (root): root is string => typeof root === "string" && root.length > 0,
+  );
+  if (!workspaceRoots.length) return "";
+  const firstName = basename(workspaceRoots[0]!) || "Workspace";
+  const name =
+    workspaceRoots.length === 1
+      ? firstName
+      : `${firstName} +${workspaceRoots.length - 1}`;
+  return workspaceBadgeSvg(
+    { id: agent.workspaceId, name },
+    visibleWorkspaceIds,
+  );
 };

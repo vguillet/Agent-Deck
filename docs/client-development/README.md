@@ -14,7 +14,9 @@ inside the client.
 Agent links are semantic. Clients may open a link with `rel: "focus"` to switch
 to its application, but must allowlist schemes appropriate to their platform
 and must not treat navigation as a provider command. The macOS Stream Deck
-client accepts only `codex:` and `cursor:` focus links.
+client accepts only `cursor:` focus links. It routes `cursor-local` and `codex`
+agents through `AgentDeckClient.focusAgent`; Cursor Cloud retains its direct
+Cursor deep link. No generic `codex:` launcher is available.
 
 Clients cancel an active run with `AgentDeckClient.cancelAgent`. Passing the
 rendered agent revision protects against acting on a slot whose target changed.

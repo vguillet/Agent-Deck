@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EXTENSION_ID = "agent-deck.focus";
-const EXTENSION_VERSION = "0.1.0";
+const EXTENSION_VERSION = "0.3.0";
 const DEFAULT_CURSOR_BINARY =
   "/Applications/Cursor.app/Contents/Resources/app/bin/cursor";
 

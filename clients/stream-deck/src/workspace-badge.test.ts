@@ -1,6 +1,7 @@
 import type { Workspace } from "@agent-deck/domain";
 import { describe, expect, it } from "vitest";
 import {
+  agentWorkspaceBadgeSvg,
   workspaceAcronym,
   workspaceBadgesNeeded,
   workspaceBadgeSvg,
@@ -41,6 +42,21 @@ describe("Stream Deck workspace badges", () => {
     expect(new Set(colours).size).toBe(ids.length);
   });
 
+  it("spreads small workspace sets across the colour wheel", () => {
+    const two = ["workspace:alpha", "workspace:beta"];
+    expect(two.map((id) => workspaceColour(id, two))).toEqual([
+      "#e11d48",
+      "#0891b2",
+    ]);
+
+    const three = [...two, "workspace:gamma"];
+    expect(three.map((id) => workspaceColour(id, three))).toEqual([
+      "#e11d48",
+      "#16a34a",
+      "#4f46e5",
+    ]);
+  });
+
   it("only shows badges when agents span multiple workspaces", () => {
     expect(workspaceBadgesNeeded([])).toBe(false);
     expect(
@@ -72,5 +88,33 @@ describe("Stream Deck workspace badges", () => {
     expect(
       workspaceBadgeSvg(workspace("workspace:safe", 'R&D "Tools"')),
     ).toContain('aria-label="Workspace R&amp;D &quot;Tools&quot;"');
+  });
+
+  it("derives a missing workspace name from a single agent root", () => {
+    const svg = agentWorkspaceBadgeSvg({
+      workspaceId: "workspace:agent-deck",
+      metadata: {
+        workspaceRoots: ["/Users/test/Repos/Agent-Deck"],
+      },
+    });
+
+    expect(svg).toContain('aria-label="Workspace Agent-Deck"');
+    expect(svg).toContain(">AD</text>");
+  });
+
+  it("derives a multi-root workspace name and acronym", () => {
+    const svg = agentWorkspaceBadgeSvg({
+      workspaceId: "workspace:website",
+      metadata: {
+        workspaceRoots: [
+          "/Users/test/Repos/Website",
+          "/Users/test/Repos/api",
+          "/Users/test/Repos/admin",
+        ],
+      },
+    });
+
+    expect(svg).toContain('aria-label="Workspace Website +2"');
+    expect(svg).toContain(">W2</text>");
   });
 });

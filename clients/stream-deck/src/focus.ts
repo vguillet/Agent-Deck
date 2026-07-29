@@ -20,6 +20,10 @@ export class RenderedAgentTargets {
     else this.targets.delete(actionId);
   }
 
+  id(actionId: string): string | undefined {
+    return this.targets.get(actionId);
+  }
+
   resolve(actionId: string, currentAgents: Agent[]): Agent | undefined {
     const agentId = this.targets.get(actionId);
     return agentId
@@ -29,62 +33,52 @@ export class RenderedAgentTargets {
 }
 
 interface PressCallbacks {
-  onDoublePress(): void;
-  onLongPress(): void;
+  onLongPress(agentId: string): void;
 }
 
 interface ActivePress {
   longPressTimer?: NodeJS.Timeout;
   handled: boolean;
-}
-
-interface PendingSinglePress {
-  timer: NodeJS.Timeout;
+  agentId: string;
 }
 
 export class AgentPressDetector {
   private readonly active = new Map<string, ActivePress>();
-  private readonly pendingSingles = new Map<string, PendingSinglePress>();
 
-  constructor(
-    private readonly doublePressWindowMs: number,
-    private readonly longPressDurationMs: number,
-  ) {}
+  constructor(private readonly longPressDurationMs: number) {}
 
-  keyDown(actionId: string, callbacks: PressCallbacks): void {
+  keyDown(
+    actionId: string,
+    agentId: string | undefined,
+    callbacks: PressCallbacks,
+  ): void {
     if (this.active.has(actionId)) return;
-    const pendingSingle = this.pendingSingles.get(actionId);
-    if (pendingSingle) {
-      clearTimeout(pendingSingle.timer);
-      this.pendingSingles.delete(actionId);
-      this.active.set(actionId, { handled: true });
-      callbacks.onDoublePress();
-      return;
-    }
+    if (!agentId) return;
 
-    const active: ActivePress = { handled: false };
+    const active: ActivePress = { handled: false, agentId };
     const timer = setTimeout(() => {
       active.handled = true;
-      callbacks.onLongPress();
+      callbacks.onLongPress(agentId);
     }, this.longPressDurationMs);
     timer.unref();
     active.longPressTimer = timer;
     this.active.set(actionId, active);
   }
 
-  keyUp(actionId: string, onSinglePress: () => void): void {
+  keyUp(actionId: string, onSinglePress: (agentId: string) => void): void {
     const active = this.active.get(actionId);
     if (!active) return;
     this.active.delete(actionId);
     if (active.longPressTimer) clearTimeout(active.longPressTimer);
     if (active.handled) return;
+    onSinglePress(active.agentId);
+  }
 
-    const timer = setTimeout(() => {
-      this.pendingSingles.delete(actionId);
-      onSinglePress();
-    }, this.doublePressWindowMs);
-    timer.unref();
-    this.pendingSingles.set(actionId, { timer });
+  cancel(actionId: string): void {
+    const active = this.active.get(actionId);
+    if (!active) return;
+    this.active.delete(actionId);
+    if (active.longPressTimer) clearTimeout(active.longPressTimer);
   }
 }
 
@@ -105,7 +99,7 @@ export const createMacOSFocusLauncher = (
 ): FocusLauncher => {
   return async (href) => {
     const url = new URL(href);
-    if (url.protocol !== "codex:" && url.protocol !== "cursor:")
+    if (url.protocol !== "cursor:")
       throw new Error(`Unsupported focus URL scheme: ${url.protocol}`);
 
     const isLocalCursorAgent =
@@ -148,7 +142,7 @@ export const focusAgent = async (
   } catch {
     return { status: "unavailable", reason: "The focus link is invalid" };
   }
-  if (url.protocol !== "codex:" && url.protocol !== "cursor:")
+  if (url.protocol !== "cursor:")
     return {
       status: "unavailable",
       reason: `The ${url.protocol} focus scheme is not allowed`,

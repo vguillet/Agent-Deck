@@ -200,6 +200,91 @@ export const RegisterFrameSchema = z.object({
   client: ClientDescriptorSchema,
 });
 
+export const CursorFocusTargetKindSchema = z.enum([
+  "cursor.conversation",
+  "codex.thread",
+]);
+
+export const CursorWindowRegistrationSchema = z.object({
+  type: z.literal("window.register"),
+  windowInstanceId: z.string().uuid(),
+  workspaceRoots: z.array(z.string().min(1)).min(1).max(32),
+  launchTarget: z.string().min(1),
+  focused: z.boolean(),
+  version: z.string().min(1),
+  focusKinds: z
+    .array(CursorFocusTargetKindSchema)
+    .min(1)
+    .max(CursorFocusTargetKindSchema.options.length)
+    .optional(),
+});
+
+export const CursorWindowStateSchema = z.object({
+  type: z.literal("window.state"),
+  focused: z.boolean(),
+});
+
+export const CursorFocusResultStatusSchema = z.enum([
+  "opened",
+  "unavailable",
+  "ambiguous",
+  "timeout",
+  "failed",
+]);
+
+export const CursorFocusResultFrameSchema = z.object({
+  type: z.literal("focus.result"),
+  requestId: z.string().uuid(),
+  status: CursorFocusResultStatusSchema,
+  message: z.string().optional(),
+});
+
+export const CursorConversationFocusTargetSchema = z.object({
+  kind: z.literal("cursor.conversation"),
+  conversationId: z.string().min(1),
+  workspaceRoots: z.array(z.string().min(1)).min(1).max(32),
+});
+
+export const CodexThreadFocusTargetSchema = z.object({
+  kind: z.literal("codex.thread"),
+  threadId: z.string().min(1),
+  cwd: z.string().min(1),
+});
+
+export const CursorFocusTargetSchema = z.discriminatedUnion("kind", [
+  CursorConversationFocusTargetSchema,
+  CodexThreadFocusTargetSchema,
+]);
+
+export const CursorFocusIntentFrameSchema = z.object({
+  type: z.literal("focus.intent"),
+  requestId: z.string().uuid(),
+  target: CursorFocusTargetSchema,
+});
+
+export const LegacyCursorFocusIntentFrameSchema = z.object({
+  type: z.literal("focus.intent"),
+  requestId: z.string().uuid(),
+  conversationId: z.string().min(1),
+});
+
+export const CompatibleCursorFocusIntentFrameSchema = z.union([
+  CursorFocusIntentFrameSchema,
+  LegacyCursorFocusIntentFrameSchema,
+]);
+
+export const CursorWindowClientFrameSchema = z.discriminatedUnion("type", [
+  CursorWindowRegistrationSchema,
+  CursorWindowStateSchema,
+  CursorFocusResultFrameSchema,
+]);
+
+export const CursorFocusResponseSchema = z.object({
+  requestId: z.string().uuid(),
+  status: CursorFocusResultStatusSchema,
+  message: z.string().optional(),
+});
+
 export const ListQuerySchema = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -243,6 +328,21 @@ export interface Page<T> {
 
 export type RegisterFrame = z.infer<typeof RegisterFrameSchema>;
 export type SubscriptionFrame = z.infer<typeof SubscriptionSchema>;
+export type CursorWindowRegistration = z.infer<
+  typeof CursorWindowRegistrationSchema
+>;
+export type CursorFocusResult = z.infer<typeof CursorFocusResponseSchema>;
+export type CursorFocusTarget = z.infer<typeof CursorFocusTargetSchema>;
+export type CursorFocusTargetKind = z.infer<typeof CursorFocusTargetKindSchema>;
+export type CursorFocusIntentFrame = z.infer<
+  typeof CursorFocusIntentFrameSchema
+>;
+export type CompatibleCursorFocusIntentFrame = z.infer<
+  typeof CompatibleCursorFocusIntentFrameSchema
+>;
+
+export const workspaceRootsKey = (roots: readonly string[]): string =>
+  [...new Set(roots)].sort().join("\0");
 
 export const encodeCursor = (offset: number): string =>
   Buffer.from(String(offset), "utf8").toString("base64url");

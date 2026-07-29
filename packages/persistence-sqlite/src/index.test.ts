@@ -92,6 +92,30 @@ describe("SqliteEventStore", () => {
     store.close();
   });
 
+  it("does not open stale attention for restored inactive agents", () => {
+    const store = createMemoryStore();
+    store.applyProviderEvent({
+      providerId: "cursor-local",
+      type: "agent.upserted",
+      occurredAt: "2026-07-28T09:00:00.000Z",
+      agentId: "fake:one",
+      payload: {
+        agent: {
+          ...makeAgent("ready_for_review"),
+          freshness: "stale",
+          requiresAttention: false,
+        },
+      },
+    });
+
+    expect(store.getAgent("fake:one")).toMatchObject({
+      freshness: "stale",
+      requiresAttention: false,
+    });
+    expect(store.listAttention({ offset: 0, limit: 10 }).items).toEqual([]);
+    store.close();
+  });
+
   it("restores freshness when provider telemetry resumes", () => {
     const store = createMemoryStore();
     store.applyProviderEvent({
@@ -200,6 +224,38 @@ describe("SqliteEventStore", () => {
       lastActivityAt: "2026-07-28T09:01:00.000Z",
     });
     expect(store.getRun(run.id)).toBeDefined();
+    store.close();
+  });
+
+  it("clears all agents and allows the same snapshot to repopulate them", () => {
+    const store = createMemoryStore();
+    const agent = makeAgent("running", "2026-07-28T09:00:00.000Z");
+    store.applySnapshot("fake", {
+      complete: true,
+      observedAt: "2026-07-28T09:00:00.000Z",
+      workspaces: [],
+      projects: [],
+      agents: [agent],
+      runs: [],
+      attention: [],
+    });
+
+    expect(store.clearAgents()).toBe(1);
+    expect(store.listAgents({}, { offset: 0, limit: 10 }).items).toEqual([]);
+    expect(store.listAttention({ offset: 0, limit: 10 }).items).toEqual([]);
+
+    expect(
+      store.applySnapshot("fake", {
+        complete: true,
+        observedAt: "2026-07-28T09:00:30.000Z",
+        workspaces: [],
+        projects: [],
+        agents: [agent],
+        runs: [],
+        attention: [],
+      }),
+    ).toHaveLength(1);
+    expect(store.getAgent(agent.id)).toBeDefined();
     store.close();
   });
 

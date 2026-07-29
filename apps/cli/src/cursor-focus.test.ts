@@ -22,7 +22,7 @@ const setup = async (initialVersion?: string) => {
           : "",
         stderr: "",
       };
-    if (arguments_[0] === "--install-extension") version = "0.1.0";
+    if (arguments_[0] === "--install-extension") version = "0.3.0";
     if (arguments_[0] === "--uninstall-extension") version = undefined;
     return { stdout: "", stderr: "" };
   });
@@ -44,7 +44,7 @@ describe("Cursor focus extension installer", () => {
       "already installed",
     );
     await expect(cursorFocusStatus(harness.options)).resolves.toContain(
-      "0.1.0 is installed",
+      "0.3.0 is installed",
     );
     expect(
       harness.run.mock.calls.filter(
@@ -54,8 +54,13 @@ describe("Cursor focus extension installer", () => {
   });
 
   it("upgrades existing versions and uninstalls only Agent Deck Focus", async () => {
-    const harness = await setup("0.0.9");
+    const harness = await setup("0.2.0");
     await installCursorFocus(harness.options);
+    expect(
+      harness.run.mock.calls.filter(
+        ([, arguments_]) => arguments_[0] === "--install-extension",
+      ),
+    ).toHaveLength(1);
     await expect(uninstallCursorFocus(harness.options)).resolves.toContain(
       "Removed",
     );

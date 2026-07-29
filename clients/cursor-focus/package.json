@@ -1,8 +1,8 @@
 {
   "name": "focus",
   "displayName": "Agent Deck Focus",
-  "description": "Opens or stops a specific local Cursor conversation from Agent Deck.",
-  "version": "0.1.0",
+  "description": "Opens exact Cursor conversations and local Codex threads from Agent Deck.",
+  "version": "0.3.0",
   "private": true,
   "publisher": "agent-deck",
   "type": "module",
@@ -13,6 +13,7 @@
     "ui"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onUri"
   ],
   "main": "./dist/extension.cjs",
@@ -22,13 +23,30 @@
   "categories": [
     "Other"
   ],
+  "contributes": {
+    "configuration": {
+      "title": "Agent Deck",
+      "properties": {
+        "agentDeck.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:47831",
+          "description": "Agent Deck core server URL."
+        }
+      }
+    }
+  },
   "scripts": {
     "build": "tsc -b && node scripts/build-extension.mjs",
     "prepackage": "node scripts/prepare-package.mjs",
-    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out release/agent-deck.focus-0.1.0.vsix"
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out release/agent-deck.focus-0.3.0.vsix"
+  },
+  "dependencies": {
+    "@agent-deck/api-contract": "0.1.0",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/vscode": "^1.95.0",
+    "@types/ws": "^8.18.1",
     "@vscode/vsce": "^3.6.0",
     "esbuild": "^0.25.8"
   }

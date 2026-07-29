@@ -24,6 +24,10 @@ sanitized state to survive restarts, and reject late events that would regress
 a newer run. Stable native conversation and generation IDs should be preferred
 over process IDs or timestamps. A missing hook event is not proof that a
 process ended, so freshness must be described as an observation lease.
+Restored checkpoint records must remain stale until current telemetry confirms
+them. Provider catalogs retain active and waiting agents, but prune non-active
+agents and completed runs after 24 hours so discovery does not become an
+unbounded historical archive.
 
 The local Cursor provider is intentionally separate from Cursor Cloud. Local
 Cursor uses user hooks and needs no API key, has no historical backfill, and

@@ -14,14 +14,23 @@ client implementation. Provider plugins return complete canonical resources;
 the SQLite reducer owns revisions, event sequences, deduplication, attention,
 and freshness.
 
-The core stores current snapshots and a 30-day canonical state-event history.
-Provider outages change provider health and data freshness, not the last known
+During a server run, the core stores current snapshots and canonical
+state-event history. Graceful shutdown and every startup clear agent snapshots,
+agent-scoped history, and deletion tombstones; startup provider discovery
+therefore always rebuilds the active view from a clean state. Provider outages
+during a run change provider health and data freshness, not the last known
 agent lifecycle state.
 
+Provider catalogs retain running and waiting agents regardless of age.
+Non-active agents and completed runs expire 24 hours after their last activity.
+Codex rebuilds its registry from app-server discovery plus recent hook-only
+sessions rather than retaining the full thread archive.
+
 Providers may attach semantic `focus` or `view` links to agents. The core
-persists and serves these links without launching applications or interpreting
-provider-specific URL schemes. A local client decides whether and how to open a
-link, so focusing an app does not become an agent command or state mutation.
+persists and serves these links. Cloud and generic links remain client-side
+navigation hints. Local Cursor and Codex focus use a separate brokered endpoint
+so the core can select and activate one registered Cursor window without
+turning focus into an agent command or state mutation.
 
 Cancellation is a separate provider command. The core validates the target and
 optional expected revision, then dispatches `cancel` only to the provider that
@@ -37,16 +46,27 @@ best-effort user hook events through loopback ingress. A fail-open reporter
 allowlists only conversation/generation IDs, workspace roots, lifecycle status,
 and non-sensitive mode/version metadata before transmission.
 
-The provider checkpoints this sanitized registry so a core restart preserves
-known sessions. It does not backfill from transcripts, logs, Cursor SQLite
-databases, or processes; a conversation created before hook installation
-appears after its next observed event. Five-minute staleness means hook
-telemetry stopped, not that the Cursor process is known to have exited.
+The provider checkpoints this sanitized registry for lifecycle continuity.
+Restored conversations remain stale and hidden from Stream Deck until a new
+hook confirms activity; old non-active records are removed after 24 hours. It
+does not backfill from transcripts, logs, Cursor SQLite databases, or processes;
+a conversation created before hook installation appears after its next
+observed event. Five-minute staleness means hook telemetry stopped, not that the
+Cursor process is known to have exited.
 
 Exact local IDE focusing is provided by the separately installed Agent Deck
-Focus extension for Cursor. It receives a conversation ID over Cursor's URI
-handler and invokes Cursor's local open or cancel command. It does not apply to
-interactive Agent CLI terminal sessions.
+Focus extension for Cursor. Each connection has a stable window instance ID,
+workspace roots, launch target, and supported focus target kinds. Cursor
+conversations match only an equal normalized workspace-root set. Codex threads
+match the unique window whose longest workspace root contains their normalized
+working directory; tied or duplicate matches are rejected.
+
+The core activates that exact Cursor launch target and sends a discriminated
+focus intent. Cursor targets invoke Cursor's local Composer command. Codex
+targets verify the `openai.chatgpt` extension, run its documented
+`chatgpt.openSidebar` command, and dispatch an isolated exact-thread Cursor URI.
+Failures are surfaced without a `codex:` or standalone Codex fallback.
+Interactive Cursor Agent CLI terminal sessions are not focus targets.
 
 ## Privacy boundary
 

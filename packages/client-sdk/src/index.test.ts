@@ -91,3 +91,39 @@ describe("AgentDeckClient watch", () => {
     watch.close();
   });
 });
+
+describe("AgentDeckClient focus", () => {
+  it("returns the acknowledged Cursor focus result", async () => {
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        status: "opened",
+      }),
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      new AgentDeckClient().focusAgent("cursor-local:conversation"),
+    ).resolves.toMatchObject({ status: "opened" });
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:47831/api/v1/agents/cursor-local%3Aconversation/focus",
+      { method: "POST" },
+    );
+  });
+});
+
+describe("AgentDeckClient clearAgents", () => {
+  it("clears the server-side agent collection", async () => {
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ cleared: 3 }),
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(new AgentDeckClient().clearAgents()).resolves.toBe(3);
+    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:47831/api/v1/agents", {
+      method: "DELETE",
+    });
+  });
+});

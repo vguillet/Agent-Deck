@@ -161,6 +161,7 @@ describe("Cursor local provider", () => {
     });
 
     expect((await harness.plugin.discover()).agents[0]?.metadata).toEqual({
+      agentMode: "ask",
       cursorMode: "ask",
       workspaceRoots: ["/workspace/alpha"],
     });
@@ -368,6 +369,8 @@ describe("Cursor local provider", () => {
     expect(snapshot.agents[0]).toMatchObject({
       externalId: "conversation-restore",
       state: "running",
+      freshness: "stale",
+      requiresAttention: false,
       links: [
         {
           rel: "focus",
@@ -381,6 +384,136 @@ describe("Cursor local provider", () => {
     expect(snapshot.runs[0]).toMatchObject({
       externalId: "generation-restore",
     });
+    await restored.handle({
+      hook_event_name: "postToolUse",
+      conversation_id: "conversation-restore",
+      generation_id: "generation-restore",
+      workspace_roots: ["/workspace/restore"],
+    });
+    expect((await restored.plugin.discover()).agents[0]).toMatchObject({
+      externalId: "conversation-restore",
+      freshness: "fresh",
+    });
+    await restored.close();
+  });
+
+  it("prunes expired restored agents, runs, and resources", async () => {
+    const first = await setup();
+    await first.handle({
+      hook_event_name: "beforeSubmitPrompt",
+      conversation_id: "conversation-expired",
+      generation_id: "generation-expired",
+      workspace_roots: ["/workspace/expired"],
+    });
+    const registry = JSON.parse(first.checkpoint()!) as {
+      agents: Array<{
+        state: string;
+        freshness: string;
+        requiresAttention: boolean;
+        lastActivityAt: string;
+      }>;
+      runs: Array<{
+        state: string;
+        finishedAt?: string;
+      }>;
+      projects: unknown[];
+      workspaces: unknown[];
+    };
+    Object.assign(registry.agents[0]!, {
+      state: "idle",
+      freshness: "fresh",
+      requiresAttention: false,
+      lastActivityAt: "2026-07-27T09:41:59.000Z",
+    });
+    Object.assign(registry.runs[0]!, {
+      state: "succeeded",
+      finishedAt: "2026-07-27T09:41:59.000Z",
+    });
+    await first.close();
+
+    const restored = await setup(JSON.stringify(registry));
+    const snapshot = await restored.plugin.discover();
+
+    expect(snapshot.agents).toEqual([]);
+    expect(snapshot.runs).toEqual([]);
+    expect(snapshot.projects).toEqual([]);
+    expect(snapshot.workspaces).toEqual([]);
+    const pruned = JSON.parse(restored.checkpoint()!) as {
+      agents: unknown[];
+      runs: unknown[];
+    };
+    expect(pruned.agents).toEqual([]);
+    expect(pruned.runs).toEqual([]);
+    await restored.close();
+  });
+
+  it("retains old active checkpoint agents as stale", async () => {
+    const first = await setup();
+    await first.handle({
+      hook_event_name: "beforeSubmitPrompt",
+      conversation_id: "conversation-active",
+      generation_id: "generation-active",
+      workspace_roots: ["/workspace/active"],
+    });
+    const registry = JSON.parse(first.checkpoint()!) as {
+      agents: Array<{ lastActivityAt: string }>;
+      runs: Array<{ startedAt?: string }>;
+    };
+    registry.agents[0]!.lastActivityAt = "2025-01-01T00:00:00.000Z";
+    registry.runs[0]!.startedAt = "2025-01-01T00:00:00.000Z";
+    await first.close();
+
+    const restored = await setup(JSON.stringify(registry));
+    expect((await restored.plugin.discover()).agents[0]).toMatchObject({
+      externalId: "conversation-active",
+      state: "running",
+      freshness: "stale",
+      requiresAttention: false,
+    });
+    await restored.close();
+  });
+
+  it("repairs missing workspace resources in older checkpoints", async () => {
+    const first = await setup();
+    await first.handle({
+      hook_event_name: "beforeSubmitPrompt",
+      conversation_id: "conversation-missing-workspace",
+      generation_id: "generation-missing-workspace",
+      workspace_roots: ["/workspace/legacy-app", "/workspace/shared"],
+    });
+    const registry = JSON.parse(first.checkpoint()!) as {
+      agents: Array<{ workspaceId?: string; projectId?: string }>;
+      workspaces: unknown[];
+      projects: unknown[];
+    };
+    registry.agents[0]!.workspaceId = "cursor-local:workspace:missing";
+    registry.agents[0]!.projectId = "cursor-local:project:missing";
+    registry.workspaces = [];
+    registry.projects = [];
+    await first.close();
+
+    const restored = await setup(JSON.stringify(registry));
+    const snapshot = await restored.plugin.discover();
+    const agent = snapshot.agents[0]!;
+
+    expect(snapshot.workspaces).toHaveLength(1);
+    expect(snapshot.workspaces[0]).toMatchObject({
+      id: agent.workspaceId,
+      name: "legacy-app +1",
+      metadata: {
+        roots: ["/workspace/legacy-app", "/workspace/shared"],
+      },
+    });
+    expect(snapshot.projects).toHaveLength(2);
+    expect(snapshot.projects[0]?.workspaceId).toBe(agent.workspaceId);
+    expect(snapshot.projects.map(({ id }) => id)).toContain(agent.projectId);
+
+    const repairedRegistry = JSON.parse(restored.checkpoint()!) as {
+      workspaces: unknown[];
+      projects: unknown[];
+    };
+    expect(repairedRegistry.workspaces).toHaveLength(1);
+    expect(repairedRegistry.projects).toHaveLength(2);
     await restored.close();
   });
 
@@ -439,8 +572,11 @@ describe("Cursor local provider", () => {
       workspaceRoots: [workspaceRoot, secondaryRoot],
     });
     const focusUrl = new URL(restoredAgent.links[0]!.href);
-    expect(focusUrl.searchParams.get("workspace")).toBe(workspaceRoot);
-    expect(focusUrl.searchParams.get("window")).toBe(workspaceFile);
+    expect(focusUrl.searchParams.getAll("workspace")).toEqual([
+      workspaceRoot,
+      secondaryRoot,
+    ]);
+    expect(focusUrl.searchParams.get("window")).toBeNull();
     await restored.close();
   });
 

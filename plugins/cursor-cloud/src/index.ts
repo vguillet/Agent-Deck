@@ -2,6 +2,7 @@ import { Agent, Cursor, type Run, type SDKAgentInfo } from "@cursor/sdk";
 import { z } from "zod";
 import {
   canonicalId,
+  workspaceResourcesForProjects,
   type Agent as CanonicalAgent,
   type AgentRun,
   type CommandResult,
@@ -9,6 +10,7 @@ import {
   type ProviderCommand,
   type ProviderHealth,
   type ProviderSnapshot,
+  type Workspace,
 } from "@agent-deck/domain";
 import type {
   AgentProviderPlugin,
@@ -94,6 +96,7 @@ class CursorCloudProvider implements AgentProviderPlugin {
     const apiKey = this.requireApiKey();
     const now = this.context.now();
     const projects = new Map<string, Project>();
+    const workspaces = new Map<string, Workspace>();
     try {
       let cursor: string | undefined;
       do {
@@ -106,10 +109,12 @@ class CursorCloudProvider implements AgentProviderPlugin {
         });
         for (const info of page.items) {
           if (!runtimeAgent(info)) continue;
-          const mappedProjects = (info.repos ?? []).map((repo) => {
-            const project: Project = {
-              id: canonicalId("cursor-cloud", `project:${repo}`),
-              providerId: "cursor-cloud",
+          const repositories = [...new Set(info.repos ?? [])].sort();
+          const resources = workspaceResourcesForProjects(
+            "cursor-cloud",
+            "repository",
+            repositories.map((repo) => ({
+              key: repo,
               externalId: repo,
               name:
                 repo
@@ -117,10 +122,13 @@ class CursorCloudProvider implements AgentProviderPlugin {
                   .at(-1)
                   ?.replace(/\.git$/, "") ?? repo,
               metadata: {},
-            };
+            })),
+            { repositories },
+          );
+          for (const project of resources.projects)
             projects.set(project.id, project);
-            return project;
-          });
+          if (resources.workspace)
+            workspaces.set(resources.workspace.id, resources.workspace);
           const runs = await this.listAllRuns(info.agentId);
           const latest = runs.at(0);
           const state = agentState(info.status);
@@ -130,7 +138,12 @@ class CursorCloudProvider implements AgentProviderPlugin {
             externalId: info.agentId,
             title:
               info.name || info.summary || `Cursor ${info.agentId.slice(-6)}`,
-            ...(mappedProjects[0] ? { projectId: mappedProjects[0].id } : {}),
+            ...(resources.projects[0]
+              ? { projectId: resources.projects[0].id }
+              : {}),
+            ...(resources.workspace
+              ? { workspaceId: resources.workspace.id }
+              : {}),
             state,
             freshness: "fresh",
             ...(latest
@@ -171,7 +184,7 @@ class CursorCloudProvider implements AgentProviderPlugin {
       return {
         complete: true,
         observedAt: now,
-        workspaces: [],
+        workspaces: [...workspaces.values()],
         projects: [...projects.values()],
         agents: [...this.agents.values()],
         runs: [...this.runs.values()],

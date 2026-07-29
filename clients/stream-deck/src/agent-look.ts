@@ -31,6 +31,9 @@ const animation = (elapsedMs: number, periodMs: number): number =>
 
 const number = (value: number): string => value.toFixed(2);
 
+const blinkOpacity = (elapsedMs: number): string =>
+  number(elapsedMs % 1_000 < 600 ? 1 : 0.12);
+
 const agent = ({
   x = 72,
   y = 58,
@@ -231,7 +234,9 @@ const inputScene = (
       scale: 0.94,
       rightArm: "raised",
     })}
-      ${questionBubble(103, 44, accent, pulse)}`;
+      <g opacity="${blinkOpacity(elapsedMs)}">
+        ${questionBubble(103, 44, accent, pulse)}
+      </g>`;
   return `${agent({
     x: 48,
     y: 62,
@@ -239,7 +244,7 @@ const inputScene = (
     leftArm: "forward",
     rightArm: "forward",
   })}
-    <g transform="translate(94 ${number(69 + Math.sin(phase) * 2)})">
+    <g opacity="${blinkOpacity(elapsedMs)}" transform="translate(94 ${number(69 + Math.sin(phase) * 2)})">
       <rect x="-18" y="-20" width="36" height="40" rx="5" fill="${accent}" fill-opacity=".16" stroke="${accent}" stroke-width="2"/>
       <text x="0" y="10" text-anchor="middle" font-family="system-ui" font-size="31" font-weight="800" fill="${accent}">?</text>
     </g>`;
