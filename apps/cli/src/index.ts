@@ -93,8 +93,11 @@ const main = async (): Promise<void> => {
   switch (command) {
     case "server": {
       const { startServer } = await import("@agent-deck/core-server");
+      const { startServerDashboard } = await import("./server-dashboard.js");
       const server = await startServer();
+      const stopDashboard = startServerDashboard(server);
       const close = (): void => {
+        stopDashboard();
         void server.close().then(() => process.exit(0));
       };
       process.once("SIGINT", close);

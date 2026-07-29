@@ -33,6 +33,11 @@ import {
 } from "./agent-look.js";
 import { agentLabelOverflows, agentLabelSvg } from "./agent-label.js";
 import {
+  connectorBubblesOverflow,
+  connectorBubblesSvg,
+  type ConnectorBubble,
+} from "./connector-bubbles.js";
+import {
   CLASSIC_AGENT_STATE_COLOUR,
   CLASSIC_EMPTY_AGENT_COLOUR,
 } from "./agent-palette.js";
@@ -149,6 +154,13 @@ const providerStyle = (providerId: string): ProviderStyle => {
   };
 };
 
+const providerBubbles = (providers: readonly Provider[]): ConnectorBubble[] =>
+  providers.map((provider) => ({
+    id: provider.id,
+    mark: providerStyle(provider.id).mark,
+    healthy: provider.health === "healthy",
+  }));
+
 const icon = (
   colour: string,
   symbol: string,
@@ -204,6 +216,53 @@ const systemStatusGlyph = (state: SystemDisplayState): string => {
   </g>`;
 };
 
+const systemDisplay = (
+  session: DeviceSession,
+): { colour: string; state: SystemDisplayState } => {
+  const status =
+    typeof session.health.status === "string"
+      ? session.health.status
+      : "unknown";
+  if (
+    session.connectionStatus === "connecting" ||
+    status === "connecting" ||
+    status === "restarting" ||
+    status === "loading" ||
+    status === "starting"
+  )
+    return { colour: "#f59e0b", state: "connecting" };
+  if (session.connectionStatus === "disconnected" || status === "disconnected")
+    return { colour: "#dc2626", state: "disconnected" };
+  if (session.connectionStatus === "connected" && status === "healthy")
+    return {
+      colour: CLASSIC_AGENT_STATE_COLOUR.ready_for_review,
+      state: "connected",
+    };
+  return { colour: "#dc2626", state: "degraded" };
+};
+
+const systemIcon = (
+  session: DeviceSession,
+  animationElapsedMs: number,
+): string => {
+  const display = systemDisplay(session);
+  return icon(display.colour, "", "#0f172a", String(session.allAgents.length), {
+    showStrip: false,
+    glyph: `${systemStatusGlyph(display.state)}
+        ${connectorBubblesSvg(providerBubbles(session.providers), animationElapsedMs)}`,
+  });
+};
+
+const setActionImage = async (
+  actionContext: KeyAction<ActionSettings> | DialAction<ActionSettings>,
+  image: string,
+): Promise<void> => {
+  await Promise.all([
+    actionContext.setTitle(""),
+    actionContext.setImage(image),
+  ]);
+};
+
 const title = (value: string, max = 18): string =>
   value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 
@@ -227,7 +286,7 @@ const stateSymbol: Record<Exclude<Agent["state"], "running">, string> = {
 const providerLogo = (providerId: string): string => {
   const id = providerId.toLowerCase();
   if (id.includes("cursor"))
-    return `<g>
+    return `<g transform="translate(0 93)">
       <rect x="98" y="5" width="41" height="41" rx="10" fill="#11100d"/>
       <path d="M118.5 10L133 18.5V35L118.5 43.5L104 35V18.5L118.5 10Z" fill="#4c4b47"/>
       <path d="M106 19.5H131L118.5 27.5L106 19.5Z" fill="white"/>
@@ -236,15 +295,17 @@ const providerLogo = (providerId: string): string => {
       <path d="M104 35L118.5 27.5V43.5L104 35Z" fill="#85847f"/>
     </g>`;
   if (id.includes("codex") || id.includes("openai") || id.includes("chatgpt"))
-    return `<g>
+    return `<g transform="translate(0 93)">
       <rect x="98" y="5" width="41" height="41" rx="10" fill="#11100d"/>
       <g transform="translate(104 11) scale(.18)">
         <path d="M60.87 57.26V42.31c0-1.26.47-2.2 1.57-2.83l30.05-17.3c4.09-2.36 8.97-3.46 14-3.46 18.88 0 30.83 14.63 30.83 30.2 0 1.1 0 2.36-.16 3.62l-31.14-18.25c-1.89-1.1-3.78-1.1-5.66 0L60.87 57.26Zm70.16 58.2V79.75c0-2.2-.94-3.78-2.83-4.88L88.71 51.91l12.9-7.39c1.1-.63 2.05-.63 3.15 0l30.04 17.3c8.65 5.03 14.47 15.73 14.47 26.11 0 11.95-7.08 22.97-18.24 27.53ZM51.59 84 38.7 76.45c-1.1-.63-1.58-1.58-1.58-2.84v-34.6c0-16.83 12.9-29.57 30.36-29.57 6.61 0 12.74 2.2 17.93 6.13L54.43 33.5c-1.89 1.1-2.83 2.67-2.83 4.88V84Zm27.77 16.04L60.87 89.66V67.64l18.49-10.38 18.48 10.38v22.02l-18.48 10.38Zm11.87 47.82c-6.61 0-12.74-2.2-17.93-6.13l30.99-17.94c1.89-1.1 2.83-2.67 2.83-4.88V73.3l13.05 7.55c1.1.63 1.58 1.57 1.58 2.83v34.61c0 16.83-13.06 29.57-30.52 29.57Zm-37.28-35.08L23.91 95.48c-8.65-5.03-14.47-15.73-14.47-26.11 0-12.11 7.24-22.97 18.4-27.53v35.87c0 2.2.94 3.77 2.83 4.87L70 105.39l-12.9 7.39c-1.1.63-2.05.63-3.15 0Zm-1.73 25.8c-17.77 0-30.83-13.37-30.83-29.89 0-1.26.16-2.52.32-3.77l30.98 17.93c1.89 1.1 3.78 1.1 5.67 0l39.48-22.81v14.95c0 1.26-.47 2.2-1.58 2.83l-30.04 17.3c-4.09 2.36-8.97 3.46-14 3.46Z" fill="white"/>
       </g>
     </g>`;
   const mark = escapeXml(providerStyle(providerId).mark);
-  return `<circle cx="116" cy="24" r="17" fill="#000" opacity=".3"/>
-    <text x="116" y="29" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="800" fill="white">${mark}</text>`;
+  return `<g transform="translate(0 93)">
+      <circle cx="116" cy="24" r="17" fill="#000" opacity=".3"/>
+      <text x="116" y="29" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="800" fill="white">${mark}</text>
+    </g>`;
 };
 
 const agentStateIndicator = (
@@ -282,8 +343,10 @@ const cursorModeIcon = (style: CursorModeStyle): string => {
       <path d="M23 21c.4-2 2-3 4-3 2.3 0 4 1.3 4 3.4 0 2.7-3.5 3-3.5 5.4"/>
       <path d="M27.5 30h.01"/>
     </g>`;
-  return `<circle cx="26" cy="26" r="19" fill="#000" opacity=".55"/>
-    ${glyph}`;
+  return `<g transform="translate(0 92)">
+      <circle cx="26" cy="26" r="19" fill="#000" opacity=".55"/>
+      ${glyph}
+    </g>`;
 };
 
 const agentIcon = (
@@ -310,8 +373,8 @@ const agentIcon = (
           <rect width="144" height="144" rx="24"/>
         </clipPath>
       </defs>
-      <rect x="0" y="111" width="144" height="26" fill="#000" opacity=".34" clip-path="url(#agent-key-clip)"/>
-      ${agentLabelSvg(agent.title, animationElapsedMs)}
+      <rect x="0" y="7" width="144" height="26" fill="#000" opacity=".34" clip-path="url(#agent-key-clip)"/>
+      ${agentLabelOverflows(agent.title) ? agentLabelSvg(agent.title, animationElapsedMs) : ""}
       ${
         modeStyle
           ? `<rect x="3.5" y="3.5" width="137" height="137" rx="21" fill="none" stroke="${modeStyle.colour}" stroke-width="7"/>`
@@ -339,8 +402,8 @@ const emptyAgentIcon = (
           <rect width="144" height="144" rx="24"/>
         </clipPath>
       </defs>
-      <rect x="0" y="111" width="144" height="26" fill="#000" opacity=".34" clip-path="url(#agent-key-clip)"/>
-      ${agentLabelSvg(label, animationElapsedMs)}
+      <rect x="0" y="7" width="144" height="26" fill="#000" opacity=".34" clip-path="url(#agent-key-clip)"/>
+      ${agentLabelOverflows(label) ? agentLabelSvg(label, animationElapsedMs) : ""}
       `,
         muted,
       )}
@@ -358,9 +421,10 @@ const removedAgentIcon = (
     </svg>`,
   )}`;
 
-interface AnimatedAgentTarget {
+interface AnimatedTarget {
   actionContext: DialAction<ActionSettings> | KeyAction<ActionSettings>;
   session: DeviceSession;
+  kind: "agent" | "system";
 }
 
 interface AgentRemovalTransition {
@@ -380,10 +444,10 @@ class DeviceManager {
     AgentRemovalTransition
   >();
   private readonly animationScheduler =
-    new AnimationFrameScheduler<AnimatedAgentTarget>({
-      targets: () => this.animatedAgentTargets(),
+    new AnimationFrameScheduler<AnimatedTarget>({
+      targets: () => this.animatedTargets(),
       key: (target) => target.actionContext.id,
-      render: (target) => this.renderAnimatedAgent(target),
+      render: (target) => this.renderAnimatedTarget(target),
       onError: (error) => {
         streamDeck.logger.error(
           `Agent Deck animation failed: ${
@@ -547,12 +611,12 @@ class DeviceManager {
         );
         if (actionContext.isKey())
           await Promise.all([
-            actionContext.setTitle(""),
+            actionContext.setTitle(agentLabelOverflows(label) ? "" : label),
             actionContext.setImage(image),
           ]);
         else if (actionContext.isDial())
           await Promise.all([
-            actionContext.setTitle(""),
+            actionContext.setTitle(agentLabelOverflows(label) ? "" : label),
             actionContext.setImage(image),
           ]);
         return;
@@ -570,7 +634,9 @@ class DeviceManager {
     }
     if (actionContext.isKey())
       await Promise.all([
-        actionContext.setTitle(""),
+        actionContext.setTitle(
+          agentLabelOverflows(agent.title) ? "" : agent.title,
+        ),
         actionContext.setImage(
           agentIcon(
             agent,
@@ -583,7 +649,9 @@ class DeviceManager {
       ]);
     else if (actionContext.isDial())
       await Promise.all([
-        actionContext.setTitle(""),
+        actionContext.setTitle(
+          agentLabelOverflows(agent.title) ? "" : agent.title,
+        ),
         actionContext.setImage(
           agentIcon(
             agent,
@@ -681,42 +749,9 @@ class DeviceManager {
 
   async renderSystem(actionContext: Action<ActionSettings>): Promise<void> {
     const session = await this.ensure(actionContext);
-    const status =
-      typeof session.health.status === "string"
-        ? session.health.status
-        : "unknown";
-    let colour = "#dc2626";
-    let displayState: SystemDisplayState = "degraded";
-    if (
-      session.connectionStatus === "connecting" ||
-      status === "connecting" ||
-      status === "restarting" ||
-      status === "loading" ||
-      status === "starting"
-    ) {
-      colour = "#f59e0b";
-      displayState = "connecting";
-    } else if (
-      session.connectionStatus === "disconnected" ||
-      status === "disconnected"
-    )
-      displayState = "disconnected";
-    else if (session.connectionStatus === "connected" && status === "healthy") {
-      colour = CLASSIC_AGENT_STATE_COLOUR.ready_for_review;
-      displayState = "connected";
-    }
-    await this.render(
-      actionContext,
-      "",
-      colour,
-      "",
-      "#0f172a",
-      String(session.allAgents.length),
-      {
-        showStrip: false,
-        glyph: systemStatusGlyph(displayState),
-      },
-    );
+    const image = systemIcon(session, Date.now() - session.animationStartedAt);
+    if (actionContext.isKey() || actionContext.isDial())
+      await setActionImage(actionContext, image);
   }
 
   async changePage(
@@ -937,18 +972,22 @@ class DeviceManager {
     await this.renderVisible(session.deviceId);
   }
 
-  private animatedAgentTargets(): AnimatedAgentTarget[] {
-    const targets: AnimatedAgentTarget[] = [];
+  private animatedTargets(): AnimatedTarget[] {
+    const targets: AnimatedTarget[] = [];
     for (const session of this.sessions.values()) {
       const device = streamDeck.devices.getDeviceById(session.deviceId);
       if (!device) continue;
       for (const actionContext of device.actions) {
         if (
-          actionContext.manifestId !== "com.agentdeck.monitor.agent-slot" ||
-          !this.agentSlotIsAnimated(session, actionContext)
+          actionContext.manifestId === "com.agentdeck.monitor.agent-slot" &&
+          this.agentSlotIsAnimated(session, actionContext)
         )
-          continue;
-        targets.push({ actionContext, session });
+          targets.push({ actionContext, session, kind: "agent" });
+        else if (
+          actionContext.manifestId === "com.agentdeck.monitor.system-health" &&
+          connectorBubblesOverflow(providerBubbles(session.providers))
+        )
+          targets.push({ actionContext, session, kind: "system" });
       }
     }
     return targets;
@@ -971,12 +1010,17 @@ class DeviceManager {
     );
   }
 
-  private async renderAnimatedAgent({
+  private async renderAnimatedTarget({
     actionContext,
     session,
-  }: AnimatedAgentTarget): Promise<void> {
+    kind,
+  }: AnimatedTarget): Promise<void> {
     const now = Date.now();
     const animationElapsedMs = now - session.animationStartedAt;
+    if (kind === "system") {
+      await actionContext.setImage(systemIcon(session, animationElapsedMs));
+      return;
+    }
     const removal = this.removalTransitions.get(actionContext.id);
     if (removal) {
       await actionContext.setImage(

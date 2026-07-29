@@ -1,5 +1,5 @@
 import { dirname, resolve } from "node:path";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { LogController, type FastifyInstance } from "fastify";
 import websocket from "@fastify/websocket";
 import type { RawData } from "ws";
 import {
@@ -23,7 +23,10 @@ export const buildServer = async (
   configuration?: AgentDeckConfiguration,
 ): Promise<RunningAgentDeckServer> => {
   const config = configuration ?? (await loadConfiguration());
-  const app = Fastify({ logger: true });
+  const app = Fastify({
+    logger: true,
+    logController: new LogController({ disableRequestLogging: true }),
+  });
   await app.register(websocket, {
     options: { maxPayload: 64 * 1024 },
   });

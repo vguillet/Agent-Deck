@@ -16,7 +16,8 @@
       "PropertyInspectorPath": "ui/index.html",
       "States": [
         {
-          "Image": "assets/action-agent"
+          "Image": "assets/action-agent",
+          "TitleAlignment": "top"
         }
       ]
     },

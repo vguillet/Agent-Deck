@@ -1,8 +1,8 @@
-const FONT_SIZE = 13;
+const FONT_SIZE = 18;
 const LABEL_CENTRE_X = 72;
 const LABEL_VIEWPORT_X = 13;
 const LABEL_VIEWPORT_WIDTH = 118;
-const LABEL_BASELINE_Y = 129;
+const LABEL_BASELINE_Y = 25;
 const LABEL_GAP = 28;
 const LABEL_SCROLL_SPEED = 24;
 
@@ -51,7 +51,7 @@ export const agentLabelSvg = (
 
   return `<defs>
         <clipPath id="agent-label-clip">
-          <rect x="${LABEL_VIEWPORT_X}" y="112" width="${LABEL_VIEWPORT_WIDTH}" height="24"/>
+          <rect x="${LABEL_VIEWPORT_X}" y="8" width="${LABEL_VIEWPORT_WIDTH}" height="24"/>
         </clipPath>
       </defs>
       <g clip-path="url(#agent-label-clip)">

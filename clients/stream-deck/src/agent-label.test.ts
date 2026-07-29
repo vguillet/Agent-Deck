@@ -12,7 +12,7 @@ describe("Stream Deck agent labels", () => {
       agentLabelSvg("Fix login", 5_000),
     );
     expect(agentLabelSvg("Fix login", 0)).toContain(
-      'x="72.00" y="129" text-anchor="middle"',
+      'x="72.00" y="25" text-anchor="middle"',
     );
   });
 

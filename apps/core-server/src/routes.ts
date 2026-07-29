@@ -245,7 +245,7 @@ export const registerApiRoutes = (
   app.get("/api/v1/system/health", async () => {
     const providers = store.listProviders({ offset: 0, limit: 200 }).items;
     return {
-      status: providers.some((provider) => provider.health === "unhealthy")
+      status: providers.some((provider) => provider.health !== "healthy")
         ? "degraded"
         : "healthy",
       sequence: store.currentSequence(),
