@@ -23,7 +23,11 @@ import {
   focusAgent,
   RenderedAgentTargets,
 } from "./focus.js";
-import { preserveAgentSlotOrder, streamDeckAgents } from "./agent-filter.js";
+import {
+  preserveAgentSlotOrder,
+  sortAgentsByWorkspace,
+  streamDeckAgents,
+} from "./agent-filter.js";
 import {
   agentLookScene,
   emptyAgentLookScene,
@@ -82,6 +86,17 @@ interface DeviceSession {
   animationAngle: number;
 }
 
+const ALL_AGENT_STATES: Agent["state"][] = [
+  "idle",
+  "running",
+  "waiting_for_input",
+  "waiting_for_approval",
+  "ready_for_review",
+  "failed",
+  "cancelled",
+  "unknown",
+];
+
 const workspaceBadgeForAgent = (
   session: DeviceSession,
   agent: Agent,
@@ -101,19 +116,13 @@ const DEFAULT_CONFIGURATION: DeviceConfiguration = {
   name: "Stream Deck",
   role: "agent-monitor",
   providers: [],
-  states: [
-    "idle",
-    "running",
-    "waiting_for_input",
-    "waiting_for_approval",
-    "ready_for_review",
-    "failed",
-  ],
+  states: ALL_AGENT_STATES,
 };
 
 const ANIMATION_REVOLUTION_MS = 1_800;
 const DOUBLE_PRESS_WINDOW_MS = 200;
 const LONG_PRESS_DURATION_MS = 650;
+const PRESS_FEEDBACK_DURATION_MS = 450;
 
 type CursorMode = "ask" | "plan" | "debug";
 
@@ -370,6 +379,7 @@ const agentIcon = (
   animationElapsedMs: number,
   look: AgentKeyLook,
   muted = false,
+  pressed = false,
 ): string => {
   const modeStyle = cursorModeStyle(agent);
   const scene =
@@ -399,6 +409,11 @@ const agentIcon = (
       `,
         muted,
       )}
+      ${
+        pressed
+          ? `<rect x="3.5" y="3.5" width="137" height="137" rx="21" fill="none" stroke="white" stroke-width="7"/>`
+          : ""
+      }
     </svg>`,
   )}`;
 };
@@ -455,6 +470,8 @@ class DeviceManager {
   private readonly renderedAgents = new RenderedAgentTargets();
   private readonly renderedAgentLooks = new Map<string, AgentKeyLook>();
   private readonly renderedAgentLabels = new Map<string, string>();
+  private readonly pressedAgentActions = new Set<string>();
+  private readonly pressFeedbackTimers = new Map<string, NodeJS.Timeout>();
   private readonly removalTransitions = new Map<
     string,
     AgentRemovalTransition
@@ -506,8 +523,10 @@ class DeviceManager {
       name: actionContext.device.name || DEFAULT_CONFIGURATION.name,
       ...(document?.data ?? {}),
     };
+    // State selection is not user-configurable. Include newly introduced
+    // states when loading configuration documents saved by older versions.
     configuration.states = Array.from(
-      new Set<Agent["state"]>(["idle", ...configuration.states]),
+      new Set<Agent["state"]>([...configuration.states, ...ALL_AGENT_STATES]),
     );
     const session: DeviceSession = {
       deviceId,
@@ -662,6 +681,7 @@ class DeviceManager {
             Date.now() - session.animationStartedAt,
             look,
             muted,
+            this.pressedAgentActions.has(actionContext.id),
           ),
         ),
       ]);
@@ -678,9 +698,46 @@ class DeviceManager {
             Date.now() - session.animationStartedAt,
             look,
             muted,
+            this.pressedAgentActions.has(actionContext.id),
           ),
         ),
       ]);
+  }
+
+  async flashRenderedAgent(
+    actionContext: Action<ActionSettings>,
+  ): Promise<void> {
+    const session = await this.ensure(actionContext);
+    const agent = this.renderedAgents.resolve(
+      actionContext.id,
+      session.allAgents,
+    );
+    if (!agent) return;
+
+    const previousTimer = this.pressFeedbackTimers.get(actionContext.id);
+    if (previousTimer) clearTimeout(previousTimer);
+    this.pressedAgentActions.add(actionContext.id);
+    const timer = setTimeout(() => {
+      this.pressFeedbackTimers.delete(actionContext.id);
+      this.pressedAgentActions.delete(actionContext.id);
+      void actionContext
+        .getSettings<ActionSettings>()
+        .then((settings) => this.renderAgent(actionContext, settings))
+        .catch((error: unknown) => {
+          streamDeck.logger.error(
+            `Agent Deck press feedback reset failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
+    }, PRESS_FEEDBACK_DURATION_MS);
+    timer.unref();
+    this.pressFeedbackTimers.set(actionContext.id, timer);
+
+    await this.renderAgent(
+      actionContext,
+      await actionContext.getSettings<ActionSettings>(),
+    );
   }
 
   async renderAgentSummary(
@@ -944,6 +1001,8 @@ class DeviceManager {
         session.client.listWorkspaces(),
         session.client.health(),
       ]);
+    if (workspaces.status === "fulfilled")
+      session.workspaces = workspaces.value.items;
     if (
       agents.status === "fulfilled" &&
       agents.value.asOfSequence >= session.lastSnapshotSequence
@@ -965,6 +1024,10 @@ class DeviceManager {
             left.id.localeCompare(right.id),
         );
       session.agents = preserveAgentSlotOrder(session.agents, visibleAgents);
+      session.agents = sortAgentsByWorkspace(
+        session.agents,
+        session.workspaces,
+      );
     }
     if (attention.status === "fulfilled") {
       const visibleAgentIds = new Set(session.allAgents.map(({ id }) => id));
@@ -974,8 +1037,6 @@ class DeviceManager {
     }
     if (providers.status === "fulfilled")
       session.providers = providers.value.items;
-    if (workspaces.status === "fulfilled")
-      session.workspaces = workspaces.value.items;
     if (health.status === "fulfilled") session.health = health.value;
     for (const [resource, result] of [
       ["agents", agents],
@@ -1077,6 +1138,8 @@ class DeviceManager {
         session.animationAngle,
         animationElapsedMs,
         look,
+        false,
+        this.pressedAgentActions.has(actionContext.id),
       ),
     );
   }
@@ -1142,6 +1205,13 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
     await devices.renderAgent(ev.action, ev.payload.settings);
   }
   override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
+    void devices.flashRenderedAgent(ev.action).catch((error: unknown) => {
+      streamDeck.logger.error(
+        `Agent Deck press feedback failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
     this.presses.keyDown(ev.action.id, {
       onDoublePress: () => {
         void devices.stopRenderedAgent(ev.action);

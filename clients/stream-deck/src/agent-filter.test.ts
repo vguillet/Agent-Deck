@@ -2,6 +2,7 @@ import type { Agent } from "@agent-deck/domain";
 import { describe, expect, it } from "vitest";
 import {
   preserveAgentSlotOrder,
+  sortAgentsByWorkspace,
   streamDeckAgents,
 } from "./agent-filter.js";
 
@@ -28,14 +29,63 @@ const agent = (overrides: Partial<Agent> = {}): Agent => ({
 });
 
 describe("Stream Deck agent filtering", () => {
-  it("keeps stale agents visible and excludes archived agents", () => {
+  it("only keeps fresh, unarchived agents visible", () => {
     expect(
       streamDeckAgents([
         agent(),
         agent({ id: "cursor-cloud:archived", archived: true }),
         agent({ id: "cursor-cloud:stale", freshness: "stale" }),
       ]).map(({ id }) => id),
-    ).toEqual(["cursor-cloud:agent-1", "cursor-cloud:stale"]);
+    ).toEqual(["cursor-cloud:agent-1"]);
+  });
+
+  it("groups agents by workspace name while keeping group slots stable", () => {
+    const betaFirst = agent({
+      id: "beta-first",
+      workspaceId: "workspace:beta",
+    });
+    const alphaFirst = agent({
+      id: "alpha-first",
+      workspaceId: "workspace:alpha",
+    });
+    const alphaSecond = agent({
+      id: "alpha-second",
+      workspaceId: "workspace:alpha",
+    });
+
+    expect(
+      sortAgentsByWorkspace(
+        [betaFirst, alphaFirst, alphaSecond],
+        [
+          {
+            id: "workspace:alpha",
+            providerId: "cursor-local",
+            externalId: "alpha",
+            name: "Alpha",
+            metadata: {},
+          },
+          {
+            id: "workspace:beta",
+            providerId: "cursor-local",
+            externalId: "beta",
+            name: "Beta",
+            metadata: {},
+          },
+        ],
+      ).map(({ id }) => id),
+    ).toEqual(["alpha-first", "alpha-second", "beta-first"]);
+  });
+
+  it("puts agents without a workspace after workspace groups", () => {
+    expect(
+      sortAgentsByWorkspace(
+        [
+          agent({ id: "unassigned" }),
+          agent({ id: "assigned", workspaceId: "workspace:alpha" }),
+        ],
+        [],
+      ).map(({ id }) => id),
+    ).toEqual(["assigned", "unassigned"]);
   });
 
   it("keeps existing agents in their slots when their priority changes", () => {
