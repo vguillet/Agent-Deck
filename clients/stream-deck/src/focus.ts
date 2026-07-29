@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { isAbsolute } from "node:path";
 import type { Agent } from "@agent-deck/domain";
 
 export type FocusResult =
@@ -6,6 +7,13 @@ export type FocusResult =
   | { status: "unavailable"; reason: string };
 
 export type FocusLauncher = (href: string) => Promise<void>;
+export type ProcessLauncher = (
+  file: string,
+  arguments_: string[],
+) => Promise<void>;
+
+const DEFAULT_CURSOR_BINARY =
+  "/Applications/Cursor.app/Contents/Resources/app/bin/cursor";
 
 export class RenderedAgentTargets {
   private readonly targets = new Map<string, string>();
@@ -83,21 +91,47 @@ export class AgentPressDetector {
   }
 }
 
-export const openMacOSFocusLink: FocusLauncher = async (href) => {
-  const url = new URL(href);
-  if (url.protocol !== "codex:" && url.protocol !== "cursor:")
-    throw new Error(`Unsupported focus URL scheme: ${url.protocol}`);
-  await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn("/usr/bin/open", [url.href], {
+const spawnCommand: ProcessLauncher = (file, arguments_) =>
+  new Promise<void>((resolvePromise, reject) => {
+    const child = spawn(file, arguments_, {
       stdio: "ignore",
     });
     child.once("error", reject);
     child.once("close", (code) => {
       if (code === 0) resolvePromise();
-      else reject(new Error(`macOS open exited with status ${String(code)}`));
+      else reject(new Error(`${file} exited with status ${String(code)}`));
     });
   });
+
+export const createMacOSFocusLauncher = (
+  run: ProcessLauncher = spawnCommand,
+  cursorBinary = DEFAULT_CURSOR_BINARY,
+): FocusLauncher => {
+  return async (href) => {
+    const url = new URL(href);
+    if (url.protocol !== "codex:" && url.protocol !== "cursor:")
+      throw new Error(`Unsupported focus URL scheme: ${url.protocol}`);
+
+    const isLocalCursorAgent =
+      url.protocol === "cursor:" &&
+      url.hostname === "agent-deck.focus" &&
+      url.pathname === "/open";
+    const workspace = isLocalCursorAgent
+      ? (url.searchParams.get("workspace") ?? undefined)
+      : undefined;
+    const windowTarget = isLocalCursorAgent
+      ? (url.searchParams.get("window") ?? workspace)
+      : undefined;
+    if (workspace !== undefined && !isAbsolute(workspace))
+      throw new Error("Cursor agent focus workspace must be an absolute path");
+    if (windowTarget !== undefined && !isAbsolute(windowTarget))
+      throw new Error("Cursor agent focus window must be an absolute path");
+    if (windowTarget) await run(cursorBinary, [windowTarget]);
+    await run("/usr/bin/open", [url.href]);
+  };
 };
+
+export const openMacOSFocusLink = createMacOSFocusLauncher();
 
 export const focusAgent = async (
   agent: Agent | undefined,

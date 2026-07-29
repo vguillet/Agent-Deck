@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { ProviderEvent } from "@agent-deck/domain";
@@ -75,7 +76,7 @@ describe("Cursor local provider", () => {
       hook_event_name: "stop",
       conversation_id: "conversation-1",
       generation_id: "generation-1",
-      workspace_roots: ["/workspace/alpha"],
+      workspace_roots: [],
       status: "completed",
       result: "SECRET RESULT",
     });
@@ -91,9 +92,12 @@ describe("Cursor local provider", () => {
       links: [
         {
           rel: "focus",
-          href: "cursor://agent-deck.focus/open?conversationId=conversation-1",
+          href: "cursor://agent-deck.focus/open?conversationId=conversation-1&workspace=%2Fworkspace%2Falpha",
         },
       ],
+      metadata: {
+        workspaceRoots: ["/workspace/alpha"],
+      },
     });
     expect(snapshot.runs[0]).toMatchObject({
       externalId: "generation-1",
@@ -158,6 +162,7 @@ describe("Cursor local provider", () => {
 
     expect((await harness.plugin.discover()).agents[0]?.metadata).toEqual({
       cursorMode: "ask",
+      workspaceRoots: ["/workspace/alpha"],
     });
     await harness.close();
   });
@@ -295,9 +300,9 @@ describe("Cursor local provider", () => {
       workspace_roots: ["/workspace/alpha"],
     });
     expect((await harness.plugin.discover()).agents).toHaveLength(1);
-    expect(harness.events.some((event) => event.type === "agent.upserted")).toBe(
-      true,
-    );
+    expect(
+      harness.events.some((event) => event.type === "agent.upserted"),
+    ).toBe(true);
     await harness.close();
   });
 
@@ -363,10 +368,79 @@ describe("Cursor local provider", () => {
     expect(snapshot.agents[0]).toMatchObject({
       externalId: "conversation-restore",
       state: "running",
+      links: [
+        {
+          rel: "focus",
+          href: "cursor://agent-deck.focus/open?conversationId=conversation-restore&workspace=%2Fworkspace%2Frestore",
+        },
+      ],
+      metadata: {
+        workspaceRoots: ["/workspace/restore"],
+      },
     });
     expect(snapshot.runs[0]).toMatchObject({
       externalId: "generation-restore",
     });
+    await restored.close();
+  });
+
+  it("backfills workspace targets for agents from older checkpoints", async () => {
+    const directory = await mkdtemp(
+      resolve(tmpdir(), "agent-deck-cursor-workspace-"),
+    );
+    const workspaceRoot = resolve(directory, "existing-workspace");
+    const secondaryRoot = resolve(directory, "secondary-workspace");
+    const workspaceFile = resolve(directory, "existing.code-workspace");
+    const stateDatabasePath = resolve(directory, "state.vscdb");
+    await mkdir(workspaceRoot);
+    await mkdir(secondaryRoot);
+    await writeFile(workspaceFile, "{}");
+    const database = new DatabaseSync(stateDatabasePath);
+    database.exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)");
+    database.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)").run(
+      "workspaceMetadata.entries",
+      JSON.stringify({
+        entries: [
+          {
+            configPath: pathToFileURL(workspaceFile).href,
+            paths: [
+              { uri: { fsPath: workspaceRoot } },
+              { uri: { fsPath: secondaryRoot } },
+            ],
+          },
+        ],
+      }),
+    );
+    database.close();
+
+    const first = await setup(undefined, { stateDatabasePath });
+    await first.handle({
+      hook_event_name: "beforeSubmitPrompt",
+      conversation_id: "conversation-legacy",
+      generation_id: "generation-legacy",
+      workspace_roots: [workspaceRoot, secondaryRoot],
+    });
+    const registry = JSON.parse(first.checkpoint()!) as {
+      agents: Array<{
+        links: Array<{ rel: string; href: string }>;
+        metadata: Record<string, unknown>;
+      }>;
+    };
+    registry.agents[0]!.links[0]!.href =
+      "cursor://agent-deck.focus/open?conversationId=conversation-legacy";
+    registry.agents[0]!.metadata = {};
+    await first.close();
+
+    const restored = await setup(JSON.stringify(registry), {
+      stateDatabasePath,
+    });
+    const restoredAgent = (await restored.plugin.discover()).agents[0]!;
+    expect(restoredAgent.metadata).toMatchObject({
+      workspaceRoots: [workspaceRoot, secondaryRoot],
+    });
+    const focusUrl = new URL(restoredAgent.links[0]!.href);
+    expect(focusUrl.searchParams.get("workspace")).toBe(workspaceRoot);
+    expect(focusUrl.searchParams.get("window")).toBe(workspaceFile);
     await restored.close();
   });
 

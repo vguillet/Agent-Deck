@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   canonicalId,
@@ -107,6 +108,11 @@ interface Registry {
 
 type ConversationKind = "pending" | "top_level" | "subagent" | "background";
 
+interface CursorWorkspaceTarget {
+  roots: string[];
+  target: string;
+}
+
 const stableHash = (values: string[]): string =>
   createHash("sha256")
     .update(values.join("\0"))
@@ -115,6 +121,26 @@ const stableHash = (values: string[]): string =>
 
 const normalizedRoots = (roots: string[]): string[] =>
   [...new Set(roots.map((root) => resolve(root)))].sort();
+
+const agentWorkspaceRoots = (agent: Agent | undefined): string[] => {
+  const roots = agent?.metadata.workspaceRoots;
+  return Array.isArray(roots)
+    ? roots.filter((root): root is string => typeof root === "string")
+    : [];
+};
+
+const focusLink = (
+  conversationId: string,
+  workspaceRoot?: string,
+  windowTarget?: string,
+): string => {
+  const url = new URL("cursor://agent-deck.focus/open");
+  url.searchParams.set("conversationId", conversationId);
+  if (workspaceRoot) url.searchParams.set("workspace", workspaceRoot);
+  if (windowTarget && windowTarget !== workspaceRoot)
+    url.searchParams.set("window", windowTarget);
+  return url.href;
+};
 
 const resourcesFor = (
   roots: string[],
@@ -130,7 +156,7 @@ const resourcesFor = (
       normalized.length === 1
         ? basename(normalized[0] ?? "") || "Cursor"
         : `${basename(normalized[0] ?? "") || "Cursor"} +${normalized.length - 1}`,
-    metadata: {},
+    metadata: { roots: normalized },
   };
   const projects = normalized.map((root) => {
     const externalId = stableHash([root]);
@@ -140,7 +166,7 @@ const resourcesFor = (
       externalId,
       workspaceId: workspace.id,
       name: basename(root) || "Cursor",
-      metadata: {},
+      metadata: { root },
     };
   });
   return { workspace, projects };
@@ -397,7 +423,8 @@ class CursorLocalProvider implements AgentProviderPlugin {
       await this.hideSubagent(input.subagent_id);
       return;
     }
-    this.lastProtocolVersion = input.protocol_version ?? this.lastProtocolVersion;
+    this.lastProtocolVersion =
+      input.protocol_version ?? this.lastProtocolVersion;
     const explicitKind = explicitConversationKind(input);
     if (explicitKind === "background" || explicitKind === "subagent") {
       this.conversationKinds.set(input.conversation_id, explicitKind);
@@ -416,9 +443,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
       this.pendingHooks.delete(input.conversation_id);
       for (const buffered of pending) await this.applyLifecycleHook(buffered);
     }
-    if (
-      this.conversationKinds.get(input.conversation_id) !== "top_level"
-    ) {
+    if (this.conversationKinds.get(input.conversation_id) !== "top_level") {
       this.conversationKinds.set(input.conversation_id, "pending");
       const pending = this.pendingHooks.get(input.conversation_id) ?? [];
       pending.push(input);
@@ -452,7 +477,8 @@ class CursorLocalProvider implements AgentProviderPlugin {
     if (startsGeneration && input.generation_id)
       this.activeGenerations.set(input.conversation_id, input.generation_id);
 
-    const roots = normalizedRoots(input.workspace_roots);
+    const hookRoots = normalizedRoots(input.workspace_roots);
+    const roots = hookRoots.length ? hookRoots : agentWorkspaceRoots(existing);
     const resources = resourcesFor(roots);
     if (resources.workspace)
       this.workspaces.set(resources.workspace.id, resources.workspace);
@@ -488,6 +514,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const projectId = primaryProject?.id ?? existing?.projectId;
     const workspaceId = resources.workspace?.id ?? existing?.workspaceId;
     const mode = cursorMode(input.composer_mode);
+    const windowTarget = this.cursorWindowTarget(roots);
     const sourceRevision = this.nextSourceRevision(input.conversation_id);
     const agent: Agent = {
       id: agentId,
@@ -518,12 +545,13 @@ class CursorLocalProvider implements AgentProviderPlugin {
         {
           rel: "focus",
           label: "Open in Cursor",
-          href: `cursor://agent-deck.focus/open?conversationId=${encodeURIComponent(input.conversation_id)}`,
+          href: focusLink(input.conversation_id, roots[0], windowTarget),
         },
       ],
       metadata: {
         ...existing?.metadata,
         ...(mode ? { cursorMode: mode } : {}),
+        ...(roots.length ? { workspaceRoots: roots } : {}),
       },
     };
     this.agents.set(agent.id, agent);
@@ -686,10 +714,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
         this.pendingHooks.set(conversation, hooks.slice(-32));
       for (const [id, agent] of this.agents) {
         const kind = this.conversationKinds.get(agent.externalId);
-        if (
-          (kind === "subagent" || kind === "background") &&
-          !agent.archived
-        ) {
+        if ((kind === "subagent" || kind === "background") && !agent.archived) {
           const migrated = {
             ...agent,
             sourceRevision: this.nextSourceRevision(agent.externalId),
@@ -700,11 +725,131 @@ class CursorLocalProvider implements AgentProviderPlugin {
           this.migrationAgents.add(id);
         }
       }
+      if (this.backfillWorkspaceTargets()) await this.persist();
     } catch (error) {
       this.context.logger.warn(
         { error },
         "Ignoring invalid Cursor local checkpoint",
       );
+    }
+  }
+
+  private backfillWorkspaceTargets(): boolean {
+    const knownWorkspaces = this.knownCursorWorkspaces();
+    const targetsByWorkspace = new Map(
+      knownWorkspaces.map((workspace) => [
+        canonicalId(PROVIDER_ID, `workspace:${stableHash(workspace.roots)}`),
+        workspace,
+      ]),
+    );
+    const targetsByProject = new Map(
+      knownWorkspaces.flatMap((workspace) =>
+        workspace.roots.map((root) => [
+          canonicalId(PROVIDER_ID, `project:${stableHash([root])}`),
+          { roots: [root], target: root } satisfies CursorWorkspaceTarget,
+        ]),
+      ),
+    );
+    let changed = false;
+    for (const [id, agent] of this.agents) {
+      const target =
+        (agent.workspaceId
+          ? targetsByWorkspace.get(agent.workspaceId)
+          : undefined) ??
+        (agent.projectId ? targetsByProject.get(agent.projectId) : undefined);
+      if (!target) continue;
+      const targetHref = focusLink(
+        agent.externalId,
+        target.roots[0],
+        target.target,
+      );
+      const currentFocus = agent.links.find((link) => link.rel === "focus");
+      if (
+        agentWorkspaceRoots(agent).join("\0") === target.roots.join("\0") &&
+        currentFocus?.href === targetHref
+      )
+        continue;
+      this.agents.set(id, {
+        ...agent,
+        sourceRevision: this.nextSourceRevision(agent.externalId),
+        links: agent.links.map((link) =>
+          link.rel === "focus" ? { ...link, href: targetHref } : link,
+        ),
+        metadata: { ...agent.metadata, workspaceRoots: target.roots },
+      });
+      this.migrationAgents.add(id);
+      changed = true;
+    }
+    return changed;
+  }
+
+  private cursorWindowTarget(roots: string[]): string | undefined {
+    const expected = roots.join("\0");
+    return this.knownCursorWorkspaces().find(
+      (workspace) => workspace.roots.join("\0") === expected,
+    )?.target;
+  }
+
+  private knownCursorWorkspaces(): CursorWorkspaceTarget[] {
+    if (!this.stateDatabasePath) return [];
+    let database: DatabaseSync | undefined;
+    try {
+      database = new DatabaseSync(this.stateDatabasePath, { readOnly: true });
+      const pathValue = (value: unknown): string | undefined => {
+        if (typeof value !== "string" || !value) return;
+        try {
+          const path = value.startsWith("file:") ? fileURLToPath(value) : value;
+          return path.startsWith("/") ? resolve(path) : undefined;
+        } catch {
+          return undefined;
+        }
+      };
+      const parseRow = (key: string): Record<string, unknown> | undefined => {
+        const row = database
+          ?.prepare("SELECT value FROM ItemTable WHERE key = ?")
+          .get(key) as { value?: unknown } | undefined;
+        const json =
+          typeof row?.value === "string"
+            ? row.value
+            : row?.value instanceof Uint8Array
+              ? Buffer.from(row.value).toString("utf8")
+              : undefined;
+        return json ? (JSON.parse(json) as Record<string, unknown>) : undefined;
+      };
+      const metadata = parseRow("workspaceMetadata.entries") as
+        | {
+            entries?: Array<{
+              folderUri?: unknown;
+              configPath?: unknown;
+              paths?: Array<{ uri?: { fsPath?: unknown; path?: unknown } }>;
+            }>;
+          }
+        | undefined;
+      const workspaces: CursorWorkspaceTarget[] = [];
+      for (const entry of metadata?.entries ?? []) {
+        const roots = normalizedRoots(
+          (entry.paths ?? []).flatMap((path) => {
+            const root =
+              pathValue(path.uri?.fsPath) ?? pathValue(path.uri?.path);
+            return root ? [root] : [];
+          }),
+        );
+        const folder = pathValue(entry.folderUri);
+        if (!roots.length && folder) roots.push(folder);
+        const config = pathValue(entry.configPath);
+        const target =
+          roots.length === 1
+            ? (folder ?? roots[0])
+            : config?.endsWith(".code-workspace")
+              ? config
+              : undefined;
+        if (roots.length && target) workspaces.push({ roots, target });
+      }
+      return workspaces;
+    } catch {
+      return [];
+    } finally {
+      database?.close();
     }
   }
 

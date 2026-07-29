@@ -314,9 +314,12 @@ describe("Agent Deck HTTP API", () => {
           {
             rel: "focus",
             label: "Open in Cursor",
-            href: "cursor://agent-deck.focus/open?conversationId=conversation-integration",
+            href: "cursor://agent-deck.focus/open?conversationId=conversation-integration&workspace=%2Fworkspace%2Fintegration",
           },
         ],
+        metadata: {
+          workspaceRoots: ["/workspace/integration"],
+        },
       }),
     ]);
     socket.close();

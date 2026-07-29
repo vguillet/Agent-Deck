@@ -1,4 +1,8 @@
-2026-07-29T08:22:30.207Z DEBUG RegistrationParameters: port=28196
-2026-07-29T08:22:30.220Z DEBUG RegistrationParameters: pluginUUID=bc740a42cfb668cd978617d1bd638c50
-2026-07-29T08:22:30.220Z DEBUG RegistrationParameters: registerEvent=registerPlugin
-2026-07-29T08:22:30.220Z DEBUG RegistrationParameters: info={"application":{"font":".AppleSystemUIFont","language":"en","platform":"mac","platformVersion":"26.5.2","version":"7.5.1.22901"},"colors":{"buttonPressedBackgroundColor":"#303030FF","buttonPressedBorderColor":"#646464FF","buttonPressedTextColor":"#969696FF","disabledColor":"#F7821B59","highlightColor":"#F7821BFF","mouseDownColor":"#D06405FF"},"devicePixelRatio":2,"devices":[{"id":"64cd441f9caf98662fb56c9adc341172","name":"Stream Deck","size":{"columns":5,"rows":3},"type":0}],"plugin":{"uuid":"com.agentdeck.monitor","version":"0.1.0.0"}}
+2026-07-29T09:13:30.955Z DEBUG RegistrationParameters: port=28196
+2026-07-29T09:13:30.963Z DEBUG RegistrationParameters: pluginUUID=1e360bad0e872f6876800ae07432d351
+2026-07-29T09:13:30.963Z DEBUG RegistrationParameters: registerEvent=registerPlugin
+2026-07-29T09:13:30.963Z DEBUG RegistrationParameters: info={"application":{"font":".AppleSystemUIFont","language":"en","platform":"mac","platformVersion":"26.5.2","version":"7.5.1.22901"},"colors":{"buttonPressedBackgroundColor":"#303030FF","buttonPressedBorderColor":"#646464FF","buttonPressedTextColor":"#969696FF","disabledColor":"#F7821B59","highlightColor":"#F7821BFF","mouseDownColor":"#D06405FF"},"devicePixelRatio":2,"devices":[{"id":"64cd441f9caf98662fb56c9adc341172","name":"Stream Deck","size":{"columns":5,"rows":3},"type":0}],"plugin":{"uuid":"com.agentdeck.monitor","version":"0.1.0.0"}}
+2026-07-29T09:21:52.722Z ERROR Agent Deck agents refresh failed: fetch failed
+2026-07-29T09:21:52.726Z ERROR Agent Deck attention refresh failed: fetch failed
+2026-07-29T09:21:52.726Z ERROR Agent Deck providers refresh failed: fetch failed
+2026-07-29T09:21:52.726Z ERROR Agent Deck health refresh failed: fetch failed

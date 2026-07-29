@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "@agent-deck/domain";
 import {
   AgentPressDetector,
+  createMacOSFocusLauncher,
   focusAgent,
   RenderedAgentTargets,
 } from "./focus.js";
@@ -116,6 +117,46 @@ describe("Stream Deck agent focus", () => {
       },
     );
     expect(launch).toHaveBeenCalledWith(href);
+  });
+
+  it("activates a local agent workspace before opening its conversation", async () => {
+    const calls: Array<[string, string[]]> = [];
+    const launch = createMacOSFocusLauncher(async (file, arguments_) => {
+      calls.push([file, arguments_]);
+    }, "/Applications/Cursor.app/bin/cursor");
+    const href =
+      "cursor://agent-deck.focus/open?conversationId=conversation-1&workspace=%2Fworkspace%2Falpha%20project&window=%2Fworkspace%2Falpha.code-workspace";
+
+    await launch(href);
+
+    expect(calls).toEqual([
+      [
+        "/Applications/Cursor.app/bin/cursor",
+        ["/workspace/alpha.code-workspace"],
+      ],
+      ["/usr/bin/open", [href]],
+    ]);
+  });
+
+  it.each([
+    "codex://threads/thread-1",
+    "cursor://agent-deck.focus/open?conversationId=legacy",
+    "cursor://anysphere.cursor-deeplink/background-agent?bcId=cloud-1&workspace=%2Fignored",
+  ])("opens an untargeted or non-local link directly: %s", async (href) => {
+    const run = vi.fn(async () => undefined);
+    await createMacOSFocusLauncher(run)(href);
+    expect(run).toHaveBeenCalledOnce();
+    expect(run).toHaveBeenCalledWith("/usr/bin/open", [href]);
+  });
+
+  it("rejects a relative local workspace without launching", async () => {
+    const run = vi.fn(async () => undefined);
+    await expect(
+      createMacOSFocusLauncher(run)(
+        "cursor://agent-deck.focus/open?conversationId=one&workspace=relative",
+      ),
+    ).rejects.toThrow("absolute path");
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("rejects absent and unsafe focus links without launching", async () => {

@@ -6,6 +6,10 @@ export const activate = (context: vscode.ExtensionContext): void => {
     vscode.window.registerUriHandler({
       handleUri: async (uri) => {
         await focusCursorConversation(uri.toString(true), {
+          getWorkspaceFolders: () =>
+            vscode.workspace.workspaceFolders?.map(
+              (folder) => folder.uri.fsPath,
+            ) ?? [],
           getCommands: (filterInternal) =>
             Promise.resolve(vscode.commands.getCommands(filterInternal)),
           executeCommand: (command, ...arguments_) =>

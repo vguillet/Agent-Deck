@@ -12,6 +12,7 @@ const dependencies = (
   executeCommand: ReturnType<typeof vi.fn>;
   showError: ReturnType<typeof vi.fn>;
 } => ({
+  getWorkspaceFolders: () => ["/workspace/alpha"],
   getCommands: async () => commands,
   executeCommand: vi.fn(async () => undefined),
   showError: vi.fn(async () => undefined),
@@ -22,7 +23,7 @@ describe("Cursor focus URI handler", () => {
     const deps = dependencies();
     await expect(
       focusCursorConversation(
-        "cursor://agent-deck.focus/open?conversationId=conversation-123",
+        "cursor://agent-deck.focus/open?conversationId=conversation-123&workspace=%2Fworkspace%2Falpha",
         deps,
       ),
     ).resolves.toBe(true);
@@ -31,6 +32,20 @@ describe("Cursor focus URI handler", () => {
       "conversation-123",
     );
     expect(deps.showError).not.toHaveBeenCalled();
+  });
+
+  it("leaves the current window unchanged when the workspace differs", async () => {
+    const deps = dependencies();
+    await expect(
+      focusCursorConversation(
+        "cursor://agent-deck.focus/open?conversationId=conversation-123&workspace=%2Fworkspace%2Fbeta",
+        deps,
+      ),
+    ).resolves.toBe(false);
+    expect(deps.executeCommand).not.toHaveBeenCalled();
+    expect(deps.showError).toHaveBeenCalledWith(
+      expect.stringContaining("another Cursor window"),
+    );
   });
 
   it("stops the exact local conversation", async () => {

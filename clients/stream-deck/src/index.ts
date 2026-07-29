@@ -201,10 +201,9 @@ const SYSTEM_STATUS_PATHS: Record<SystemDisplayState, string> = {
     <path d="M3 3v5h5"/>
     <path d="M3 12a9 9 0 0 0 15.5 6.2L21 16"/>
     <path d="M21 21v-5h-5"/>`,
-  disconnected: `<path d="m16 3 5 5-5 5"/>
-    <path d="M21 8h-8a4 4 0 0 0-4 4v1"/>
-    <path d="m8 21-5-5 5-5"/>
-    <path d="M3 16h8a4 4 0 0 0 4-4v-1"/>`,
+  disconnected: `<path d="M9.2 14.8 6.5 17.5a3.5 3.5 0 0 1-5-5l3-3a3.5 3.5 0 0 1 4.9-.1"/>
+    <path d="M14.8 9.2 17.5 6.5a3.5 3.5 0 0 1 5 5l-3 3a3.5 3.5 0 0 1-4.9.1"/>
+    <path d="m3 3 18 18"/>`,
   degraded: `<path d="M10.3 3.7 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z"/>
     <path d="M12 9v4"/>
     <path d="M12 17h.01"/>`,
@@ -340,8 +339,6 @@ const cursorModeIcon = (style: CursorModeStyle): string => {
   else
     glyph = `<g ${common}>
       <path d="M14 15h24v17H25l-7 6v-6h-4z"/>
-      <path d="M23 21c.4-2 2-3 4-3 2.3 0 4 1.3 4 3.4 0 2.7-3.5 3-3.5 5.4"/>
-      <path d="M27.5 30h.01"/>
     </g>`;
   return `<g transform="translate(0 92)">
       <circle cx="26" cy="26" r="19" fill="#000" opacity=".55"/>
