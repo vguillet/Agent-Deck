@@ -20,7 +20,6 @@ export const RunStateSchema = z.enum([
   "cancelled",
   "unknown",
 ]);
-export const FreshnessSchema = z.enum(["fresh", "stale"]);
 export const TimestampSchema = z.iso.datetime({ offset: true });
 export const MetadataSchema = z.record(z.string(), z.unknown());
 export const AgentProgressSchema = z.object({
@@ -54,14 +53,13 @@ export const AgentSchema = z.object({
   projectId: z.string().optional(),
   workspaceId: z.string().optional(),
   state: AgentStateSchema,
-  freshness: FreshnessSchema,
+  activityEpoch: z.string().min(1),
   activeRunId: z.string().optional(),
   requiresAttention: z.boolean(),
   lastActivityAt: TimestampSchema,
   revision: z.number().int().nonnegative(),
   sourceRevision: z.number().int().nonnegative().optional(),
   progress: AgentProgressSchema.optional(),
-  archived: z.boolean(),
   capabilities: z.object({
     messages: z.boolean(),
     approvals: z.boolean(),
@@ -104,7 +102,6 @@ export const AttentionSchema = z.object({
     "approval",
     "review",
     "failure",
-    "stale",
     "provider_health",
   ]),
   severity: z.enum(["info", "warning", "critical"]),
@@ -159,9 +156,10 @@ export const EventSchema = z.object({
     "agent.upserted",
     "agent.state.changed",
     "agent.progress.changed",
-    "agent.freshness.changed",
+    "agent.removed",
     "run.upserted",
     "run.state.changed",
+    "run.removed",
     "attention.opened",
     "attention.resolved",
   ]),
@@ -346,7 +344,7 @@ export const ErrorEnvelopeSchema = z.object({
 });
 
 export const AgentCommandRequestSchema = z.object({
-  action: z.enum(["cancel", "archive"]),
+  action: z.literal("cancel"),
   expectedRevision: z.number().int().nonnegative().optional(),
 });
 

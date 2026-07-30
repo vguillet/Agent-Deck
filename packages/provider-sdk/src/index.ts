@@ -11,7 +11,7 @@ export interface ProviderManifest {
   id: string;
   displayName: string;
   version: string;
-  sdkVersion: 1;
+  sdkVersion: 2;
   capabilities: {
     discovery: boolean;
     discoveryMode?: "poll" | "startup";

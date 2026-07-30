@@ -81,6 +81,42 @@ describe("Cursor hook installer", () => {
     ).toHaveLength(8);
   });
 
+  it("repairs hooks that reference an obsolete Node runtime", async () => {
+    const path = await temporaryHooksPath();
+    const staleCommand =
+      '"/obsolete/node" "/Applications/Agent Deck/reporter.js" --agent-deck-cursor-local-hook';
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 1,
+        hooks: Object.fromEntries(
+          [
+            "sessionStart",
+            "beforeSubmitPrompt",
+            "preToolUse",
+            "postToolUse",
+            "postToolUseFailure",
+            "subagentStart",
+            "stop",
+            "sessionEnd",
+          ].map((event) => [event, [{ command: staleCommand }]]),
+        ),
+      }),
+    );
+
+    await installCursorHooks(options(path));
+    const file = JSON.parse(await readFile(path, "utf8")) as {
+      hooks: Record<string, Array<{ command: string }>>;
+    };
+    expect(
+      Object.values(file.hooks)
+        .flat()
+        .every((hook) =>
+          hook.command.startsWith('"/Applications/Node Runtime/node"'),
+        ),
+    ).toBe(true);
+  });
+
   it("uninstalls only Agent Deck hooks", async () => {
     const path = await temporaryHooksPath();
     await writeFile(

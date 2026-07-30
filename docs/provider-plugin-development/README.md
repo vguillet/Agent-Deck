@@ -2,7 +2,7 @@
 
 A provider package exports `createProviderPlugin()` and depends on
 `@agent-deck/provider-sdk`. Its manifest ID must match the configured ID and
-`sdkVersion` must be `1`.
+`sdkVersion` must be `2`.
 
 Plugins are responsible for:
 
@@ -18,16 +18,21 @@ Plugins are responsible for:
 `/internal/providers/<providerId>`. Ingress handlers must validate and sanitize
 native payloads before emitting canonical events.
 
-Hook-driven providers should also sanitize in the reporter before crossing the
-loopback boundary, fail open when the core is unavailable, persist enough
-sanitized state to survive restarts, and reject late events that would regress
-a newer run. Stable native conversation and generation IDs should be preferred
-over process IDs or timestamps. A missing hook event is not proof that a
-process ended, so freshness must be described as an observation lease.
-Restored checkpoint records must remain stale until current telemetry confirms
-them. Provider catalogs retain active and waiting agents, but prune non-active
-agents and completed runs after 24 hours so discovery does not become an
-unbounded historical archive.
+Hook-driven providers should sanitize in the reporter before crossing the
+loopback boundary, fail open when the core is unavailable, and reject late
+events that would regress a newer run. Stable native conversation and
+generation IDs become `activityEpoch` values and are preferred over process IDs
+or timestamps. Lifecycle agents and runs must not be restored from checkpoints.
+Incremental snapshots renew an observation lease; the core removes active
+agents after five minutes without accepted telemetry.
+
+Catalog providers return `reconciliation: "authoritative"` and report only
+currently active agents. Successful omission removes an active agent; failed
+discovery leaves the projection unchanged. Hook-only providers use
+`reconciliation: "incremental"`. Providers may emit a terminal state only for
+an epoch Agent Deck previously observed active. Terminal agents remain visible
+until dismissed. Removal is represented by `agent.removed` and `run.removed`
+events.
 
 The local Cursor provider is intentionally separate from Cursor Cloud. Local
 Cursor uses user hooks and needs no API key, has no historical backfill, and

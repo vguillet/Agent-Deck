@@ -27,7 +27,7 @@ class FakeProvider implements AgentProviderPlugin {
     id: "fake",
     displayName: "Agent Deck Demo",
     version: "0.1.0",
-    sdkVersion: 1 as const,
+    sdkVersion: 2 as const,
     capabilities: {
       discovery: true,
       liveEvents: true,
@@ -55,7 +55,7 @@ class FakeProvider implements AgentProviderPlugin {
   async discover(): Promise<ProviderSnapshot> {
     const now = this.context?.now() ?? new Date().toISOString();
     return {
-      complete: true,
+      reconciliation: "authoritative",
       observedAt: now,
       workspaces: [],
       projects: [
@@ -173,13 +173,12 @@ class FakeProvider implements AgentProviderPlugin {
         title: `Demo Agent ${index + 1}`,
         projectId: canonicalId("fake", "project:demo"),
         state,
-        freshness: "fresh",
+        activityEpoch: runId,
         activeRunId: runId,
         requiresAttention:
           state === "waiting_for_approval" || state === "ready_for_review",
         lastActivityAt: now,
         revision: 0,
-        archived: false,
         capabilities: {
           messages: false,
           approvals: false,
@@ -226,7 +225,6 @@ class FakeProvider implements AgentProviderPlugin {
     const agent: Agent = {
       ...previous,
       state,
-      freshness: "fresh",
       requiresAttention:
         state === "waiting_for_approval" || state === "ready_for_review",
       lastActivityAt: now,

@@ -14,7 +14,11 @@ import type {
   ProviderSnapshot,
   Workspace,
 } from "@agent-deck/domain";
-import { attentionForAgentState } from "@agent-deck/domain";
+import {
+  attentionForAgentState,
+  isActiveAgentState,
+  isTerminalVisibleAgentState,
+} from "@agent-deck/domain";
 import {
   RevisionConflictError,
   type AgentFilters,
@@ -50,20 +54,19 @@ CREATE TABLE IF NOT EXISTS agents (
   provider_id TEXT NOT NULL,
   project_id TEXT,
   state TEXT NOT NULL,
-  freshness TEXT NOT NULL,
   requires_attention INTEGER NOT NULL,
   last_activity_at TEXT NOT NULL,
+  last_observed_at TEXT,
   revision INTEGER NOT NULL,
-  archived INTEGER NOT NULL,
   document TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS agents_order_idx
   ON agents(requires_attention DESC, last_activity_at DESC, id ASC);
-CREATE TABLE IF NOT EXISTS deleted_agents (
-  agent_id TEXT PRIMARY KEY,
-  provider_id TEXT NOT NULL,
-  last_activity_at TEXT NOT NULL,
-  deleted_at TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS dismissed_agent_epochs (
+  agent_id TEXT NOT NULL,
+  activity_epoch TEXT NOT NULL,
+  dismissed_at TEXT NOT NULL,
+  PRIMARY KEY(agent_id, activity_epoch)
 );
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
@@ -136,14 +139,9 @@ const stable = (value: unknown): string => {
 const equivalent = (left: unknown, right: unknown): boolean =>
   stable(left) === stable(right);
 
-const withoutAgentProgress = (agent: Agent): Agent => {
-  const copy = { ...agent };
-  delete copy.progress;
-  return copy;
-};
-
 export class SqliteEventStore implements EventStore {
   private readonly db: Database.Database;
+  private readonly incrementalProviders = new Set<string>();
 
   constructor(path: string) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -160,6 +158,39 @@ export class SqliteEventStore implements EventStore {
     );
     const appliedAt = new Date().toISOString();
     for (const version of [1, 2]) recordMigration.run(version, appliedAt);
+    const version3 = this.db
+      .prepare("SELECT 1 FROM schema_migrations WHERE version = 3")
+      .get();
+    if (!version3) {
+      this.db.transaction(() => {
+        this.db
+          .prepare("DELETE FROM attention WHERE agent_id IS NOT NULL")
+          .run();
+        this.db.prepare("DELETE FROM events WHERE agent_id IS NOT NULL").run();
+        this.db.prepare("DELETE FROM runs").run();
+        this.db.prepare("DELETE FROM agents").run();
+        this.db.exec(`
+          DROP INDEX IF EXISTS agents_order_idx;
+          CREATE TABLE agents_v3 (
+            id TEXT PRIMARY KEY,
+            provider_id TEXT NOT NULL,
+            project_id TEXT,
+            state TEXT NOT NULL,
+            requires_attention INTEGER NOT NULL,
+            last_activity_at TEXT NOT NULL,
+            last_observed_at TEXT,
+            revision INTEGER NOT NULL,
+            document TEXT NOT NULL
+          );
+          DROP TABLE agents;
+          ALTER TABLE agents_v3 RENAME TO agents;
+          CREATE INDEX agents_order_idx
+            ON agents(requires_attention DESC, last_activity_at DESC, id ASC);
+        `);
+        this.db.exec("DROP TABLE IF EXISTS deleted_agents");
+        recordMigration.run(3, appliedAt);
+      })();
+    }
   }
 
   close(): void {
@@ -184,7 +215,45 @@ export class SqliteEventStore implements EventStore {
 
   applyProviderEvent(input: ProviderEvent): CanonicalEvent | undefined {
     return this.db.transaction((event: ProviderEvent) => {
-      if (event.agentId && this.suppressDeletedAgentEvent(event))
+      if (
+        event.type === "agent.upserted" ||
+        event.type === "agent.state.changed" ||
+        event.type === "agent.progress.changed"
+      ) {
+        const incoming = event.payload.agent as Agent | undefined;
+        const existing = incoming ? this.getAgent(incoming.id) : undefined;
+        if (
+          incoming &&
+          !isActiveAgentState(incoming.state) &&
+          !isTerminalVisibleAgentState(incoming.state)
+        ) {
+          if (!existing) return undefined;
+          return this.applyProviderEvent({
+            ...event,
+            type: "agent.removed",
+            payload: { agent: existing },
+          });
+        }
+        if (
+          incoming &&
+          isTerminalVisibleAgentState(incoming.state) &&
+          (!existing || existing.activityEpoch !== incoming.activityEpoch)
+        )
+          return undefined;
+      }
+      if (
+        event.agentId &&
+        event.type !== "agent.removed" &&
+        event.type !== "run.removed" &&
+        this.suppressDismissedEpoch(event)
+      )
+        return undefined;
+      if (
+        event.type !== "agent.removed" &&
+        (event.type === "run.upserted" || event.type === "run.state.changed") &&
+        event.agentId &&
+        !this.getAgent(event.agentId)
+      )
         return undefined;
       if (
         event.providerEventId &&
@@ -253,70 +322,109 @@ export class SqliteEventStore implements EventStore {
     providerId: string,
     snapshot: ProviderSnapshot,
   ): CanonicalEvent[] {
-    const output: CanonicalEvent[] = [];
-    const push = (event: ProviderEvent): void => {
-      const persisted = this.applyProviderEvent(event);
-      if (persisted) output.push(persisted);
-    };
-    for (const workspace of snapshot.workspaces)
-      push({
-        providerId,
-        type: "workspace.upserted",
-        occurredAt: snapshot.observedAt,
-        payload: { workspace },
-      });
-    for (const project of snapshot.projects)
-      push({
-        providerId,
-        type: "project.upserted",
-        occurredAt: snapshot.observedAt,
-        payload: { project },
-      });
-    for (const snapshotAgent of snapshot.agents) {
-      const existing = this.getAgent(snapshotAgent.id);
-      const agent =
-        !snapshot.complete &&
-        existing?.freshness === "stale" &&
-        snapshotAgent.freshness === "fresh" &&
-        snapshotAgent.lastActivityAt <= existing.lastActivityAt
-          ? {
-              ...withoutAgentProgress(snapshotAgent),
-              freshness: "stale" as const,
-              requiresAttention: true,
-            }
-          : snapshotAgent;
-      push({
-        providerId,
-        type: "agent.upserted",
-        occurredAt: snapshot.observedAt,
-        agentId: agent.id,
-        payload: { agent },
-      });
-    }
-    for (const run of snapshot.runs)
-      push({
-        providerId,
-        type: "run.upserted",
-        occurredAt: snapshot.observedAt,
-        agentId: run.agentId,
-        runId: run.id,
-        payload: { run },
-      });
-    for (const attention of snapshot.attention)
-      push({
-        providerId,
-        type: "attention.opened",
-        occurredAt: snapshot.observedAt,
-        ...(attention.agentId ? { agentId: attention.agentId } : {}),
-        ...(attention.runId ? { runId: attention.runId } : {}),
-        payload: { attention },
-      });
-    if (snapshot.complete)
-      this.reconcileDeletedAgents(
-        providerId,
-        snapshot.agents.map((agent) => agent.id),
-      );
-    return output;
+    return this.db.transaction(() => {
+      if (snapshot.reconciliation === "incremental")
+        this.incrementalProviders.add(providerId);
+      else this.incrementalProviders.delete(providerId);
+      const output: CanonicalEvent[] = [];
+      const push = (event: ProviderEvent): void => {
+        const persisted = this.applyProviderEvent(event);
+        if (persisted) output.push(persisted);
+      };
+      for (const workspace of snapshot.workspaces)
+        push({
+          providerId,
+          type: "workspace.upserted",
+          occurredAt: snapshot.observedAt,
+          payload: { workspace },
+        });
+      for (const project of snapshot.projects)
+        push({
+          providerId,
+          type: "project.upserted",
+          occurredAt: snapshot.observedAt,
+          payload: { project },
+        });
+      for (const agent of snapshot.agents)
+        push({
+          providerId,
+          type: "agent.upserted",
+          occurredAt: snapshot.observedAt,
+          agentId: agent.id,
+          payload: { agent },
+        });
+      for (const run of snapshot.runs) {
+        if (!this.getAgent(run.agentId)) continue;
+        push({
+          providerId,
+          type: "run.upserted",
+          occurredAt: snapshot.observedAt,
+          agentId: run.agentId,
+          runId: run.id,
+          payload: { run },
+        });
+      }
+      for (const attention of snapshot.attention)
+        push({
+          providerId,
+          type: "attention.opened",
+          occurredAt: snapshot.observedAt,
+          ...(attention.agentId ? { agentId: attention.agentId } : {}),
+          ...(attention.runId ? { runId: attention.runId } : {}),
+          payload: { attention },
+        });
+      if (snapshot.reconciliation === "authoritative") {
+        const reported = new Set(snapshot.agents.map((agent) => agent.id));
+        const reportedRuns = new Set(snapshot.runs.map((run) => run.id));
+        const existingRuns = this.db
+          .prepare("SELECT document FROM runs WHERE provider_id = ?")
+          .all(providerId) as Row[];
+        for (const row of existingRuns) {
+          const run = parse<AgentRun>(row.document);
+          if (reportedRuns.has(run.id) || !reported.has(run.agentId)) continue;
+          push({
+            providerId,
+            type: "run.removed",
+            occurredAt: snapshot.observedAt,
+            agentId: run.agentId,
+            runId: run.id,
+            payload: { run },
+          });
+        }
+        const existing = this.db
+          .prepare("SELECT document FROM agents WHERE provider_id = ?")
+          .all(providerId) as Row[];
+        for (const row of existing) {
+          const agent = parse<Agent>(row.document);
+          if (
+            reported.has(agent.id) ||
+            isTerminalVisibleAgentState(agent.state)
+          )
+            continue;
+          for (const run of this.listRuns(agent.id, {
+            offset: 0,
+            limit: Number.MAX_SAFE_INTEGER,
+          }).items)
+            push({
+              providerId,
+              type: "run.removed",
+              occurredAt: snapshot.observedAt,
+              agentId: agent.id,
+              runId: run.id,
+              payload: { run },
+            });
+          push({
+            providerId,
+            type: "agent.removed",
+            occurredAt: snapshot.observedAt,
+            agentId: agent.id,
+            payload: { agent },
+          });
+        }
+      }
+      this.pruneResources();
+      return output;
+    })();
   }
 
   updateProvider(provider: Provider): CanonicalEvent | undefined {
@@ -344,14 +452,13 @@ export class SqliteEventStore implements EventStore {
       case "agent.state.changed":
       case "agent.progress.changed":
         return this.upsertAgent(event.payload, event.occurredAt);
-      case "agent.freshness.changed": {
-        const agent = { ...(event.payload.agent as Agent) };
-        delete agent.sourceRevision;
-        return this.upsertAgent({ agent }, event.occurredAt);
-      }
+      case "agent.removed":
+        return this.removeAgent(event.payload);
       case "run.upserted":
       case "run.state.changed":
         return this.upsertRun(event.payload);
+      case "run.removed":
+        return this.removeRun(event.payload);
       case "attention.opened":
         return this.openAttention(event.payload);
       case "attention.resolved":
@@ -479,42 +586,66 @@ export class SqliteEventStore implements EventStore {
         ? { sourceRevision: existing.sourceRevision }
         : {}),
     };
-    if (existing && equivalent(existing, candidate))
+    if (existing && equivalent(existing, candidate)) {
+      this.db
+        .prepare("UPDATE agents SET last_observed_at = ? WHERE id = ?")
+        .run(occurredAt, incoming.id);
       return { changed: false, payload };
+    }
     candidate.revision = (existing?.revision ?? 0) + 1;
     this.db
       .prepare(
         `INSERT INTO agents(
-          id, provider_id, project_id, state, freshness, requires_attention,
-          last_activity_at, revision, archived, document
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, provider_id, project_id, state, requires_attention,
+          last_activity_at, last_observed_at, revision, document
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           provider_id = excluded.provider_id, project_id = excluded.project_id,
-          state = excluded.state, freshness = excluded.freshness,
+          state = excluded.state,
           requires_attention = excluded.requires_attention,
           last_activity_at = excluded.last_activity_at,
-          revision = excluded.revision, archived = excluded.archived,
-          document = excluded.document`,
+          last_observed_at = excluded.last_observed_at,
+          revision = excluded.revision, document = excluded.document`,
       )
       .run(
         candidate.id,
         candidate.providerId,
         candidate.projectId ?? null,
         candidate.state,
-        candidate.freshness,
         candidate.requiresAttention ? 1 : 0,
         candidate.lastActivityAt,
+        occurredAt,
         candidate.revision,
-        candidate.archived ? 1 : 0,
         stringify(candidate),
       );
     this.reconcileStateAttention(candidate, occurredAt);
-    this.reconcileFreshnessAttention(candidate, occurredAt);
     return {
       changed: true,
       payload: { agent: candidate },
       agentRevision: candidate.revision,
     };
+  }
+
+  private removeAgent(payload: Record<string, unknown>): {
+    changed: boolean;
+    payload: Record<string, unknown>;
+  } {
+    const agent = payload.agent as Agent | undefined;
+    if (!agent || !this.getAgent(agent.id)) return { changed: false, payload };
+    this.db.prepare("DELETE FROM attention WHERE agent_id = ?").run(agent.id);
+    this.db.prepare("DELETE FROM runs WHERE agent_id = ?").run(agent.id);
+    this.db.prepare("DELETE FROM agents WHERE id = ?").run(agent.id);
+    return { changed: true, payload: { agent } };
+  }
+
+  private removeRun(payload: Record<string, unknown>): {
+    changed: boolean;
+    payload: Record<string, unknown>;
+  } {
+    const run = payload.run as AgentRun | undefined;
+    if (!run || !this.getRun(run.id)) return { changed: false, payload };
+    this.db.prepare("DELETE FROM runs WHERE id = ?").run(run.id);
+    return { changed: true, payload: { run } };
   }
 
   private reconcileStateAttention(agent: Agent, occurredAt: string): void {
@@ -571,32 +702,6 @@ export class SqliteEventStore implements EventStore {
         attention.openedAt,
         stringify(attention),
       );
-  }
-
-  private reconcileFreshnessAttention(agent: Agent, occurredAt: string): void {
-    const id = `${agent.id}:stale-attention`;
-    if (agent.freshness === "fresh" || !agent.requiresAttention) {
-      this.resolveAttention({ attentionId: id, resolvedAt: occurredAt });
-      return;
-    }
-    const current = this.db
-      .prepare(
-        "SELECT document FROM attention WHERE id = ? AND resolved_at IS NULL",
-      )
-      .get(id) as Row | undefined;
-    const attention: Attention = {
-      id,
-      providerId: agent.providerId,
-      agentId: agent.id,
-      type: "stale",
-      severity: "warning",
-      summary: `${agent.title} has not reported recent activity`,
-      actions: [],
-      openedAt: current
-        ? parse<Attention>(current.document).openedAt
-        : occurredAt,
-    };
-    this.openAttention({ attention });
   }
 
   private upsertRun(payload: Record<string, unknown>): {
@@ -728,31 +833,60 @@ export class SqliteEventStore implements EventStore {
     return this.getDocument("agents", id);
   }
 
-  deleteAgent(id: string): boolean {
+  dismissAgent(id: string): CanonicalEvent[] {
     return this.db.transaction((agentId: string) => {
       const agent = this.getAgent(agentId);
-      if (!agent) return false;
+      if (!agent) return [];
       const now = new Date().toISOString();
       this.db
         .prepare(
-          `INSERT INTO deleted_agents(
-            agent_id, provider_id, last_activity_at, deleted_at
-          ) VALUES (?, ?, ?, ?)
-          ON CONFLICT(agent_id) DO UPDATE SET
-            provider_id = excluded.provider_id,
-            last_activity_at = excluded.last_activity_at,
-            deleted_at = excluded.deleted_at`,
+          `INSERT INTO dismissed_agent_epochs(agent_id, activity_epoch, dismissed_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(agent_id, activity_epoch) DO UPDATE SET
+             dismissed_at = excluded.dismissed_at`,
         )
-        .run(agent.id, agent.providerId, agent.lastActivityAt, now);
-      this.db.prepare("DELETE FROM attention WHERE agent_id = ?").run(agent.id);
-      this.db.prepare("DELETE FROM events WHERE agent_id = ?").run(agent.id);
-      this.db.prepare("DELETE FROM runs WHERE agent_id = ?").run(agent.id);
-      this.db.prepare("DELETE FROM agents WHERE id = ?").run(agent.id);
-      return true;
+        .run(agent.id, agent.activityEpoch, now);
+      const output: CanonicalEvent[] = [];
+      for (const run of this.listRuns(agent.id, {
+        offset: 0,
+        limit: Number.MAX_SAFE_INTEGER,
+      }).items) {
+        const event = this.applyProviderEvent({
+          providerId: agent.providerId,
+          type: "run.removed",
+          occurredAt: now,
+          agentId: agent.id,
+          runId: run.id,
+          payload: { run },
+        });
+        if (event) output.push(event);
+      }
+      const event = this.applyProviderEvent({
+        providerId: agent.providerId,
+        type: "agent.removed",
+        occurredAt: now,
+        agentId: agent.id,
+        payload: { agent },
+      });
+      if (event) output.push(event);
+      this.pruneResources();
+      return output;
     })(id);
   }
 
-  clearAgents(options: { preserveTombstones?: boolean } = {}): number {
+  dismissTerminalAgents(): CanonicalEvent[] {
+    const agents = this.db
+      .prepare(
+        `SELECT document FROM agents
+         WHERE state IN ('ready_for_review', 'failed', 'cancelled')`,
+      )
+      .all() as Row[];
+    return agents.flatMap((row) =>
+      this.dismissAgent(parse<Agent>(row.document).id),
+    );
+  }
+
+  clearAgents(): number {
     return this.db.transaction(() => {
       const result = this.db.prepare("DELETE FROM agents").run();
       this.db.prepare("DELETE FROM attention WHERE agent_id IS NOT NULL").run();
@@ -762,30 +896,8 @@ export class SqliteEventStore implements EventStore {
         )
         .run();
       this.db.prepare("DELETE FROM runs").run();
-      if (!options.preserveTombstones)
-        this.db.prepare("DELETE FROM deleted_agents").run();
+      this.pruneResources();
       return result.changes;
-    })();
-  }
-
-  reconcileDeletedAgents(
-    providerId: string,
-    agentIds: readonly string[],
-  ): number {
-    const reported = new Set(agentIds);
-    return this.db.transaction(() => {
-      const rows = this.db
-        .prepare("SELECT agent_id FROM deleted_agents WHERE provider_id = ?")
-        .all(providerId) as Row[];
-      let removed = 0;
-      const remove = this.db.prepare(
-        "DELETE FROM deleted_agents WHERE agent_id = ?",
-      );
-      for (const row of rows) {
-        const agentId = String(row.agent_id);
-        if (!reported.has(agentId)) removed += remove.run(agentId).changes;
-      }
-      return removed;
     })();
   }
 
@@ -801,32 +913,6 @@ export class SqliteEventStore implements EventStore {
 
   getRun(id: string): AgentRun | undefined {
     return this.getDocument("runs", id);
-  }
-
-  listEvents(
-    options: { agentId?: string; afterSequence?: number },
-    page: PageRequest,
-  ): StorePage<CanonicalEvent> {
-    const clauses: string[] = [];
-    const parameters: unknown[] = [];
-    if (options.agentId) {
-      clauses.push("agent_id = ?");
-      parameters.push(options.agentId);
-    }
-    if (options.afterSequence !== undefined) {
-      clauses.push("sequence > ?");
-      parameters.push(options.afterSequence);
-    }
-    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM events ${where} ORDER BY sequence ASC LIMIT ? OFFSET ?`,
-      )
-      .all(...parameters, page.limit + 1, page.offset) as Row[];
-    return {
-      items: rows.slice(0, page.limit).map((row) => this.eventFromRow(row)),
-      hasMore: rows.length > page.limit,
-    };
   }
 
   listEventsAfter(sequence: number, limit: number): CanonicalEvent[] {
@@ -919,31 +1005,44 @@ export class SqliteEventStore implements EventStore {
       .run(providerId, key, value, new Date().toISOString());
   }
 
-  markStale(beforeTimestamp: string, now: string): CanonicalEvent[] {
+  expireLeases(beforeTimestamp: string, now: string): CanonicalEvent[] {
+    if (!this.incrementalProviders.size) return [];
+    const placeholders = [...this.incrementalProviders].map(() => "?").join(",");
     const rows = this.db
       .prepare(
-        `SELECT document FROM agents WHERE freshness = 'fresh'
-         AND last_activity_at < ? AND state IN (
+        `SELECT document FROM agents WHERE provider_id IN (${placeholders})
+         AND COALESCE(last_observed_at, last_activity_at) < ? AND state IN (
            'running', 'waiting_for_input', 'waiting_for_approval'
          )`,
       )
-      .all(beforeTimestamp) as Row[];
+      .all(...this.incrementalProviders, beforeTimestamp) as Row[];
     const output: CanonicalEvent[] = [];
     for (const row of rows) {
-      const agent = {
-        ...withoutAgentProgress(parse<Agent>(row.document)),
-        freshness: "stale" as const,
-        requiresAttention: true,
-      };
+      const agent = parse<Agent>(row.document);
+      for (const run of this.listRuns(agent.id, {
+        offset: 0,
+        limit: Number.MAX_SAFE_INTEGER,
+      }).items) {
+        const event = this.applyProviderEvent({
+          providerId: agent.providerId,
+          type: "run.removed",
+          occurredAt: now,
+          agentId: agent.id,
+          runId: run.id,
+          payload: { run },
+        });
+        if (event) output.push(event);
+      }
       const event = this.applyProviderEvent({
         providerId: agent.providerId,
-        type: "agent.freshness.changed",
+        type: "agent.removed",
         occurredAt: now,
         agentId: agent.id,
         payload: { agent },
       });
       if (event) output.push(event);
     }
+    this.pruneResources();
     return output;
   }
 
@@ -960,24 +1059,42 @@ export class SqliteEventStore implements EventStore {
     return row ? parse<T>(row.document) : undefined;
   }
 
-  private suppressDeletedAgentEvent(event: ProviderEvent): boolean {
-    const tombstone = this.db
-      .prepare("SELECT last_activity_at FROM deleted_agents WHERE agent_id = ?")
-      .get(event.agentId) as Row | undefined;
-    if (!tombstone) return false;
+  private suppressDismissedEpoch(event: ProviderEvent): boolean {
     const agent = event.payload.agent as Agent | undefined;
-    if (
-      agent &&
-      agent.id === event.agentId &&
-      Date.parse(agent.lastActivityAt) >
-        Date.parse(String(tombstone.last_activity_at))
-    ) {
-      this.db
-        .prepare("DELETE FROM deleted_agents WHERE agent_id = ?")
-        .run(event.agentId);
-      return false;
-    }
-    return true;
+    if (!agent || agent.id !== event.agentId) return false;
+    const dismissed = this.db
+      .prepare(
+        `SELECT 1 FROM dismissed_agent_epochs
+         WHERE agent_id = ? AND activity_epoch = ?`,
+      )
+      .get(agent.id, agent.activityEpoch);
+    if (dismissed) return true;
+    this.db
+      .prepare(
+        "DELETE FROM dismissed_agent_epochs WHERE agent_id = ? AND activity_epoch <> ?",
+      )
+      .run(agent.id, agent.activityEpoch);
+    return false;
+  }
+
+  private pruneResources(): void {
+    this.db
+      .prepare(
+        `DELETE FROM projects
+         WHERE id NOT IN (SELECT project_id FROM agents WHERE project_id IS NOT NULL)`,
+      )
+      .run();
+    this.db
+      .prepare(
+        `DELETE FROM workspaces
+         WHERE id NOT IN (
+           SELECT json_extract(document, '$.workspaceId') FROM agents
+           WHERE json_extract(document, '$.workspaceId') IS NOT NULL
+           UNION
+           SELECT workspace_id FROM projects WHERE workspace_id IS NOT NULL
+         )`,
+      )
+      .run();
   }
 
   private listDocuments<T>(

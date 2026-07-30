@@ -3,8 +3,6 @@
     "host": "127.0.0.1",
     "port": 47831
   },
-  "retentionDays": 30,
-  "staleAfterMs": 300000,
   "healthIntervalMs": 30000,
   "providers": [
     {
@@ -22,8 +20,7 @@
       "enabled": true,
       "discoveryIntervalMs": 30000,
       "config": {
-        "apiKeyEnv": "CURSOR_API_KEY",
-        "includeArchived": false
+        "apiKeyEnv": "CURSOR_API_KEY"
       }
     },
     {

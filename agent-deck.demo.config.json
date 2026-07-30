@@ -4,8 +4,6 @@
     "port": 47831
   },
   "databasePath": "./.data/demo.sqlite",
-  "retentionDays": 30,
-  "staleAfterMs": 300000,
   "healthIntervalMs": 30000,
   "providers": [
     {

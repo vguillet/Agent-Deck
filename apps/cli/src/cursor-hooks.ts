@@ -107,10 +107,15 @@ export const installCursorHooks = async (
   const path = options.path ?? defaultHooksPath();
   const file = await load(path);
   validate(file, path);
-  const missingEvents = EVENTS.filter(
-    (event) => !file.hooks?.[event]?.some(isAgentDeckHook),
+  const command = `${quote(options.nodePath ?? process.execPath)} ${quote(
+    options.reporterPath ?? reporterPath(),
+  )} ${MARKER}`;
+  const eventsNeedingUpdate = EVENTS.filter(
+    (event) =>
+      file.hooks?.[event]?.filter(isAgentDeckHook).length !== 1 ||
+      file.hooks[event]?.find(isAgentDeckHook)?.command !== command,
   );
-  if (!missingEvents.length)
+  if (!eventsNeedingUpdate.length)
     return `Agent Deck Cursor hooks already installed in ${path}`;
   try {
     await copyFile(
@@ -126,18 +131,18 @@ export const installCursorHooks = async (
         : "";
     if (code !== "ENOENT") throw error;
   }
-  const command = `${quote(options.nodePath ?? process.execPath)} ${quote(
-    options.reporterPath ?? reporterPath(),
-  )} ${MARKER}`;
   file.version = 1;
   file.hooks ??= {};
-  for (const event of missingEvents) {
-    file.hooks[event] ??= [];
-    file.hooks[event].push({
+  for (const event of eventsNeedingUpdate) {
+    const existing = file.hooks[event]?.filter((hook) => !isAgentDeckHook(hook));
+    file.hooks[event] = [
+      ...(existing ?? []),
+      {
       command,
       timeout: 1,
       failClosed: false,
-    });
+      },
+    ];
   }
   await writeAtomically(path, file);
   return `Installed Agent Deck Cursor hooks in ${path}`;

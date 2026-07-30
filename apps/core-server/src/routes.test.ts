@@ -23,11 +23,10 @@ const agent = (
   externalId,
   title: externalId,
   state: "running",
-  freshness: "fresh",
+  activityEpoch: "run-1",
   requiresAttention: false,
   lastActivityAt: "2026-07-29T09:00:00.000Z",
   revision: 1,
-  archived: false,
   capabilities: {
     messages: false,
     approvals: false,
@@ -42,15 +41,24 @@ const setup = async (agents: Agent[]) => {
   const app = Fastify();
   apps.push(app);
   const byId = new Map(agents.map((candidate) => [candidate.id, candidate]));
-  const clearAgents = vi.fn(() => {
-    const count = byId.size;
-    byId.clear();
-    return count;
+  const dismissAgent = vi.fn((id: string) => {
+    const candidate = byId.get(id);
+    if (!candidate) return [];
+    byId.delete(id);
+    return [
+      {
+        type: "agent.removed",
+        providerId: candidate.providerId,
+        agentId: candidate.id,
+        payload: { agent: candidate },
+      },
+    ];
   });
   const store = {
     getAgent: (id: string) => byId.get(id),
     currentSequence: () => 0,
-    clearAgents,
+    dismissAgent,
+    dismissTerminalAgents: () => [],
   } as unknown as EventStore;
   const focusAgent = vi.fn(async () => ({
     requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -60,41 +68,39 @@ const setup = async (agents: Agent[]) => {
     focusAgent,
     registeredCursorWindowCount: () => 0,
   } as unknown as AgentFocusCoordinator;
-  const requestResync = vi.fn();
+  const publish = vi.fn();
   const rediscover = vi.fn(async () => {});
   registerApiRoutes(
     app,
     store,
-    { requestResync } as unknown as SubscriptionBroker,
+    { publish, listPresence: () => [] } as unknown as SubscriptionBroker,
     agentFocus,
     { rediscover } as unknown as ProviderManager,
   );
   await app.ready();
-  return { app, clearAgents, focusAgent, rediscover, requestResync };
+  return { app, dismissAgent, focusAgent, publish };
 };
 
 describe("agent collection route", () => {
-  it("clears agents, requests a resync, and immediately rediscovers", async () => {
+  it("dismisses one visible activity epoch", async () => {
     const test = await setup([
       agent("fake", "one", {}),
       agent("fake", "two", {}),
     ]);
 
     const response = await test.app.inject({
-      method: "DELETE",
-      url: "/api/v1/agents",
+      method: "POST",
+      url: "/api/v1/agents/fake%3Aone/dismiss",
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ cleared: 2 });
-    expect(test.clearAgents).toHaveBeenCalledOnce();
-    expect(test.requestResync).toHaveBeenCalledOnce();
-    expect(test.rediscover).toHaveBeenCalledOnce();
+    expect(response.statusCode).toBe(204);
+    expect(test.dismissAgent).toHaveBeenCalledWith("fake:one");
+    expect(test.publish).toHaveBeenCalledOnce();
   });
 });
 
 describe("agent focus route", () => {
-  it("delegates every provider and missing ID to the unified coordinator", async () => {
+  it("delegates visible providers and rejects missing IDs", async () => {
     const cursor = agent("cursor-local", "conversation-1", {
       workspaceRoots: ["/workspace/beta", "/workspace/alpha"],
     });
@@ -121,7 +127,6 @@ describe("agent focus route", () => {
       method: "POST",
       url: "/api/v1/agents/missing%3Aagent/focus",
     });
-    expect(missing.statusCode).toBe(200);
-    expect(test.focusAgent).toHaveBeenLastCalledWith("missing:agent");
+    expect(missing.statusCode).toBe(404);
   });
 });

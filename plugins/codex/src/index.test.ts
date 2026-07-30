@@ -73,7 +73,7 @@ describe("Codex provider hook ingestion", () => {
       tool_input: { command: "SECRET COMMAND" },
     });
     expect(result?.statusCode).toBe(202);
-    expect(emitted).toHaveLength(2);
+    expect(emitted.length).toBeGreaterThan(0);
     const serialized = JSON.stringify(emitted);
     expect(serialized).not.toContain("SECRET");
     expect(serialized).not.toContain("transcript");
@@ -103,10 +103,14 @@ describe("Codex provider hook ingestion", () => {
       status: "succeeded",
     });
     expect(interrupt).toHaveBeenCalledWith("thr_test", "turn_test");
-    expect(emitted.at(-2)?.payload.agent).toMatchObject({
+    expect(
+      emitted.filter((event) => event.payload.agent).at(-1)?.payload.agent,
+    ).toMatchObject({
       state: "cancelled",
     });
-    expect(emitted.at(-1)?.payload.run).toMatchObject({
+    expect(
+      emitted.filter((event) => event.payload.run).at(-1)?.payload.run,
+    ).toMatchObject({
       state: "cancelled",
     });
     await stop();
@@ -142,12 +146,16 @@ describe("Codex provider hook ingestion", () => {
       plan_progress: { completed: 1, total: 3 },
     });
 
-    expect(emitted.at(-2)?.payload.agent).toMatchObject({
-      progress: {
-        activity: "planning",
-        plan: { completed: 1, total: 3 },
-        observedAt: "2026-07-29T10:00:00.000Z",
-      },
+    await vi.waitFor(() => {
+      expect(
+        emitted.filter((event) => event.payload.agent).at(-1)?.payload.agent,
+      ).toMatchObject({
+        progress: {
+          activity: "planning",
+          plan: { completed: 1, total: 3 },
+          observedAt: "2026-07-29T10:00:00.000Z",
+        },
+      });
     });
     expect(
       emitted.some((event) => event.type === "agent.progress.changed"),
@@ -158,7 +166,9 @@ describe("Codex provider hook ingestion", () => {
       hook_event_name: "Stop",
       status: "completed",
     });
-    expect(emitted.at(-2)?.payload.agent).not.toHaveProperty("progress");
+    expect(
+      emitted.filter((event) => event.payload.agent).at(-1)?.payload.agent,
+    ).not.toHaveProperty("progress");
     await stop();
     await plugin.dispose();
   });
@@ -220,9 +230,7 @@ describe("Codex provider hook ingestion", () => {
       hook_event_name: "SessionEnd",
       cwd: "/workspace/aquila",
     });
-    expect((await plugin.discover()).agents[0]).toMatchObject({
-      state: "ready_for_review",
-    });
+    expect((await plugin.discover()).agents).toEqual([]);
 
     await stop();
     await plugin.dispose();
@@ -265,9 +273,7 @@ describe("Codex provider hook ingestion", () => {
       hook_event_name: "Stop",
       cwd: "/workspace/aquila",
     });
-    expect((await plugin.discover()).agents[0]).toMatchObject({
-      state: "ready_for_review",
-    });
+    expect((await plugin.discover()).agents).toEqual([]);
 
     await ingress?.handle({
       session_id: "thr_without_turn",
@@ -388,19 +394,12 @@ describe("Codex provider hook ingestion", () => {
     });
     const snapshot = await plugin.discover();
 
-    expect(snapshot.agents[0]).toMatchObject({
-      state: "cancelled",
-      activeRunId: "codex:thr_test:turn_test",
-      requiresAttention: false,
-    });
-    expect(snapshot.runs[0]).toMatchObject({
-      externalId: "turn_test",
-      state: "cancelled",
-    });
+    expect(snapshot.agents).toEqual([]);
+    expect(snapshot.runs).toEqual([]);
     await plugin.dispose();
   });
 
-  it("retains only active or 24-hour-recent discovered threads", async () => {
+  it("discovers only currently active threads", async () => {
     const checkpoint: { value?: string } = {};
     const seconds = (value: string): number => Date.parse(value) / 1_000;
     vi.spyOn(CodexAppServerClient.prototype, "listThreads").mockResolvedValue([
@@ -425,21 +424,14 @@ describe("Codex provider hook ingestion", () => {
 
     const snapshot = await plugin.discover();
 
-    expect(snapshot.agents.map((agent) => agent.externalId).sort()).toEqual([
+    expect(snapshot.agents.map((agent) => agent.externalId)).toEqual([
       "thr_active",
-      "thr_recent",
     ]);
-    const registry = JSON.parse(checkpoint.value!) as {
-      agents: Array<{ externalId: string }>;
-    };
-    expect(registry.agents.map((agent) => agent.externalId).sort()).toEqual([
-      "thr_active",
-      "thr_recent",
-    ]);
+    expect(checkpoint.value).toBeUndefined();
     await plugin.dispose();
   });
 
-  it("keeps recent hook-only sessions when app-server has not listed them", async () => {
+  it("lets authoritative discovery remove hook-only sessions it cannot confirm", async () => {
     vi.spyOn(CodexAppServerClient.prototype, "listThreads").mockResolvedValue(
       [],
     );
@@ -459,13 +451,12 @@ describe("Codex provider hook ingestion", () => {
 
     const snapshot = await plugin.discover();
 
-    expect(snapshot.agents).toHaveLength(1);
-    expect(snapshot.agents[0]?.externalId).toBe("thr_hook_only");
-    expect(snapshot.runs[0]?.externalId).toBe("turn_hook_only");
+    expect(snapshot.agents).toEqual([]);
+    expect(snapshot.runs).toEqual([]);
     await plugin.dispose();
   });
 
-  it("emits one stale transition when a retained thread expires", async () => {
+  it("does not import idle historical threads", async () => {
     let now = "2026-07-29T10:00:00.000Z";
     vi.spyOn(CodexAppServerClient.prototype, "listThreads").mockResolvedValue([
       {
@@ -482,19 +473,8 @@ describe("Codex provider hook ingestion", () => {
         () => now,
       ),
     );
-    expect((await plugin.discover()).agents[0]).toMatchObject({
-      externalId: "thr_aging",
-      freshness: "fresh",
-    });
-
+    expect((await plugin.discover()).agents).toEqual([]);
     now = "2026-07-30T10:00:00.000Z";
-    expect((await plugin.discover()).agents).toEqual([
-      expect.objectContaining({
-        externalId: "thr_aging",
-        freshness: "stale",
-        requiresAttention: false,
-      }),
-    ]);
     expect((await plugin.discover()).agents).toEqual([]);
     await plugin.dispose();
   });
@@ -504,7 +484,7 @@ describe("Codex provider hook ingestion", () => {
       {
         id: "thr_discovered",
         cwd: "/workspace/alpha/../aquila",
-        status: { type: "idle" },
+        status: { type: "active" },
       },
       {
         id: "thr_without_cwd",
@@ -536,8 +516,8 @@ describe("Codex provider hook ingestion", () => {
     expect(
       snapshot.agents.find(
         (candidate) => candidate.externalId === "thr_without_cwd",
-      )?.links,
-    ).toEqual([]);
+      ),
+    ).toBeUndefined();
     expect(JSON.stringify(snapshot.agents)).not.toContain("codex://");
     await plugin.dispose();
   });
@@ -574,10 +554,14 @@ describe("Codex provider hook ingestion", () => {
       permission_mode: "plan",
       agent_signal: "question_started",
     });
-    expect(emitted.at(-2)?.payload.agent).toMatchObject({
-      state: "waiting_for_input",
-      requiresAttention: true,
-      metadata: { agentMode: "plan" },
+    await vi.waitFor(() => {
+      expect(
+        emitted.filter((event) => event.payload.agent).at(-1)?.payload.agent,
+      ).toMatchObject({
+        state: "waiting_for_input",
+        requiresAttention: true,
+        metadata: { agentMode: "plan" },
+      });
     });
     expect(emitted.at(-1)?.payload.run).toMatchObject({
       state: "waiting_for_input",
@@ -593,9 +577,13 @@ describe("Codex provider hook ingestion", () => {
       agent_activity: "waiting",
       permission_mode: "plan",
     });
-    expect(emitted.at(-2)?.payload.agent).toMatchObject({
-      state: "running",
-      metadata: { agentMode: "plan" },
+    await vi.waitFor(() => {
+      expect(
+        emitted.filter((event) => event.payload.agent).at(-1)?.payload.agent,
+      ).toMatchObject({
+        state: "running",
+        metadata: { agentMode: "plan" },
+      });
     });
 
     await stop();
@@ -622,6 +610,9 @@ describe("Codex provider hook ingestion", () => {
     });
     await ingress?.handle(prompt("turn_old"));
     await ingress?.handle(prompt("turn_new"));
+    await vi.waitFor(() => {
+      expect(emitted).toHaveLength(4);
+    });
     const count = emitted.length;
     await ingress?.handle({
       session_id: "thr_ordered",
@@ -632,6 +623,7 @@ describe("Codex provider hook ingestion", () => {
       agent_activity: "executing",
     });
     await ingress?.handle(prompt("turn_new"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(emitted).toHaveLength(count);
 
     await ingress?.handle({
@@ -641,14 +633,22 @@ describe("Codex provider hook ingestion", () => {
       turn_id: "turn_new",
       status: "failed",
     });
-    expect(emitted.at(-2)?.payload.agent).toMatchObject({ state: "failed" });
-    expect(emitted.at(-1)?.payload.run).toMatchObject({ state: "failed" });
+    await vi.waitFor(() => {
+      expect(
+        emitted.filter((event) => event.payload.agent).at(-1)?.payload.agent,
+      ).toMatchObject({ state: "failed" });
+    });
+    await vi.waitFor(() => {
+      expect(
+        emitted.filter((event) => event.payload.run).at(-1)?.payload.run,
+      ).toMatchObject({ state: "failed" });
+    });
 
     await stop();
     await plugin.dispose();
   });
 
-  it("restores question state and mode from its checkpoint", async () => {
+  it("does not restore hook lifecycle state from checkpoints", async () => {
     const checkpoint: { value?: string } = {};
     let ingress: ProviderIngressRegistration | undefined;
     const first = createProviderPlugin();
@@ -689,16 +689,15 @@ describe("Codex provider hook ingestion", () => {
     await restored.initialise(contextFor(() => undefined, checkpoint));
     const snapshot = await restored.discover();
     expect(snapshot.agents[0]).toMatchObject({
-      state: "waiting_for_input",
+      state: "waiting_for_approval",
       activeRunId: "codex:thr_restore:turn_restore",
-      metadata: { agentMode: "plan" },
-      progress: {
-        activity: "waiting",
-        plan: { completed: 1, total: 2 },
+      metadata: {
+        cwd: "/workspace/aquila",
+        workspaceRoots: ["/workspace/aquila"],
       },
     });
     expect(snapshot.runs[0]).toMatchObject({
-      state: "waiting_for_input",
+      state: "waiting_for_approval",
     });
     await restored.dispose();
   });

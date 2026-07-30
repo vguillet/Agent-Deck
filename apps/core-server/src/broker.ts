@@ -37,8 +37,9 @@ const topicsForEvent = (event: CanonicalEvent): Topic[] => {
   if (
     event.type === "agent.state.changed" ||
     event.type === "agent.progress.changed" ||
-    event.type === "agent.freshness.changed" ||
-    event.type === "agent.upserted"
+    event.type === "agent.removed" ||
+    event.type === "agent.upserted" ||
+    event.type === "run.removed"
   )
     return ["agents.summary", "attention"];
   return ["agents.summary"];
@@ -168,7 +169,13 @@ export class SubscriptionBroker {
     )
       return;
     if ((filter?.projects?.length || filter?.states?.length) && event.agentId) {
-      const agent = this.store.getAgent(event.agentId);
+      const agent =
+        this.store.getAgent(event.agentId) ??
+        (event.type === "agent.removed"
+          ? (event.payload.agent as
+              | { projectId?: string; state: AgentState }
+              | undefined)
+          : undefined);
       if (
         filter.projects?.length &&
         (!agent?.projectId || !filter.projects.includes(agent.projectId))

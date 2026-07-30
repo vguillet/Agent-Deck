@@ -38,13 +38,12 @@ export const agents = sqliteTable(
     providerId: text("provider_id").notNull(),
     projectId: text("project_id"),
     state: text("state").notNull(),
-    freshness: text("freshness").notNull(),
     requiresAttention: integer("requires_attention", {
       mode: "boolean",
     }).notNull(),
     lastActivityAt: text("last_activity_at").notNull(),
+    lastObservedAt: text("last_observed_at"),
     revision: integer("revision").notNull(),
-    archived: integer("archived", { mode: "boolean" }).notNull(),
     document: text("document").notNull(),
   },
   (table) => [
@@ -56,12 +55,20 @@ export const agents = sqliteTable(
   ],
 );
 
-export const deletedAgents = sqliteTable("deleted_agents", {
-  agentId: text("agent_id").primaryKey(),
-  providerId: text("provider_id").notNull(),
-  lastActivityAt: text("last_activity_at").notNull(),
-  deletedAt: text("deleted_at").notNull(),
-});
+export const dismissedAgentEpochs = sqliteTable(
+  "dismissed_agent_epochs",
+  {
+    agentId: text("agent_id").notNull(),
+    activityEpoch: text("activity_epoch").notNull(),
+    dismissedAt: text("dismissed_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("dismissed_agent_epochs_unique").on(
+      table.agentId,
+      table.activityEpoch,
+    ),
+  ],
+);
 
 export const runs = sqliteTable(
   "runs",

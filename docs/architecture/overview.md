@@ -10,23 +10,22 @@ provider adapters -> provider SDK -> domain/core <- API contracts <- clients
 
 The core dynamically imports provider modules named in
 `agent-deck.config.json`. It never imports Cursor, Codex, Stream Deck, or a
-client implementation. Provider plugins return complete canonical resources;
-the SQLite reducer owns revisions, event sequences, deduplication, attention,
-and freshness.
+client implementation. Provider plugins return canonical resources using either
+authoritative or incremental reconciliation; the SQLite reducer owns revisions,
+event sequences, deduplication, attention, leases, and visible membership.
 
-During a server run, the core stores current snapshots and canonical
-state-event history. Graceful shutdown and every startup clear agent snapshots
-and agent-scoped history while preserving deletion tombstones. Startup provider
-discovery rebuilds the active view, suppresses agents still covered by a
-tombstone, and removes tombstones that a complete provider snapshot proves are
-no longer needed. Incomplete or failed discovery leaves tombstones intact.
-Provider outages during a run change provider health and data freshness, not
-the last known agent lifecycle state.
+The core is a live projection, not an agent-history service. Every startup
+begins with an empty catalog. Active agents are `running`,
+`waiting_for_input`, or `waiting_for_approval`. Agents observed transitioning
+to `ready_for_review`, `failed`, or `cancelled` remain visible until dismissed.
+Each agent carries a provider-generated `activityEpoch`; dismissal suppresses
+only that epoch, and a genuinely new run or generation restores visibility.
 
-Provider catalogs retain running and waiting agents regardless of age.
-Non-active agents and completed runs expire 24 hours after their last activity.
-Codex rebuilds its registry from app-server discovery plus recent hook-only
-sessions rather than retaining the full thread archive.
+Successful authoritative snapshots remove absent active agents and runs.
+Failed discovery does not mutate membership. Incremental providers renew an
+observation lease; an expired lease removes an active agent. Canonical
+`agent.removed` and `run.removed` events keep clients synchronized. The event
+log is retained only as a bounded transport replay buffer.
 
 Providers may attach semantic `focus` or `view` links to agents. The core
 persists these links and coordinates every focus request through one serialized
@@ -49,13 +48,12 @@ best-effort user hook events through loopback ingress. A fail-open reporter
 allowlists only conversation/generation IDs, workspace roots, lifecycle status,
 and non-sensitive mode/version metadata before transmission.
 
-The provider checkpoints this sanitized registry for lifecycle continuity.
-Restored conversations remain stale and hidden from Stream Deck until a new
-hook confirms activity; old non-active records are removed after 24 hours. It
-does not backfill from transcripts, logs, Cursor SQLite databases, or processes;
-a conversation created before hook installation appears after its next
-observed event. Five-minute staleness means hook telemetry stopped, not that the
-Cursor process is known to have exited.
+The provider checkpoints only sanitized classification and deduplication data;
+it never restores agents or runs. It does not backfill from transcripts, logs,
+Cursor SQLite databases, or processes. A conversation created before hook
+installation appears after its next observed event. Each accepted lifecycle
+hook renews a five-minute lease; expiry removes the agent because continued
+execution can no longer be confirmed.
 
 Exact local IDE focusing is provided by the separately installed Agent Deck
 Focus extension for Cursor. Each connection has a stable window instance ID,

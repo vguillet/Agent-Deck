@@ -8,8 +8,6 @@ export const streamDeckAgents = (
 ): Agent[] =>
   agents.filter(
     (agent) =>
-      agent.freshness === "fresh" &&
-      !agent.archived &&
       (!isSubagent(agent) || (showSubagents && agent.state === "running")),
   );
 

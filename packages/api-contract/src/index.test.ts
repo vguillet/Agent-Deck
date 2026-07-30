@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  AgentCommandRequestSchema,
   AgentJsonSchema,
   AgentSchema,
   CompatibleCursorFocusIntentFrameSchema,
   CursorFocusResultStatusSchema,
   CursorWindowClientFrameSchema,
   CursorWindowServerFrameSchema,
+  EventSchema,
   workspaceRootsKey,
 } from "./index.js";
 
@@ -15,11 +17,10 @@ const agent = {
   externalId: "thread-1",
   title: "Agent focus",
   state: "running",
-  freshness: "fresh",
+  activityEpoch: "run-1",
   requiresAttention: false,
   lastActivityAt: "2026-07-28T09:00:00.000Z",
   revision: 1,
-  archived: false,
   capabilities: {
     messages: false,
     approvals: false,
@@ -48,6 +49,50 @@ describe("Agent focus link contract", () => {
         ...agent,
         links: [{ rel: "launch", label: "Open", href: "not a URL" }],
       }),
+    ).toThrow();
+  });
+});
+
+describe("Agent lifecycle contract", () => {
+  it("requires a non-empty activity epoch", () => {
+    const withoutEpoch = { ...agent } as Partial<typeof agent>;
+    delete withoutEpoch.activityEpoch;
+    expect(() => AgentSchema.parse(withoutEpoch)).toThrow();
+    expect(() => AgentSchema.parse({ ...agent, activityEpoch: "" })).toThrow();
+  });
+
+  it("does not publish freshness or archive fields", () => {
+    expect(AgentJsonSchema).not.toHaveProperty("properties.freshness");
+    expect(AgentJsonSchema).not.toHaveProperty("properties.archived");
+  });
+
+  it("accepts canonical removal events", () => {
+    const event = {
+      sequence: 1,
+      eventId: "event-1",
+      providerId: "codex",
+      type: "agent.removed",
+      occurredAt: "2026-07-28T09:02:00.000Z",
+      observedAt: "2026-07-28T09:02:00.000Z",
+      agentId: agent.id,
+      payload: { agent },
+    };
+    expect(EventSchema.parse(event).type).toBe("agent.removed");
+    expect(
+      EventSchema.parse({
+        ...event,
+        type: "run.removed",
+        runId: "codex:run-1",
+      }).type,
+    ).toBe("run.removed");
+  });
+
+  it("allows cancellation but rejects archive commands", () => {
+    expect(AgentCommandRequestSchema.parse({ action: "cancel" })).toEqual({
+      action: "cancel",
+    });
+    expect(() =>
+      AgentCommandRequestSchema.parse({ action: "archive" }),
     ).toThrow();
   });
 });

@@ -41,11 +41,6 @@ const descriptor: ClientDescriptor = {
 };
 
 const flag = (name: string): boolean => args.includes(name);
-const option = (name: string): string | undefined => {
-  const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
-};
-
 const progressSteps = (agent: Agent): string => {
   const plan = agent.progress?.plan;
   if (!plan) return "";
@@ -65,7 +60,6 @@ const printAgents = (agents: Agent[]): void => {
     agents.map((agent) => ({
       id: agent.id,
       state: agent.state,
-      fresh: agent.freshness,
       attention: agent.requiresAttention ? "yes" : "",
       activity: agent.progress?.activity ?? "",
       steps: progressSteps(agent),
@@ -121,6 +115,10 @@ const main = async (): Promise<void> => {
       printAgents(page.items);
       if (flag("--watch")) {
         await watch(page.asOfSequence, ["agents.summary"], (event) => {
+          if (event.type === "agent.removed") {
+            console.log(JSON.stringify({ id: event.agentId, removed: true }));
+            return;
+          }
           const agent = event.payload.agent as Agent | undefined;
           if (agent) printAgents([agent]);
         });
@@ -131,23 +129,6 @@ const main = async (): Promise<void> => {
       const id = args[1];
       if (!id) throw new Error("Usage: agent-deck agent <id>");
       console.log(JSON.stringify(await client.getAgent(id), null, 2));
-      return;
-    }
-    case "events": {
-      const id = option("--agent");
-      if (!id)
-        throw new Error("Usage: agent-deck events --agent <id> [--watch]");
-      const page = await client.listEvents(id);
-      console.log(JSON.stringify(page.items, null, 2));
-      if (flag("--watch")) {
-        await watch(
-          page.asOfSequence,
-          ["agents.summary", "attention"],
-          (event) => {
-            if (event.agentId === id) console.log(JSON.stringify(event));
-          },
-        );
-      }
       return;
     }
     case "attention": {

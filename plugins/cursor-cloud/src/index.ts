@@ -22,9 +22,8 @@ import type {
 const ConfigSchema = z
   .object({
     apiKeyEnv: z.string().default("CURSOR_API_KEY"),
-    includeArchived: z.boolean().default(false),
   })
-  .default({ apiKeyEnv: "CURSOR_API_KEY", includeArchived: false });
+  .default({ apiKeyEnv: "CURSOR_API_KEY" });
 
 const runtimeAgent = (
   info: SDKAgentInfo,
@@ -67,17 +66,17 @@ class CursorCloudProvider implements AgentProviderPlugin {
     id: "cursor-cloud",
     displayName: "Cursor Cloud",
     version: "0.1.0",
-    sdkVersion: 1 as const,
+    sdkVersion: 2 as const,
     capabilities: {
       discovery: true,
+      discoveryMode: "startup" as const,
       liveEvents: true,
-      commands: ["cancel", "archive"],
+      commands: ["cancel"],
     },
   };
   readonly configSchema = ConfigSchema;
   private context: ProviderContext | undefined;
   private apiKey: string | undefined;
-  private includeArchived = false;
   private emit: ProviderEventEmitter | undefined;
   private readonly agents = new Map<string, CanonicalAgent>();
   private readonly runs = new Map<string, AgentRun>();
@@ -88,7 +87,6 @@ class CursorCloudProvider implements AgentProviderPlugin {
     this.context = context;
     const config = ConfigSchema.parse(context.config);
     this.apiKey = process.env[config.apiKeyEnv];
-    this.includeArchived = config.includeArchived;
   }
 
   async discover(): Promise<ProviderSnapshot> {
@@ -97,18 +95,20 @@ class CursorCloudProvider implements AgentProviderPlugin {
     const now = this.context.now();
     const projects = new Map<string, Project>();
     const workspaces = new Map<string, Workspace>();
+    const agents = new Map<string, CanonicalAgent>();
+    const runs = new Map<string, AgentRun>();
     try {
       let cursor: string | undefined;
       do {
         const page = await Agent.list({
           runtime: "cloud",
           apiKey,
-          includeArchived: this.includeArchived,
           limit: 100,
           ...(cursor ? { cursor } : {}),
         });
         for (const info of page.items) {
           if (!runtimeAgent(info)) continue;
+          if (info.status !== "running") continue;
           const repositories = [...new Set(info.repos ?? [])].sort();
           const resources = workspaceResourcesForProjects(
             "cursor-cloud",
@@ -129,8 +129,11 @@ class CursorCloudProvider implements AgentProviderPlugin {
             projects.set(project.id, project);
           if (resources.workspace)
             workspaces.set(resources.workspace.id, resources.workspace);
-          const runs = await this.listAllRuns(info.agentId);
-          const latest = runs.at(0);
+          const discoveredRuns = await this.listAllRuns(info.agentId);
+          const activeRuns = discoveredRuns.filter(
+            (run) => run.status === "running",
+          );
+          const latest = activeRuns.at(0);
           const state = agentState(info.status);
           const agent: CanonicalAgent = {
             id: canonicalId("cursor-cloud", info.agentId),
@@ -145,7 +148,7 @@ class CursorCloudProvider implements AgentProviderPlugin {
               ? { workspaceId: resources.workspace.id }
               : {}),
             state,
-            freshness: "fresh",
+            activityEpoch: latest?.id ?? info.agentId,
             ...(latest
               ? { activeRunId: canonicalId("cursor-cloud", latest.id) }
               : {}),
@@ -155,7 +158,6 @@ class CursorCloudProvider implements AgentProviderPlugin {
             revision:
               this.agents.get(canonicalId("cursor-cloud", info.agentId))
                 ?.revision ?? 0,
-            archived: info.archived ?? false,
             capabilities: {
               messages: false,
               approvals: false,
@@ -171,23 +173,27 @@ class CursorCloudProvider implements AgentProviderPlugin {
             ],
             metadata: {},
           };
-          this.agents.set(agent.id, agent);
-          for (const run of runs) {
+          agents.set(agent.id, agent);
+          for (const run of activeRuns) {
             const canonical = this.mapRun(run, agent.id);
-            this.runs.set(canonical.id, canonical);
-            if (run.status === "running") this.watch(run, agent);
+            runs.set(canonical.id, canonical);
+            this.watch(run, agent);
           }
         }
         cursor = page.nextCursor;
       } while (cursor);
+      this.agents.clear();
+      for (const [id, agent] of agents) this.agents.set(id, agent);
+      this.runs.clear();
+      for (const [id, run] of runs) this.runs.set(id, run);
       this.lastError = undefined;
       return {
-        complete: true,
+        reconciliation: "authoritative",
         observedAt: now,
         workspaces: [...workspaces.values()],
         projects: [...projects.values()],
-        agents: [...this.agents.values()],
-        runs: [...this.runs.values()],
+        agents: [...agents.values()],
+        runs: [...runs.values()],
         attention: [],
       };
     } catch (error) {
@@ -206,7 +212,6 @@ class CursorCloudProvider implements AgentProviderPlugin {
   }
 
   async execute(command: ProviderCommand): Promise<CommandResult> {
-    if (command.action === "archive") return this.archive(command);
     if (command.action !== "cancel")
       return {
         commandId: command.commandId,
@@ -267,41 +272,6 @@ class CursorCloudProvider implements AgentProviderPlugin {
       agentId: cancelledAgent.id,
       runId: cancelledRun.id,
       payload: { run: cancelledRun },
-    });
-    return { commandId: command.commandId, status: "succeeded" };
-  }
-
-  private async archive(command: ProviderCommand): Promise<CommandResult> {
-    const agent = this.agents.get(command.agentId);
-    if (!agent)
-      return {
-        commandId: command.commandId,
-        status: "failed",
-        message: "Cursor Cloud agent was not found",
-      };
-    try {
-      await Agent.archive(agent.externalId, {
-        apiKey: this.requireApiKey(),
-      });
-    } catch (error) {
-      return {
-        commandId: command.commandId,
-        status: "failed",
-        message: error instanceof Error ? error.message : String(error),
-      };
-    }
-    const archivedAgent: CanonicalAgent = {
-      ...agent,
-      archived: true,
-    };
-    this.agents.set(archivedAgent.id, archivedAgent);
-    await this.emit?.({
-      providerId: "cursor-cloud",
-      providerEventId: `command:${command.commandId}:archive`,
-      type: "agent.upserted",
-      occurredAt: this.context?.now() ?? new Date().toISOString(),
-      agentId: archivedAgent.id,
-      payload: { agent: archivedAgent },
     });
     return { commandId: command.commandId, status: "succeeded" };
   }
@@ -414,7 +384,7 @@ class CursorCloudProvider implements AgentProviderPlugin {
           const updated: CanonicalAgent = {
             ...agent,
             state,
-            freshness: "fresh",
+            activityEpoch: canonicalRun.externalId,
             requiresAttention:
               state === "ready_for_review" || state === "failed",
             lastActivityAt: now,

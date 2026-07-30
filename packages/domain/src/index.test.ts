@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  CANONICAL_EVENT_TYPES,
   attentionForAgentState,
-  isAgentActiveOrRecent,
-  isRunActiveOrRecent,
+  isActiveAgentState,
+  isActiveRunState,
+  isTerminalVisibleAgentState,
   normalizedWorkspaceRoots,
   workspaceResourcesForRoots,
   type Agent,
+  type ProviderSnapshot,
 } from "./index.js";
 
 const agent = (state: Agent["state"]): Agent => ({
@@ -14,11 +17,10 @@ const agent = (state: Agent["state"]): Agent => ({
   externalId: "one",
   title: "One",
   state,
-  freshness: "fresh",
+  activityEpoch: "run-1",
   requiresAttention: state === "waiting_for_approval",
   lastActivityAt: "2026-07-28T09:00:00.000Z",
   revision: 1,
-  archived: false,
   capabilities: {
     messages: false,
     approvals: false,
@@ -49,92 +51,62 @@ describe("attentionForAgentState", () => {
   });
 });
 
-describe("isAgentActiveOrRecent", () => {
-  const now = "2026-07-29T09:00:00.000Z";
-
-  it("retains active agents regardless of activity age", () => {
-    for (const state of [
-      "running",
-      "waiting_for_input",
-      "waiting_for_approval",
-    ] as const) {
-      expect(
-        isAgentActiveOrRecent(
-          {
-            ...agent(state),
-            lastActivityAt: "2025-01-01T00:00:00.000Z",
-          },
-          now,
-        ),
-      ).toBe(true);
-    }
+describe("lifecycle state predicates", () => {
+  it("classifies only live agent states as active", () => {
+    expect(
+      [
+        "idle",
+        "running",
+        "waiting_for_input",
+        "waiting_for_approval",
+        "ready_for_review",
+        "failed",
+        "cancelled",
+        "unknown",
+      ].filter((state) => isActiveAgentState(state as Agent["state"])),
+    ).toEqual(["running", "waiting_for_input", "waiting_for_approval"]);
   });
 
-  it("retains non-active agents for 24 hours", () => {
+  it("classifies retained terminal agent states separately", () => {
     expect(
-      isAgentActiveOrRecent(
-        {
-          ...agent("idle"),
-          lastActivityAt: "2026-07-28T09:00:00.000Z",
-        },
-        now,
+      [
+        "idle",
+        "running",
+        "waiting_for_input",
+        "waiting_for_approval",
+        "ready_for_review",
+        "failed",
+        "cancelled",
+        "unknown",
+      ].filter((state) =>
+        isTerminalVisibleAgentState(state as Agent["state"]),
       ),
-    ).toBe(true);
-    expect(
-      isAgentActiveOrRecent(
-        {
-          ...agent("idle"),
-          lastActivityAt: "2026-07-28T08:59:59.999Z",
-        },
-        now,
-      ),
-    ).toBe(false);
+    ).toEqual(["ready_for_review", "failed", "cancelled"]);
   });
 
-  it("rejects invalid non-active timestamps", () => {
-    expect(
-      isAgentActiveOrRecent(
-        { ...agent("ready_for_review"), lastActivityAt: "invalid" },
-        now,
-      ),
-    ).toBe(false);
+  it("keeps queued and waiting runs active", () => {
+    expect(isActiveRunState("queued")).toBe(true);
+    expect(isActiveRunState("waiting_for_input")).toBe(true);
+    expect(isActiveRunState("succeeded")).toBe(false);
   });
 });
 
-describe("isRunActiveOrRecent", () => {
-  const now = "2026-07-29T09:00:00.000Z";
+describe("provider lifecycle contract", () => {
+  it("uses explicit snapshot reconciliation and removal events", () => {
+    const snapshot = {
+      reconciliation: "authoritative",
+      observedAt: "2026-07-28T09:00:00.000Z",
+      workspaces: [],
+      projects: [],
+      agents: [agent("running")],
+      runs: [],
+      attention: [],
+    } satisfies ProviderSnapshot;
 
-  it("retains active runs regardless of age", () => {
-    expect(
-      isRunActiveOrRecent(
-        {
-          state: "running",
-          startedAt: "2025-01-01T00:00:00.000Z",
-        },
-        now,
-      ),
-    ).toBe(true);
-  });
-
-  it("expires completed runs after 24 hours", () => {
-    expect(
-      isRunActiveOrRecent(
-        {
-          state: "succeeded",
-          finishedAt: "2026-07-28T09:00:00.000Z",
-        },
-        now,
-      ),
-    ).toBe(true);
-    expect(
-      isRunActiveOrRecent(
-        {
-          state: "succeeded",
-          finishedAt: "2026-07-28T08:59:59.999Z",
-        },
-        now,
-      ),
-    ).toBe(false);
+    expect(snapshot.reconciliation).toBe("authoritative");
+    expect(CANONICAL_EVENT_TYPES).toContain("agent.removed");
+    expect(CANONICAL_EVENT_TYPES).toContain("run.removed");
+    expect(CANONICAL_EVENT_TYPES).not.toContain("agent.freshness.changed");
   });
 });
 

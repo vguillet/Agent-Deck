@@ -41,21 +41,11 @@ export interface EventStore {
   updateProvider(provider: Provider): CanonicalEvent | undefined;
   listAgents(filters: AgentFilters, page: PageRequest): StorePage<Agent>;
   getAgent(id: string): Agent | undefined;
-  deleteAgent(id: string): boolean;
-  clearAgents(options?: { preserveTombstones?: boolean }): number;
-  reconcileDeletedAgents(
-    providerId: string,
-    agentIds: readonly string[],
-  ): number;
+  dismissAgent(id: string): CanonicalEvent[];
+  dismissTerminalAgents(): CanonicalEvent[];
+  clearAgents(): number;
   listRuns(agentId: string, page: PageRequest): StorePage<AgentRun>;
   getRun(id: string): AgentRun | undefined;
-  listEvents(
-    options: {
-      agentId?: string;
-      afterSequence?: number;
-    },
-    page: PageRequest,
-  ): StorePage<CanonicalEvent>;
   listEventsAfter(sequence: number, limit: number): CanonicalEvent[];
   listProviders(page: PageRequest): StorePage<Provider>;
   listWorkspaces(page: PageRequest): StorePage<Workspace>;
@@ -72,7 +62,7 @@ export interface EventStore {
   ): ClientConfigurationDocument;
   getCheckpoint(providerId: string, key: string): string | undefined;
   setCheckpoint(providerId: string, key: string, value: string): void;
-  markStale(beforeTimestamp: string, now: string): CanonicalEvent[];
+  expireLeases(beforeTimestamp: string, now: string): CanonicalEvent[];
   pruneEvents(beforeTimestamp: string): number;
 }
 

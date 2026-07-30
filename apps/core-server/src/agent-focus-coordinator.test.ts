@@ -21,11 +21,10 @@ const agent = (
   externalId,
   title: externalId,
   state: "running",
-  freshness: "fresh",
+  activityEpoch: "run-1",
   requiresAttention: false,
   lastActivityAt: "2026-07-30T09:00:00.000Z",
   revision: 1,
-  archived: false,
   capabilities: {
     messages: false,
     approvals: false,

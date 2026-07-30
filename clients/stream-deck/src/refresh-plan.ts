@@ -32,9 +32,10 @@ export const refreshResourcesForEvent = (
     type === "agent.upserted" ||
     type === "agent.state.changed" ||
     type === "agent.progress.changed" ||
-    type === "agent.freshness.changed" ||
+    type === "agent.removed" ||
     type === "run.upserted" ||
-    type === "run.state.changed"
+    type === "run.state.changed" ||
+    type === "run.removed"
   )
     return new Set(["agents", "attention"]);
   return new Set();

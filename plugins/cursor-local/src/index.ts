@@ -7,8 +7,8 @@ import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import {
   canonicalId,
-  isAgentActiveOrRecent,
-  isRunActiveOrRecent,
+  isActiveAgentState,
+  isTerminalVisibleAgentState,
   normalizedWorkspaceRoots,
   workspaceResourcesForRoots,
   type Agent,
@@ -246,7 +246,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
     id: PROVIDER_ID,
     displayName: "Cursor Local",
     version: "0.1.0",
-    sdkVersion: 1 as const,
+    sdkVersion: 2 as const,
     capabilities: {
       discovery: true,
       discoveryMode: "poll" as const,
@@ -278,7 +278,6 @@ class CursorLocalProvider implements AgentProviderPlugin {
   >();
   private readonly sourceRevisions = new Map<string, number>();
   private readonly pendingHooks = new Map<string, LifecycleHookInput[]>();
-  private readonly migrationAgents = new Set<string>();
   private operationQueue: Promise<void> = Promise.resolve();
   private lastProtocolVersion: number | undefined;
   private readonly questionSignalToolUses = new Map<string, string>();
@@ -307,22 +306,21 @@ class CursorLocalProvider implements AgentProviderPlugin {
     return this.enqueue(async () => {
       const observedAt = this.context?.now() ?? new Date().toISOString();
       const reconciled = await this.reconcileSubagentTranscripts(observedAt);
-      const { changed, expiredAgents } = this.pruneRegistry(observedAt);
-      if (reconciled.changed || changed) await this.persist();
+      if (reconciled.changed) await this.persist();
       const agents = [...this.agents.values()].filter(
         (agent) =>
-          this.conversationKinds.get(agent.externalId) === "top_level" ||
-          this.conversationKinds.get(agent.externalId) === "subagent" ||
-          this.migrationAgents.has(agent.id),
+          (this.conversationKinds.get(agent.externalId) === "top_level" ||
+            this.conversationKinds.get(agent.externalId) === "subagent") &&
+          (isActiveAgentState(agent.state) ||
+            isTerminalVisibleAgentState(agent.state)),
       );
-      this.migrationAgents.clear();
       const agentIds = new Set(agents.map(({ id }) => id));
       return {
-        complete: false,
+        reconciliation: "incremental",
         observedAt,
         workspaces: [...this.workspaces.values()],
         projects: [...this.projects.values()],
-        agents: [...agents, ...expiredAgents],
+        agents,
         runs: [...this.runs.values()].filter((run) =>
           agentIds.has(run.agentId),
         ),
@@ -552,6 +550,11 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const state = completesQuestionSignal
       ? "waiting_for_input"
       : agentStateForHook(input, existing?.state);
+    if (
+      !existing &&
+      (terminal || state === "idle" || state === "unknown")
+    )
+      return;
     const primaryProject = resources.projects[0];
     const projectId = primaryProject?.id ?? existing?.projectId;
     const workspaceId = resources.workspace?.id ?? existing?.workspaceId;
@@ -608,7 +611,11 @@ class CursorLocalProvider implements AgentProviderPlugin {
       ...(projectId ? { projectId } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       state,
-      freshness: "fresh",
+      activityEpoch:
+        generation ??
+        (startsGeneration
+          ? `${input.conversation_id}:${now}`
+          : existing?.activityEpoch ?? `${input.conversation_id}:session`),
       ...(runId ? { activeRunId: runId } : {}),
       requiresAttention:
         state === "waiting_for_input" ||
@@ -619,7 +626,6 @@ class CursorLocalProvider implements AgentProviderPlugin {
       revision: existing?.revision ?? 0,
       sourceRevision,
       ...(progress ? { progress } : {}),
-      archived: false,
       capabilities: {
         messages: false,
         approvals: false,
@@ -691,24 +697,19 @@ class CursorLocalProvider implements AgentProviderPlugin {
     this.activeGenerations.delete(conversationId);
     const agentId = canonicalId(PROVIDER_ID, conversationId);
     const existing = this.agents.get(agentId);
-    if (existing && !existing.archived) {
-      const sourceRevision = this.nextSourceRevision(conversationId);
-      const agent: Agent = {
-        ...withoutProgress(existing),
-        sourceRevision,
-        archived: true,
-        requiresAttention: false,
-        lastActivityAt: this.context.now(),
-      };
-      this.agents.set(agentId, agent);
+    if (existing) {
+      this.agents.delete(agentId);
+      for (const [runId, run] of this.runs)
+        if (run.agentId === agentId) this.runs.delete(runId);
+      const occurredAt = this.context.now();
       await this.emitEvent({
         providerId: PROVIDER_ID,
         providerEventId: `hook:subagent:${conversationId}`,
-        type: "agent.state.changed",
-        occurredAt: agent.lastActivityAt,
+        type: "agent.removed",
+        occurredAt,
         agentId,
-        ...(agent.activeRunId ? { runId: agent.activeRunId } : {}),
-        payload: { agent },
+        ...(existing.activeRunId ? { runId: existing.activeRunId } : {}),
+        payload: { agent: existing },
       });
     }
     await this.persist();
@@ -737,71 +738,15 @@ class CursorLocalProvider implements AgentProviderPlugin {
     await this.emit?.(event);
   }
 
-  private pruneRegistry(now: string): {
-    changed: boolean;
-    expiredAgents: Agent[];
-  } {
-    let changed = false;
-    const expiredAgents: Agent[] = [];
-    for (const [id, agent] of this.agents) {
-      if (isAgentActiveOrRecent(agent, now)) continue;
-      if (this.conversationKinds.get(agent.externalId) === "top_level")
-        expiredAgents.push({
-          ...withoutProgress(agent),
-          freshness: "stale",
-          requiresAttention: false,
-          sourceRevision: this.nextSourceRevision(agent.externalId),
-        });
-      this.agents.delete(id);
-      this.activeGenerations.delete(agent.externalId);
-      this.questionSignalToolUses.delete(agent.externalId);
-      changed = true;
-    }
-    for (const [id, run] of this.runs) {
-      if (this.agents.has(run.agentId) && isRunActiveOrRecent(run, now))
-        continue;
-      this.runs.delete(id);
-      changed = true;
-    }
-    const workspaceIds = new Set(
-      [...this.agents.values()].flatMap((agent) =>
-        agent.workspaceId ? [agent.workspaceId] : [],
-      ),
-    );
-    const projectIds = new Set(
-      [...this.agents.values()].flatMap((agent) =>
-        agent.projectId ? [agent.projectId] : [],
-      ),
-    );
-    for (const [id, project] of this.projects) {
-      if (
-        projectIds.has(id) ||
-        (project.workspaceId && workspaceIds.has(project.workspaceId))
-      )
-        continue;
-      this.projects.delete(id);
-      changed = true;
-    }
-    for (const project of this.projects.values()) {
-      if (project.workspaceId) workspaceIds.add(project.workspaceId);
-    }
-    for (const id of this.workspaces.keys()) {
-      if (workspaceIds.has(id)) continue;
-      this.workspaces.delete(id);
-      changed = true;
-    }
-    return { changed, expiredAgents };
-  }
-
   private async persist(): Promise<void> {
     if (!this.context) return;
     const registry: Registry = {
       version: 2,
-      agents: [...this.agents.values()],
-      runs: [...this.runs.values()],
-      projects: [...this.projects.values()],
-      workspaces: [...this.workspaces.values()],
-      activeGenerations: [...this.activeGenerations.entries()],
+      agents: [],
+      runs: [],
+      projects: [],
+      workspaces: [],
+      activeGenerations: [],
       hiddenConversations: [...this.hiddenConversations],
       conversationKinds: [...this.conversationKinds.entries()],
       parentConversations: [...this.parentConversations.entries()],
@@ -822,22 +767,6 @@ class CursorLocalProvider implements AgentProviderPlugin {
     try {
       const registry = JSON.parse(raw) as Registry;
       const transcriptSubagents = await this.transcriptSubagentIds();
-      for (const agent of registry.agents ?? [])
-        this.agents.set(agent.id, {
-          ...agent,
-          title: this.conversationTitle(agent.externalId),
-          capabilities: {
-            ...agent.capabilities,
-            cancellation: true,
-          },
-        });
-      for (const run of registry.runs ?? []) this.runs.set(run.id, run);
-      for (const project of registry.projects ?? [])
-        this.projects.set(project.id, project);
-      for (const workspace of registry.workspaces ?? [])
-        this.workspaces.set(workspace.id, workspace);
-      for (const [conversation, generation] of registry.activeGenerations ?? [])
-        this.activeGenerations.set(conversation, generation);
       for (const conversation of registry.hiddenConversations ?? [])
         this.hiddenConversations.add(conversation);
       for (const conversation of transcriptSubagents)
@@ -854,121 +783,17 @@ class CursorLocalProvider implements AgentProviderPlugin {
       for (const [conversation, transcript] of registry.subagentTranscripts ??
         [])
         this.subagentTranscripts.set(conversation, transcript);
-      for (const agent of this.agents.values()) {
-        if (!this.conversationKinds.has(agent.externalId))
-          this.conversationKinds.set(agent.externalId, "top_level");
-        if (agent.sourceRevision !== undefined)
-          this.sourceRevisions.set(agent.externalId, agent.sourceRevision);
-      }
       for (const [conversation, revision] of registry.sourceRevisions ?? [])
         this.sourceRevisions.set(conversation, revision);
       for (const [conversation, hooks] of registry.pendingHooks ?? [])
         this.pendingHooks.set(conversation, hooks.slice(-32));
-      for (const [id, agent] of this.agents) {
-        const kind = this.conversationKinds.get(agent.externalId);
-        if (kind === "background" && !agent.archived) {
-          const migrated = {
-            ...agent,
-            sourceRevision: this.nextSourceRevision(agent.externalId),
-            archived: true,
-            requiresAttention: false,
-          };
-          this.agents.set(id, migrated);
-          this.migrationAgents.add(id);
-        }
-      }
-      const pruned = this.pruneRegistry(this.context.now()).changed;
-      let markedStale = false;
-      for (const [id, agent] of this.agents) {
-        if (agent.freshness === "stale" && !agent.requiresAttention) continue;
-        this.agents.set(id, {
-          ...withoutProgress(agent),
-          freshness: "stale",
-          requiresAttention: false,
-          sourceRevision: this.nextSourceRevision(agent.externalId),
-        });
-        markedStale = true;
-      }
-      const repairedResources = this.repairWorkspaceResources();
-      const repairedTargets = this.backfillWorkspaceTargets();
-      if (pruned || markedStale || repairedResources || repairedTargets)
-        await this.persist();
+      await this.persist();
     } catch (error) {
       this.context.logger.warn(
         { error },
         "Ignoring invalid Cursor local checkpoint",
       );
     }
-  }
-
-  private repairWorkspaceResources(): boolean {
-    let changed = false;
-    for (const [id, agent] of this.agents) {
-      const resources = workspaceResourcesForRoots(
-        PROVIDER_ID,
-        agentWorkspaceRoots(agent),
-      );
-      if (!resources.workspace) continue;
-      const workspace = resources.workspace;
-      if (!this.workspaces.has(workspace.id)) {
-        this.workspaces.set(workspace.id, workspace);
-        changed = true;
-      }
-      for (const project of resources.projects) {
-        if (this.projects.has(project.id)) continue;
-        this.projects.set(project.id, project);
-        changed = true;
-      }
-      const projectId = resources.projects[0]?.id;
-      if (
-        agent.workspaceId !== workspace.id ||
-        (projectId && agent.projectId !== projectId)
-      ) {
-        this.agents.set(id, {
-          ...agent,
-          workspaceId: workspace.id,
-          ...(projectId ? { projectId } : {}),
-        });
-        changed = true;
-      }
-    }
-    return changed;
-  }
-
-  private backfillWorkspaceTargets(): boolean {
-    let changed = false;
-    for (const [id, agent] of this.agents) {
-      const storedRoots = agent.workspaceId
-        ? this.workspaces.get(agent.workspaceId)?.metadata.roots
-        : undefined;
-      const existingRoots = agentWorkspaceRoots(agent);
-      const roots = existingRoots.length
-        ? existingRoots
-        : Array.isArray(storedRoots)
-          ? storedRoots.filter(
-              (root): root is string => typeof root === "string",
-            )
-          : [];
-      if (!roots.length) continue;
-      const targetHref = focusLink(agent.externalId, roots);
-      const currentFocus = agent.links.find((link) => link.rel === "focus");
-      if (
-        existingRoots.join("\0") === roots.join("\0") &&
-        currentFocus?.href === targetHref
-      )
-        continue;
-      this.agents.set(id, {
-        ...agent,
-        sourceRevision: this.nextSourceRevision(agent.externalId),
-        links: agent.links.map((link) =>
-          link.rel === "focus" ? { ...link, href: targetHref } : link,
-        ),
-        metadata: { ...agent.metadata, workspaceRoots: roots },
-      });
-      this.migrationAgents.add(id);
-      changed = true;
-    }
-    return changed;
   }
 
   private nextSourceRevision(conversationId: string): number {
@@ -1000,8 +825,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
   ): Promise<Agent | undefined> {
     if (
       agent.kind !== "subagent" ||
-      agent.state !== "running" ||
-      agent.archived
+      agent.state !== "running"
     )
       return undefined;
     const transcript = this.subagentTranscripts.get(agent.externalId);

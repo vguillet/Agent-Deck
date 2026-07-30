@@ -27,7 +27,6 @@ export const RUN_STATES = [
 ] as const;
 
 export type RunState = (typeof RUN_STATES)[number];
-export type Freshness = "fresh" | "stale";
 export const AGENT_PROGRESS_ACTIVITIES = [
   "planning",
   "exploring",
@@ -53,7 +52,7 @@ export interface AgentProgress {
 export type ProviderHealthStatus =
   "starting" | "healthy" | "degraded" | "unhealthy" | "stopped";
 export type AttentionType =
-  "input" | "approval" | "review" | "failure" | "stale" | "provider_health";
+  "input" | "approval" | "review" | "failure" | "provider_health";
 export type AttentionSeverity = "info" | "warning" | "critical";
 
 export interface ProviderCapabilities {
@@ -114,14 +113,13 @@ export interface Agent {
   projectId?: string;
   workspaceId?: string;
   state: AgentState;
-  freshness: Freshness;
+  activityEpoch: string;
   activeRunId?: string;
   requiresAttention: boolean;
   lastActivityAt: string;
   revision: number;
   sourceRevision?: number;
   progress?: AgentProgress;
-  archived: boolean;
   capabilities: AgentCapabilities;
   links: AgentLink[];
   metadata: Record<string, unknown>;
@@ -161,9 +159,10 @@ export const CANONICAL_EVENT_TYPES = [
   "agent.upserted",
   "agent.state.changed",
   "agent.progress.changed",
-  "agent.freshness.changed",
+  "agent.removed",
   "run.upserted",
   "run.state.changed",
+  "run.removed",
   "attention.opened",
   "attention.resolved",
 ] as const;
@@ -188,7 +187,7 @@ export interface CanonicalEvent extends ProviderEvent {
 }
 
 export interface ProviderSnapshot {
-  complete: boolean;
+  reconciliation: "authoritative" | "incremental";
   observedAt: string;
   workspaces: Workspace[];
   projects: Project[];
@@ -348,35 +347,10 @@ export const isActiveRunState = (state: AgentRun["state"]): boolean =>
   state === "waiting_for_input" ||
   state === "waiting_for_approval";
 
-export const AGENT_RECENCY_WINDOW_MS = 24 * 60 * 60 * 1_000;
-
-export const isAgentActiveOrRecent = (
-  agent: Pick<Agent, "state" | "lastActivityAt">,
-  now: string,
-): boolean => {
-  if (isActiveAgentState(agent.state)) return true;
-  const activityTime = Date.parse(agent.lastActivityAt);
-  const nowTime = Date.parse(now);
-  return (
-    Number.isFinite(activityTime) &&
-    Number.isFinite(nowTime) &&
-    activityTime >= nowTime - AGENT_RECENCY_WINDOW_MS
-  );
-};
-
-export const isRunActiveOrRecent = (
-  run: Pick<AgentRun, "state" | "startedAt" | "finishedAt">,
-  now: string,
-): boolean => {
-  if (isActiveRunState(run.state)) return true;
-  const activityTime = Date.parse(run.finishedAt ?? run.startedAt ?? "");
-  const nowTime = Date.parse(now);
-  return (
-    Number.isFinite(activityTime) &&
-    Number.isFinite(nowTime) &&
-    activityTime >= nowTime - AGENT_RECENCY_WINDOW_MS
-  );
-};
+export const isTerminalVisibleAgentState = (state: AgentState): boolean =>
+  state === "ready_for_review" ||
+  state === "failed" ||
+  state === "cancelled";
 
 export const attentionForAgentState = (
   agent: Agent,

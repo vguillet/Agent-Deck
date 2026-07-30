@@ -113,17 +113,20 @@ describe("AgentDeckClient focus", () => {
   });
 });
 
-describe("AgentDeckClient clearAgents", () => {
-  it("clears the server-side agent collection", async () => {
+describe("AgentDeckClient dismissTerminalAgents", () => {
+  it("dismisses terminal activity epochs", async () => {
     const fetch = vi.fn(async () => ({
       ok: true,
-      json: async () => ({ cleared: 3 }),
+      json: async () => ({ dismissed: 3 }),
     }));
     vi.stubGlobal("fetch", fetch);
 
-    await expect(new AgentDeckClient().clearAgents()).resolves.toBe(3);
-    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:47831/api/v1/agents", {
-      method: "DELETE",
-    });
+    await expect(new AgentDeckClient().dismissTerminalAgents()).resolves.toBe(
+      3,
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:47831/api/v1/agents/dismiss-terminal",
+      { method: "POST" },
+    );
   });
 });

@@ -1011,7 +1011,7 @@ class DeviceManager {
     }
   }
 
-  async deleteAgentById(
+  async dismissAgentById(
     actionContext: Action<ActionSettings>,
     agentId: string,
   ): Promise<AgentDeletionResult> {
@@ -1038,7 +1038,7 @@ class DeviceManager {
 
     let deleted: boolean;
     try {
-      deleted = await session.client.deleteAgent(agent.id);
+      deleted = await session.client.dismissAgent(agent.id);
     } catch (error) {
       this.removalTransitions.delete(actionContext.id);
       await this.renderVisible(session.deviceId);
@@ -1114,7 +1114,7 @@ class DeviceManager {
     session.attentionIndex = 0;
     try {
       await this.renderVisible(session.deviceId);
-      await session.client.clearAgents();
+      await session.client.dismissTerminalAgents();
     } catch (error) {
       session.clearingAgents = false;
       await this.refresh(session);
@@ -1478,7 +1478,7 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
       agentId,
       (pressedAgentId) =>
         devices
-          .deleteAgentById(ev.action, pressedAgentId)
+          .dismissAgentById(ev.action, pressedAgentId)
           .catch((error: unknown) => {
             streamDeck.logger.error(
               `Agent Deck remove failed: ${

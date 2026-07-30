@@ -52,7 +52,7 @@ export class ProviderManager {
         );
       }
       const plugin = imported.createProviderPlugin();
-      if (plugin.manifest.sdkVersion !== 1)
+      if (plugin.manifest.sdkVersion !== 2)
         throw new Error(
           `Unsupported provider SDK version for ${configuration.id}`,
         );

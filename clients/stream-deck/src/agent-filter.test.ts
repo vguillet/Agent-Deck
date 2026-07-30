@@ -12,12 +12,11 @@ const agent = (overrides: Partial<Agent> = {}): Agent => ({
   providerId: "cursor-cloud",
   externalId: "agent-1",
   title: "Cloud agent",
-  state: "idle",
-  freshness: "fresh",
+  state: "running",
+  activityEpoch: "run-1",
   requiresAttention: false,
   lastActivityAt: "2026-07-28T09:00:00.000Z",
   revision: 1,
-  archived: false,
   capabilities: {
     messages: false,
     approvals: false,
@@ -30,14 +29,12 @@ const agent = (overrides: Partial<Agent> = {}): Agent => ({
 });
 
 describe("Stream Deck agent filtering", () => {
-  it("only keeps fresh, unarchived agents visible", () => {
+  it("trusts server membership for top-level agents", () => {
     expect(
-      streamDeckAgents([
-        agent(),
-        agent({ id: "cursor-cloud:archived", archived: true }),
-        agent({ id: "cursor-cloud:stale", freshness: "stale" }),
-      ]).map(({ id }) => id),
-    ).toEqual(["cursor-cloud:agent-1"]);
+      streamDeckAgents([agent(), agent({ id: "cursor-cloud:other" })]).map(
+        ({ id }) => id,
+      ),
+    ).toEqual(["cursor-cloud:agent-1", "cursor-cloud:other"]);
   });
 
   it("hides subagents by default and only shows running ones when enabled", () => {

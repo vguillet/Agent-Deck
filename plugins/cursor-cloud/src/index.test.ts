@@ -9,7 +9,6 @@ vi.mock("@cursor/sdk", () => ({
     listRuns: vi.fn(),
     getRun: vi.fn(),
     cancelRun: vi.fn(),
-    archive: vi.fn(),
   },
   Cursor: {
     me: vi.fn(),
@@ -30,7 +29,7 @@ describe("Cursor Cloud provider focus links", () => {
           runtime: "cloud",
           agentId: "cloud-agent-1",
           name: "Cloud agent",
-          status: "finished",
+          status: "running",
           lastModified: Date.parse("2026-07-28T09:00:00.000Z"),
           archived: false,
           repos: ["https://github.com/example/agent-deck.git"],
@@ -140,23 +139,23 @@ describe("Cursor Cloud provider focus links", () => {
     await plugin.dispose();
   });
 
-  it("archives a cloud agent", async () => {
+  it("rebuilds its authoritative cache on every discovery", async () => {
     process.env.AGENT_DECK_CURSOR_TEST_KEY = "test-key";
-    vi.mocked(Agent.list).mockResolvedValue({
-      items: [
-        {
-          runtime: "cloud",
-          agentId: "cloud-agent-1",
-          name: "Cloud agent",
-          status: "finished",
-          lastModified: Date.parse("2026-07-28T09:00:00.000Z"),
-          archived: false,
-          repos: [],
-        },
-      ],
-    } as never);
+    vi.mocked(Agent.list)
+      .mockResolvedValueOnce({
+        items: [
+          {
+            runtime: "cloud",
+            agentId: "cloud-agent-1",
+            name: "Cloud agent",
+            status: "running",
+            lastModified: Date.parse("2026-07-28T09:00:00.000Z"),
+            repos: [],
+          },
+        ],
+      } as never)
+      .mockResolvedValueOnce({ items: [] });
     vi.mocked(Agent.listRuns).mockResolvedValue({ items: [] });
-    vi.mocked(Agent.archive).mockResolvedValue();
     const context: ProviderContext = {
       providerId: "cursor-cloud",
       config: { apiKeyEnv: "AGENT_DECK_CURSOR_TEST_KEY" },
@@ -176,21 +175,8 @@ describe("Cursor Cloud provider focus links", () => {
     };
     const plugin = createProviderPlugin();
     await plugin.initialise(context);
-    await plugin.discover();
-
-    await expect(
-      plugin.execute({
-        commandId: "command-archive",
-        action: "archive",
-        agentId: "cursor-cloud:cloud-agent-1",
-      }),
-    ).resolves.toEqual({
-      commandId: "command-archive",
-      status: "succeeded",
-    });
-    expect(Agent.archive).toHaveBeenCalledWith("cloud-agent-1", {
-      apiKey: "test-key",
-    });
+    expect((await plugin.discover()).agents).toHaveLength(1);
+    expect((await plugin.discover()).agents).toEqual([]);
     await plugin.dispose();
   });
 });

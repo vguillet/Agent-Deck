@@ -90,18 +90,6 @@ export class AgentDeckClient {
     };
   }
 
-  async listEvents(agentId: string): Promise<Page<CanonicalEvent>> {
-    const page = await this.get<Page<unknown>>(
-      `/api/v1/agents/${encodeURIComponent(agentId)}/events`,
-    );
-    return {
-      ...page,
-      items: page.items.map(
-        (item) => EventSchema.parse(item) as CanonicalEvent,
-      ),
-    };
-  }
-
   async listAttention(): Promise<Page<Attention>> {
     const page = await this.get<Page<unknown>>("/api/v1/attention");
     return {
@@ -148,16 +136,9 @@ export class AgentDeckClient {
     return this.commandAgent(id, "cancel", expectedRevision);
   }
 
-  async archiveAgent(
-    id: string,
-    expectedRevision?: number,
-  ): Promise<CommandResult> {
-    return this.commandAgent(id, "archive", expectedRevision);
-  }
-
   private async commandAgent(
     id: string,
-    action: "cancel" | "archive",
+    action: "cancel",
     expectedRevision?: number,
   ): Promise<CommandResult> {
     const response = await fetch(
@@ -175,25 +156,28 @@ export class AgentDeckClient {
     return CommandResultSchema.parse(await response.json()) as CommandResult;
   }
 
-  async deleteAgent(id: string): Promise<boolean> {
+  async dismissAgent(id: string): Promise<boolean> {
     const response = await fetch(
-      `${this.baseUrl}/api/v1/agents/${encodeURIComponent(id)}`,
-      { method: "DELETE" },
+      `${this.baseUrl}/api/v1/agents/${encodeURIComponent(id)}/dismiss`,
+      { method: "POST" },
     );
     if (response.status === 404) return false;
     if (!response.ok) throw await responseError(response);
     return true;
   }
 
-  async clearAgents(): Promise<number> {
-    const response = await fetch(`${this.baseUrl}/api/v1/agents`, {
-      method: "DELETE",
-    });
+  async dismissTerminalAgents(): Promise<number> {
+    const response = await fetch(
+      `${this.baseUrl}/api/v1/agents/dismiss-terminal`,
+      {
+        method: "POST",
+      },
+    );
     if (!response.ok) throw await responseError(response);
-    const result = (await response.json()) as { cleared?: unknown };
-    if (typeof result.cleared !== "number")
-      throw new Error("Agent clear response did not include a count");
-    return result.cleared;
+    const result = (await response.json()) as { dismissed?: unknown };
+    if (typeof result.dismissed !== "number")
+      throw new Error("Agent dismiss response did not include a count");
+    return result.dismissed;
   }
 
   async getClientConfiguration(

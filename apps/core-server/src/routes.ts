@@ -77,11 +77,13 @@ export const registerApiRoutes = (
     return pageResponse(store, page, offset, query.limit);
   });
 
-  app.delete("/api/v1/agents", async () => {
-    const cleared = store.clearAgents();
-    broker.requestResync();
-    await providers.rediscover();
-    return { cleared };
+  app.post("/api/v1/agents/dismiss-terminal", async () => {
+    const events = store.dismissTerminalAgents();
+    for (const event of events) broker.publish(event);
+    return {
+      dismissed: events.filter((event) => event.type === "agent.removed")
+        .length,
+    };
   });
 
   app.get<{ Params: { id: string } }>(
@@ -92,12 +94,13 @@ export const registerApiRoutes = (
     },
   );
 
-  app.delete<{ Params: { id: string } }>(
-    "/api/v1/agents/:id",
+  app.post<{ Params: { id: string } }>(
+    "/api/v1/agents/:id/dismiss",
     async (request, reply) => {
-      if (!store.deleteAgent(request.params.id))
+      const events = store.dismissAgent(request.params.id);
+      if (!events.length)
         return notFound(request, reply, "Agent");
-      broker.requestResync();
+      for (const event of events) broker.publish(event);
       return reply.code(204).send();
     },
   );
@@ -111,21 +114,6 @@ export const registerApiRoutes = (
       return pageResponse(
         store,
         store.listRuns(request.params.id, { offset, limit }),
-        offset,
-        limit,
-      );
-    },
-  );
-
-  app.get<{ Params: { id: string } }>(
-    "/api/v1/agents/:id/events",
-    async (request, reply) => {
-      if (!store.getAgent(request.params.id))
-        return notFound(request, reply, "Agent");
-      const { offset, limit } = parsePage(request.query);
-      return pageResponse(
-        store,
-        store.listEvents({ agentId: request.params.id }, { offset, limit }),
         offset,
         limit,
       );
@@ -162,7 +150,11 @@ export const registerApiRoutes = (
 
   app.post<{ Params: { id: string } }>(
     "/api/v1/agents/:id/focus",
-    async (request) => agentFocus.focusAgent(request.params.id),
+    async (request, reply) => {
+      if (!store.getAgent(request.params.id))
+        return notFound(request, reply, "Agent");
+      return agentFocus.focusAgent(request.params.id);
+    },
   );
 
   app.get<{ Params: { id: string } }>(
@@ -275,15 +267,16 @@ export const registerApiRoutes = (
 
   app.get("/api/v1/openapi.json", async () => ({
     openapi: "3.1.0",
-    info: { title: "Agent Deck API", version: "1.0.0" },
+    info: { title: "Agent Deck API", version: "2.0.0" },
     servers: [{ url: "http://127.0.0.1:47831" }],
     components: { schemas: { Agent: AgentJsonSchema } },
     paths: Object.fromEntries(
       [
         "/api/v1/agents",
+        "/api/v1/agents/dismiss-terminal",
         "/api/v1/agents/{id}",
+        "/api/v1/agents/{id}/dismiss",
         "/api/v1/agents/{id}/runs",
-        "/api/v1/agents/{id}/events",
         "/api/v1/agents/{id}/commands",
         "/api/v1/agents/{id}/focus",
         "/api/v1/runs/{id}",
@@ -296,14 +289,14 @@ export const registerApiRoutes = (
         "/api/v1/system/health",
       ].map((path) => [
         path,
-        path === "/api/v1/agents/{id}"
+        path.endsWith("/commands") ||
+        path.endsWith("/focus") ||
+        path.endsWith("/dismiss") ||
+        path.endsWith("/dismiss-terminal")
           ? {
-              get: { responses: { "200": { description: "OK" } } },
-              delete: { responses: { "204": { description: "Deleted" } } },
+              post: { responses: { "200": { description: "OK" } } },
             }
-          : path.endsWith("/commands") || path.endsWith("/focus")
-            ? { post: { responses: { "200": { description: "OK" } } } }
-            : { get: { responses: { "200": { description: "OK" } } } },
+          : { get: { responses: { "200": { description: "OK" } } } },
       ]),
     ),
   }));

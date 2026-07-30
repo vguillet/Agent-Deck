@@ -27,23 +27,13 @@ const snapshot = (): ServerDashboardSnapshot => ({
       providerId: "cursor-local",
       title: "Implement dashboard",
       state: "running",
-      freshness: "fresh",
+      activityEpoch: "run-1",
       progress: {
         activity: "editing",
         plan: { completed: 2, total: 4 },
         observedAt: "2026-07-29T08:19:59.000Z",
       },
-      archived: false,
       lastActivityAt: "2026-07-29T08:19:50.000Z",
-    } as Agent,
-    {
-      id: "stale",
-      providerId: "codex",
-      title: "Old task",
-      state: "idle",
-      freshness: "stale",
-      archived: false,
-      lastActivityAt: "2026-07-28T08:00:00.000Z",
     } as Agent,
   ],
   address: "http://127.0.0.1:47831",
@@ -61,6 +51,5 @@ describe("server dashboard", () => {
     expect(output).toContain("Alive agents (1)");
     expect(output).toContain("Implement dashboard · running");
     expect(output).toContain("editing 3/4");
-    expect(output).not.toContain("Old task");
   });
 });

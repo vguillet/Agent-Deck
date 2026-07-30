@@ -59,7 +59,6 @@ export const formatServerDashboard = (
 ): string => {
   const now = new Date(snapshot.updatedAt).getTime();
   const alive = snapshot.agents
-    .filter((agent) => agent.freshness === "fresh" && !agent.archived)
     .sort(
       (left, right) =>
         new Date(right.lastActivityAt).getTime() -

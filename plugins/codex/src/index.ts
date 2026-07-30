@@ -4,8 +4,6 @@ import { z } from "zod";
 import {
   canonicalId,
   isActiveAgentState,
-  isAgentActiveOrRecent,
-  isRunActiveOrRecent,
   workspaceResourcesForRoots,
   type Agent,
   type AgentRun,
@@ -26,7 +24,6 @@ import type {
 import { CodexAppServerClient } from "./app-server-client.js";
 
 const PROVIDER_ID = "codex";
-const CHECKPOINT_KEY = "registry-v1";
 
 const ConfigSchema = z
   .object({
@@ -104,17 +101,6 @@ const HookSchema = z
 type HookInput = z.infer<typeof HookSchema>;
 type Thread = z.infer<typeof ThreadSchema>;
 type ThreadTurn = NonNullable<Thread["turns"]>[number];
-
-interface Registry {
-  version: 1;
-  agents: Agent[];
-  runs: AgentRun[];
-  activeSessions: string[];
-  activeTurns: Array<[string, string]>;
-  sourceRevisions: Array<[string, number]>;
-  questionToolUses: Array<[string, string]>;
-  seenHooks: string[];
-}
 
 const timestamp = (
   seconds: number | null | undefined,
@@ -212,7 +198,7 @@ class CodexProvider implements AgentProviderPlugin {
     id: "codex",
     displayName: "Codex",
     version: "0.1.0",
-    sdkVersion: 1 as const,
+    sdkVersion: 2 as const,
     capabilities: {
       discovery: true,
       liveEvents: true,
@@ -237,14 +223,15 @@ class CodexProvider implements AgentProviderPlugin {
     this.context = context;
     const config = ConfigSchema.parse(context.config);
     this.client = new CodexAppServerClient(config.binary);
-    await this.restore();
     context.registerIngress({
       path: "/hooks",
       handle: async (input) => {
         const parsed = HookSchema.safeParse(input);
         if (!parsed.success)
           return { statusCode: 400, body: { accepted: false } };
-        await this.enqueue(() => this.consumeHook(parsed.data));
+        void this.enqueue(() => this.consumeHook(parsed.data)).catch((error) => {
+          this.context?.logger.warn({ error }, "Failed to process Codex hook");
+        });
         return { statusCode: 202, body: { accepted: true } };
       },
     });
@@ -259,12 +246,10 @@ class CodexProvider implements AgentProviderPlugin {
       throw new Error("Codex provider not initialised");
     const now = this.context.now();
     try {
-      const previousAgents = new Map(this.agents);
       const threads = (await this.client.listThreads())
         .map((thread) => ThreadSchema.safeParse(thread))
         .filter((result) => result.success)
         .map((result) => result.data);
-      const threadIds = new Set(threads.map((thread) => thread.id));
       const nextAgents = new Map<string, Agent>();
       const nextRuns = new Map<string, AgentRun>();
       const projects = new Map<string, Project>();
@@ -299,6 +284,7 @@ class CodexProvider implements AgentProviderPlugin {
         const state = hookSessionWithoutTurn
           ? (existing?.state ?? "running")
           : mapState(thread.status, existing?.state, activeTurn?.status);
+        if (!isActiveAgentState(state)) continue;
         const discoveredAt = timestamp(thread.updatedAt, now);
         const updatedAt =
           existing && existing.lastActivityAt > discoveredAt
@@ -342,7 +328,10 @@ class CodexProvider implements AgentProviderPlugin {
           ...(project ? { projectId: project.id } : {}),
           ...(workspace ? { workspaceId: workspace.id } : {}),
           state,
-          freshness: "fresh",
+          activityEpoch:
+            discoveredRunId ??
+            existing?.activityEpoch ??
+            `${thread.id}:${thread.createdAt ?? thread.updatedAt ?? "active"}`,
           ...(activeRunId ? { activeRunId } : {}),
           requiresAttention:
             state === "waiting_for_approval" ||
@@ -355,7 +344,6 @@ class CodexProvider implements AgentProviderPlugin {
           ...(isActiveAgentState(state) && existing?.progress
             ? { progress: existing.progress }
             : {}),
-          archived: false,
           capabilities: {
             messages: false,
             approvals: false,
@@ -373,7 +361,6 @@ class CodexProvider implements AgentProviderPlugin {
             : [],
           metadata,
         };
-        if (!isAgentActiveOrRecent(agent, now)) continue;
         nextAgents.set(agent.id, agent);
         if (project) projects.set(project.id, project);
         if (workspace) workspaces.set(workspace.id, workspace);
@@ -407,52 +394,6 @@ class CodexProvider implements AgentProviderPlugin {
           }
         }
       }
-      for (const agent of this.agents.values()) {
-        if (
-          threadIds.has(agent.externalId) ||
-          !isAgentActiveOrRecent(agent, now)
-        )
-          continue;
-        const cwd =
-          typeof agent.metadata.cwd === "string" ? agent.metadata.cwd : "";
-        if (cwd) {
-          const resources = workspaceResourcesForRoots(PROVIDER_ID, [cwd]);
-          const project = resources.projects[0];
-          const workspace = resources.workspace;
-          if (project) projects.set(project.id, project);
-          if (workspace) workspaces.set(workspace.id, workspace);
-          const groupingChanged =
-            agent.projectId !== project?.id ||
-            agent.workspaceId !== workspace?.id ||
-            !Array.isArray(agent.metadata.workspaceRoots);
-          nextAgents.set(
-            agent.id,
-            groupingChanged
-              ? {
-                  ...agent,
-                  ...(project ? { projectId: project.id } : {}),
-                  ...(workspace ? { workspaceId: workspace.id } : {}),
-                  sourceRevision: this.nextSourceRevision(agent.externalId),
-                  metadata: {
-                    ...agent.metadata,
-                    workspaceRoots: [cwd],
-                  },
-                }
-              : agent,
-          );
-        } else {
-          nextAgents.set(agent.id, agent);
-        }
-      }
-      for (const run of this.runs.values()) {
-        if (
-          nextRuns.has(run.id) ||
-          !nextAgents.has(run.agentId) ||
-          !isRunActiveOrRecent(run, now)
-        )
-          continue;
-        nextRuns.set(run.id, run);
-      }
       this.agents.clear();
       for (const [id, agent] of nextAgents) this.agents.set(id, agent);
       this.runs.clear();
@@ -468,25 +409,16 @@ class CodexProvider implements AgentProviderPlugin {
         if (!this.agents.has(canonicalId(PROVIDER_ID, sessionId)))
           this.questionToolUses.delete(sessionId);
       }
-      const expiredAgents = [...previousAgents.values()]
-        .filter((agent) => !this.agents.has(agent.id))
-        .map((agent): Agent => ({
-          ...withoutProgress(agent),
-          freshness: "stale",
-          requiresAttention: false,
-          sourceRevision: this.nextSourceRevision(agent.externalId),
-        }));
       this.lastError = undefined;
       const snapshot = {
-        complete: true,
+        reconciliation: "authoritative" as const,
         observedAt: now,
         workspaces: [...workspaces.values()],
         projects: [...projects.values()],
-        agents: [...this.agents.values(), ...expiredAgents],
+        agents: [...this.agents.values()],
         runs: [...this.runs.values()],
         attention: [],
       };
-      await this.persist();
       return snapshot;
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
@@ -576,7 +508,6 @@ class CodexProvider implements AgentProviderPlugin {
       runId: cancelledRun.id,
       payload: { run: cancelledRun },
     });
-    await this.persist();
     return { commandId: command.commandId, status: "succeeded" };
   }
 
@@ -614,8 +545,9 @@ class CodexProvider implements AgentProviderPlugin {
       input.turn_id &&
       currentTurn &&
       input.turn_id !== currentTurn
-    )
+    ) {
       return;
+    }
     if (ACTIVE_HOOK_EVENTS.has(input.hook_event_name))
       this.activeSessions.add(input.session_id);
     if (startsTurn) {
@@ -658,6 +590,13 @@ class CodexProvider implements AgentProviderPlugin {
     const terminal =
       input.hook_event_name === "Stop" ||
       input.hook_event_name === "SessionEnd";
+    if (
+      !existing &&
+      (terminal || state === "idle" || state === "unknown")
+    ) {
+      if (deduplicationId) this.rememberHook(deduplicationId);
+      return;
+    }
     const activity =
       input.agent_signal === "question_started"
         ? "waiting"
@@ -704,7 +643,11 @@ class CodexProvider implements AgentProviderPlugin {
       projectId: project.id,
       workspaceId: workspace.id,
       state,
-      freshness: "fresh",
+      activityEpoch:
+        runId ??
+        (startsTurn
+          ? `${input.session_id}:${now}`
+          : existing?.activityEpoch ?? `${input.session_id}:${now}`),
       ...(runId ? { activeRunId: runId } : {}),
       requiresAttention:
         state === "waiting_for_input" ||
@@ -715,7 +658,6 @@ class CodexProvider implements AgentProviderPlugin {
       revision: existing?.revision ?? 0,
       sourceRevision,
       ...(progress ? { progress } : {}),
-      archived: false,
       capabilities: {
         messages: false,
         approvals: false,
@@ -788,7 +730,6 @@ class CodexProvider implements AgentProviderPlugin {
       this.activeTurns.delete(input.session_id);
     }
     if (deduplicationId) this.rememberHook(deduplicationId);
-    await this.persist();
   }
 
   private eventId(kind: string, input: HookInput, occurrence?: number): string {
@@ -822,53 +763,6 @@ class CodexProvider implements AgentProviderPlugin {
     const revision = (this.sourceRevisions.get(sessionId) ?? 0) + 1;
     this.sourceRevisions.set(sessionId, revision);
     return revision;
-  }
-
-  private async persist(): Promise<void> {
-    if (!this.context) return;
-    const registry: Registry = {
-      version: 1,
-      agents: [...this.agents.values()],
-      runs: [...this.runs.values()],
-      activeSessions: [...this.activeSessions],
-      activeTurns: [...this.activeTurns.entries()],
-      sourceRevisions: [...this.sourceRevisions.entries()],
-      questionToolUses: [...this.questionToolUses.entries()],
-      seenHooks: [...this.seenHooks],
-    };
-    await this.context.checkpoints.set(
-      CHECKPOINT_KEY,
-      JSON.stringify(registry),
-    );
-  }
-
-  private async restore(): Promise<void> {
-    if (!this.context) return;
-    const raw = await this.context.checkpoints.get(CHECKPOINT_KEY);
-    if (!raw) return;
-    try {
-      const registry = JSON.parse(raw) as Registry;
-      if (registry.version !== 1) throw new Error("Unsupported checkpoint");
-      for (const agent of registry.agents ?? []) {
-        this.agents.set(agent.id, agent);
-        if (agent.sourceRevision !== undefined)
-          this.sourceRevisions.set(agent.externalId, agent.sourceRevision);
-      }
-      for (const run of registry.runs ?? []) this.runs.set(run.id, run);
-      for (const session of registry.activeSessions ?? [])
-        this.activeSessions.add(session);
-      for (const [session, turn] of registry.activeTurns ?? []) {
-        this.activeTurns.set(session, turn);
-        this.activeSessions.add(session);
-      }
-      for (const [session, revision] of registry.sourceRevisions ?? [])
-        this.sourceRevisions.set(session, revision);
-      for (const [session, toolUse] of registry.questionToolUses ?? [])
-        this.questionToolUses.set(session, toolUse);
-      for (const hookId of registry.seenHooks ?? []) this.rememberHook(hookId);
-    } catch (error) {
-      this.context.logger.warn({ error }, "Ignoring invalid Codex checkpoint");
-    }
   }
 
   private enqueue<T>(operation: () => Promise<T> | T): Promise<T> {

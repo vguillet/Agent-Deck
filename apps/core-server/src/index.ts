@@ -38,7 +38,7 @@ export const buildServer = async (
   });
   const store = new SqliteEventStore(config.databasePath);
   store.migrate();
-  store.clearAgents({ preserveTombstones: true });
+  store.clearAgents();
   const broker = new SubscriptionBroker(store);
   const cursorWindows = new CursorWindowBroker(activateCursorWindow);
   const agentFocus = new AgentFocusCoordinator(
@@ -196,16 +196,14 @@ export const buildServer = async (
   heartbeat.unref();
   const runMaintenance = (): void => {
     const now = new Date();
-    for (const event of store.markStale(
-      new Date(now.getTime() - config.staleAfterMs).toISOString(),
+    for (const event of store.expireLeases(
+      new Date(now.getTime() - 5 * 60_000).toISOString(),
       now.toISOString(),
     )) {
       broker.publish(event);
     }
     store.pruneEvents(
-      new Date(
-        now.getTime() - config.retentionDays * 24 * 60 * 60 * 1_000,
-      ).toISOString(),
+      new Date(now.getTime() - 60 * 60_000).toISOString(),
     );
   };
   runMaintenance();
@@ -223,7 +221,7 @@ export const buildServer = async (
       clearInterval(maintenance);
       cursorWindows.close();
       await providerManager.dispose();
-      store.clearAgents({ preserveTombstones: true });
+      store.clearAgents();
       await app.close();
       store.close();
     },

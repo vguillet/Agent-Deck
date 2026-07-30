@@ -29,8 +29,6 @@ const ServerConfigurationSchema = z.object({
         "agent-deck.sqlite",
       ),
     ),
-  retentionDays: z.number().int().min(1).default(30),
-  staleAfterMs: z.number().int().min(60_000).default(300_000),
   healthIntervalMs: z.number().int().min(5_000).default(30_000),
   providers: z.array(ProviderConfigurationSchema).default([]),
 });

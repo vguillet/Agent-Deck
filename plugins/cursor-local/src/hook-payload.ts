@@ -234,8 +234,7 @@ export const sanitizeCursorHook = (
   let conversationKind: "top_level" | "subagent" | "background" | undefined;
   if (isSubagent) conversationKind = "subagent";
   else if (isBackgroundAgent === true) conversationKind = "background";
-  else if (isBackgroundAgent === false || event === "beforeSubmitPrompt")
-    conversationKind = "top_level";
+  else if (conversation) conversationKind = "top_level";
   return {
     protocol_version: 2,
     hook_event_name: event,
