@@ -277,6 +277,95 @@ describe("SqliteEventStore", () => {
     store.close();
   });
 
+  it("preserves tombstones while clearing transient agent state", () => {
+    const store = createMemoryStore();
+    const agent = makeAgent("running", "2026-07-28T09:00:00.000Z");
+    store.applySnapshot("fake", {
+      complete: true,
+      observedAt: agent.lastActivityAt,
+      workspaces: [],
+      projects: [],
+      agents: [agent],
+      runs: [],
+      attention: [],
+    });
+    expect(store.deleteAgent(agent.id)).toBe(true);
+
+    store.clearAgents({ preserveTombstones: true });
+    expect(
+      store.applySnapshot("fake", {
+        complete: true,
+        observedAt: "2026-07-28T09:00:30.000Z",
+        workspaces: [],
+        projects: [],
+        agents: [agent],
+        runs: [],
+        attention: [],
+      }),
+    ).toEqual([]);
+    expect(store.getAgent(agent.id)).toBeUndefined();
+    store.close();
+  });
+
+  it("only removes redundant tombstones after complete discovery", () => {
+    const store = createMemoryStore();
+    const agent = makeAgent("running", "2026-07-28T09:00:00.000Z");
+    store.applySnapshot("fake", {
+      complete: true,
+      observedAt: agent.lastActivityAt,
+      workspaces: [],
+      projects: [],
+      agents: [agent],
+      runs: [],
+      attention: [],
+    });
+    expect(store.deleteAgent(agent.id)).toBe(true);
+
+    store.applySnapshot("fake", {
+      complete: false,
+      observedAt: "2026-07-28T09:00:30.000Z",
+      workspaces: [],
+      projects: [],
+      agents: [],
+      runs: [],
+      attention: [],
+    });
+    expect(
+      store.applySnapshot("fake", {
+        complete: false,
+        observedAt: "2026-07-28T09:00:45.000Z",
+        workspaces: [],
+        projects: [],
+        agents: [agent],
+        runs: [],
+        attention: [],
+      }),
+    ).toEqual([]);
+
+    store.applySnapshot("fake", {
+      complete: true,
+      observedAt: "2026-07-28T09:01:00.000Z",
+      workspaces: [],
+      projects: [],
+      agents: [],
+      runs: [],
+      attention: [],
+    });
+    expect(
+      store.applySnapshot("fake", {
+        complete: false,
+        observedAt: "2026-07-28T09:01:30.000Z",
+        workspaces: [],
+        projects: [],
+        agents: [agent],
+        runs: [],
+        attention: [],
+      }),
+    ).toHaveLength(1);
+    expect(store.getAgent(agent.id)).toBeDefined();
+    store.close();
+  });
+
   it("clears all agents and allows the same snapshot to repopulate them", () => {
     const store = createMemoryStore();
     const agent = makeAgent("running", "2026-07-28T09:00:00.000Z");

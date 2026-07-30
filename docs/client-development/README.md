@@ -11,12 +11,12 @@ Use REST for snapshots and WebSocket for changes. Rendering decisions such as
 colors, icons, animation, pagination, truncation, and notification policy stay
 inside the client.
 
-Agent links are semantic. Clients may open a link with `rel: "focus"` to switch
-to its application, but must allowlist schemes appropriate to their platform
-and must not treat navigation as a provider command. The macOS Stream Deck
-client accepts only `cursor:` focus links. It routes `cursor-local` and `codex`
-agents through `AgentDeckClient.focusAgent`; Cursor Cloud retains its direct
-Cursor deep link. No generic `codex:` launcher is available.
+Agent links are semantic. Clients use `AgentDeckClient.focusAgent` for
+`rel: "focus"` navigation and must not treat it as a provider command. The
+loopback core validates and serializes brokered local Cursor/Codex targets and
+allowlisted `cursor:` links such as Cursor Cloud. `rel: "view"` remains a
+secondary inspection surface and is never a focus fallback. No generic
+`codex:` launcher is available.
 
 Clients cancel an active run with `AgentDeckClient.cancelAgent`. Passing the
 rendered agent revision protects against acting on a slot whose target changed.

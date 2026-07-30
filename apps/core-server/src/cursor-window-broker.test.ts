@@ -54,6 +54,7 @@ const register = (
   roots: string[],
   options: {
     focused?: boolean;
+    focusProtocolVersion?: 2;
     focusKinds?: CursorFocusTargetKind[] | null;
     instanceId?: string;
     launchTarget?: string;
@@ -72,8 +73,11 @@ const register = (
       launchTarget:
         options.launchTarget ??
         `/workspace/window-${String(serial)}.code-workspace`,
-      focused: options.focused ?? false,
+      focused: options.focused ?? true,
       version: options.version ?? "0.3.0",
+      ...(options.focusProtocolVersion
+        ? { focusProtocolVersion: options.focusProtocolVersion }
+        : {}),
       ...(options.focusKinds === null
         ? {}
         : {
@@ -87,12 +91,19 @@ const register = (
   return connectionId;
 };
 
-const acknowledgeLatest = (
+const latestIntent = async (
+  socket: FakeSocket,
+): Promise<{ requestId: string }> => {
+  await vi.waitFor(() => expect(socket.sent.length).toBeGreaterThan(0));
+  return JSON.parse(socket.sent.at(-1)!) as { requestId: string };
+};
+
+const acknowledgeLatest = async (
   broker: CursorWindowBroker,
   connectionId: string,
   socket: FakeSocket,
-): string => {
-  const intent = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
+): Promise<string> => {
+  const intent = await latestIntent(socket);
   expect(
     broker.handle(connectionId, {
       type: "focus.result",
@@ -126,6 +137,7 @@ describe("Cursor window broker", () => {
       cursorTarget("conversation-123", ["/workspace/alpha", "/workspace/beta"]),
     );
     expect(activate).toHaveBeenCalledWith("/workspace/project.code-workspace");
+    await latestIntent(socket);
     expect(JSON.parse(socket.sent[0]!)).toMatchObject({
       type: "focus.intent",
       target: {
@@ -133,7 +145,7 @@ describe("Cursor window broker", () => {
         conversationId: "conversation-123",
       },
     });
-    const requestId = acknowledgeLatest(broker, connectionId, socket);
+    const requestId = await acknowledgeLatest(broker, connectionId, socket);
     await expect(resultPromise).resolves.toEqual({
       requestId,
       status: "opened",
@@ -149,12 +161,12 @@ describe("Cursor window broker", () => {
     });
 
     const resultPromise = broker.focus(cursorTarget());
-    expect(JSON.parse(socket.sent[0]!)).toMatchObject({
+    expect(await latestIntent(socket)).toMatchObject({
       type: "focus.intent",
       conversationId: "conversation-1",
     });
     expect(JSON.parse(socket.sent[0]!)).not.toHaveProperty("target");
-    acknowledgeLatest(broker, connectionId, socket);
+    await acknowledgeLatest(broker, connectionId, socket);
     await expect(resultPromise).resolves.toMatchObject({ status: "opened" });
   });
 
@@ -175,6 +187,7 @@ describe("Cursor window broker", () => {
     const resultPromise = broker.focus(codexTarget());
     expect(activate).toHaveBeenCalledOnce();
     expect(activate).toHaveBeenCalledWith("/workspace/alpha.code-workspace");
+    await latestIntent(exactSocket);
     expect(JSON.parse(exactSocket.sent[0]!)).toMatchObject({
       target: {
         kind: "codex.thread",
@@ -182,7 +195,7 @@ describe("Cursor window broker", () => {
         cwd: "/workspace/alpha/project",
       },
     });
-    acknowledgeLatest(broker, exactConnection, exactSocket);
+    await acknowledgeLatest(broker, exactConnection, exactSocket);
     await expect(resultPromise).resolves.toMatchObject({ status: "opened" });
   });
 
@@ -235,8 +248,7 @@ describe("Cursor window broker", () => {
       instanceId,
     });
     const pending = broker.focus(cursorTarget());
-    const requestId = (JSON.parse(socket.sent[0]!) as { requestId: string })
-      .requestId;
+    const requestId = (await latestIntent(socket)).requestId;
 
     expect(
       broker.handle(connectionId, {
@@ -262,7 +274,7 @@ describe("Cursor window broker", () => {
     ).toBe(true);
   });
 
-  it("coalesces the same target and supersedes a different target", async () => {
+  it("coalesces the same target and replaces a different target", async () => {
     const activate = vi.fn(async () => undefined);
     const broker = new CursorWindowBroker(activate);
     const socket = new FakeSocket();
@@ -270,20 +282,138 @@ describe("Cursor window broker", () => {
 
     const first = broker.focus(cursorTarget("conversation-1"));
     const repeated = broker.focus(cursorTarget("conversation-1"));
+    await latestIntent(socket);
     expect(socket.sent).toHaveLength(1);
     expect(activate).toHaveBeenCalledOnce();
 
     const replacement = broker.focus(cursorTarget("conversation-2"));
-    const firstResult = await first;
-    const repeatedResult = await repeated;
-    expect(firstResult.status).toBe("failed");
-    expect(firstResult.message).toContain("Superseded");
-    expect(repeatedResult.status).toBe("failed");
-    expect(repeatedResult.message).toContain("Superseded");
+    await expect(first).resolves.toMatchObject({ status: "superseded" });
+    await expect(repeated).resolves.toMatchObject({ status: "superseded" });
     expect(socket.sent).toHaveLength(2);
-
-    acknowledgeLatest(broker, connectionId, socket);
+    await acknowledgeLatest(broker, connectionId, socket);
     await expect(replacement).resolves.toMatchObject({ status: "opened" });
+  });
+
+  it("dispatches independent requests to different Cursor windows", async () => {
+    const broker = new CursorWindowBroker(vi.fn(async () => undefined));
+    const alphaSocket = new FakeSocket();
+    const alphaConnection = register(broker, alphaSocket, ["/workspace/alpha"]);
+    const betaSocket = new FakeSocket();
+    const betaConnection = register(broker, betaSocket, ["/workspace/beta"]);
+
+    const first = broker.focus(cursorTarget("conversation-1"));
+    const replacement = broker.focus(
+      cursorTarget("conversation-2", ["/workspace/beta"]),
+    );
+
+    const alphaIntent = await latestIntent(alphaSocket);
+    await latestIntent(betaSocket);
+    broker.handle(alphaConnection, {
+      type: "focus.result",
+      requestId: alphaIntent.requestId,
+      status: "opened",
+    });
+    await acknowledgeLatest(broker, betaConnection, betaSocket);
+    await expect(first).resolves.toMatchObject({ status: "opened" });
+    await expect(replacement).resolves.toMatchObject({ status: "opened" });
+  });
+
+  it("cancels an active request so a different window can focus immediately", async () => {
+    const broker = new CursorWindowBroker(vi.fn(async () => undefined));
+    const lateOpened = vi.fn();
+    broker.onLateOpened(lateOpened);
+    const alphaSocket = new FakeSocket();
+    const alphaConnection = register(broker, alphaSocket, ["/workspace/alpha"], {
+      focusProtocolVersion: 2,
+    });
+    const betaSocket = new FakeSocket();
+    const betaConnection = register(broker, betaSocket, ["/workspace/beta"], {
+      focusProtocolVersion: 2,
+    });
+    const controller = new AbortController();
+    const alphaTarget = cursorTarget("conversation-1", ["/workspace/alpha"]);
+
+    const first = broker.focus(alphaTarget, controller.signal);
+    const alphaIntent = await latestIntent(alphaSocket);
+    controller.abort();
+    await expect(first).resolves.toMatchObject({ status: "superseded" });
+    expect(JSON.parse(alphaSocket.sent[1]!)).toEqual({
+      type: "focus.cancel",
+      requestId: alphaIntent.requestId,
+    });
+
+    const replacement = broker.focus(
+      cursorTarget("conversation-2", ["/workspace/beta"]),
+    );
+    await acknowledgeLatest(broker, betaConnection, betaSocket);
+    await expect(replacement).resolves.toMatchObject({ status: "opened" });
+
+    broker.handle(alphaConnection, {
+      type: "focus.result",
+      requestId: alphaIntent.requestId,
+      status: "opened",
+    });
+    expect(lateOpened).toHaveBeenCalledWith(alphaTarget);
+  });
+
+  it("serializes a same-window replacement without cancelling its predecessor", async () => {
+    const broker = new CursorWindowBroker(vi.fn(async () => undefined));
+    const lateOpened = vi.fn();
+    broker.onLateOpened(lateOpened);
+    const socket = new FakeSocket();
+    const connectionId = register(broker, socket, ["/workspace/alpha"], {
+      focusProtocolVersion: 2,
+    });
+    const first = broker.focus(cursorTarget("conversation-1"));
+    const firstIntent = await latestIntent(socket);
+    const replacement = broker.focus(cursorTarget("conversation-2"));
+    await expect(first).resolves.toMatchObject({ status: "superseded" });
+    expect(
+      socket.sent.map(
+        (frame) => (JSON.parse(frame) as { type: string }).type,
+      ),
+    ).toEqual(["focus.intent", "focus.intent"]);
+    const replacementIntent = JSON.parse(socket.sent[1]!) as {
+      requestId: string;
+    };
+    broker.handle(connectionId, {
+      type: "focus.result",
+      requestId: firstIntent.requestId,
+      status: "opened",
+    });
+    expect(lateOpened).not.toHaveBeenCalled();
+
+    broker.handle(connectionId, {
+      type: "focus.result",
+      requestId: replacementIntent.requestId,
+      status: "opened",
+    });
+    await expect(replacement).resolves.toMatchObject({ status: "opened" });
+  });
+
+  it("cancels an intent that was queued before activation", async () => {
+    let finishActivation!: () => void;
+    const activation = new Promise<void>((resolve) => {
+      finishActivation = resolve;
+    });
+    const broker = new CursorWindowBroker(() => activation);
+    const socket = new FakeSocket();
+    register(broker, socket, ["/workspace/alpha"], {
+      focusProtocolVersion: 2,
+    });
+    const controller = new AbortController();
+
+    const pending = broker.focus(cursorTarget(), controller.signal);
+    controller.abort();
+    await expect(pending).resolves.toMatchObject({ status: "superseded" });
+    finishActivation();
+    await Promise.resolve();
+    expect(
+      socket.sent.map((frame) => JSON.parse(frame) as Record<string, unknown>),
+    ).toEqual([
+      expect.objectContaining({ type: "focus.intent" }),
+      expect.objectContaining({ type: "focus.cancel" }),
+    ]);
   });
 
   it("reports send, activation, disconnect, and timeout failures", async () => {
@@ -338,6 +468,7 @@ describe("Cursor window broker", () => {
     );
     register(timeoutBroker, new FakeSocket(), ["/workspace/alpha"]);
     const timedOut = timeoutBroker.focus(cursorTarget());
+    await Promise.resolve();
     await vi.advanceTimersByTimeAsync(5_000);
     await expect(timedOut).resolves.toMatchObject({ status: "timeout" });
   });
@@ -349,15 +480,61 @@ describe("Cursor window broker", () => {
     });
     const broker = new CursorWindowBroker(() => activation);
     const socket = new FakeSocket();
-    const connectionId = register(broker, socket, ["/workspace/alpha"]);
+    register(broker, socket, ["/workspace/alpha"]);
 
     const resultPromise = broker.focus(cursorTarget());
-    acknowledgeLatest(broker, connectionId, socket);
+    expect(socket.sent).toHaveLength(1);
     rejectActivation(new Error("could not activate exact window"));
 
     await expect(resultPromise).resolves.toMatchObject({
       status: "failed",
       message: "could not activate exact window",
     });
+  });
+
+  it("queues the intent before an inactive window reports focused", async () => {
+    const broker = new CursorWindowBroker(vi.fn(async () => undefined));
+    const socket = new FakeSocket();
+    const connectionId = register(broker, socket, ["/workspace/alpha"], {
+      focused: false,
+    });
+
+    const resultPromise = broker.focus(cursorTarget());
+    expect(socket.sent).toHaveLength(1);
+    broker.handle(connectionId, { type: "window.state", focused: true });
+    await acknowledgeLatest(broker, connectionId, socket);
+    await expect(resultPromise).resolves.toMatchObject({ status: "opened" });
+  });
+
+  it("cancels protocol-v2 timeouts and reports late opens for reassertion", async () => {
+    vi.useFakeTimers();
+    const broker = new CursorWindowBroker(
+      vi.fn(async () => undefined),
+      5_000,
+    );
+    const lateOpened = vi.fn();
+    broker.onLateOpened(lateOpened);
+    const socket = new FakeSocket();
+    const connectionId = register(broker, socket, ["/workspace/alpha"], {
+      focusProtocolVersion: 2,
+    });
+    const target = cursorTarget();
+
+    const pending = broker.focus(target);
+    await Promise.resolve();
+    const intent = JSON.parse(socket.sent[0]!) as { requestId: string };
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(pending).resolves.toMatchObject({ status: "timeout" });
+    expect(JSON.parse(socket.sent[1]!)).toEqual({
+      type: "focus.cancel",
+      requestId: intent.requestId,
+    });
+
+    broker.handle(connectionId, {
+      type: "focus.result",
+      requestId: intent.requestId,
+      status: "opened",
+    });
+    expect(lateOpened).toHaveBeenCalledWith(target);
   });
 });

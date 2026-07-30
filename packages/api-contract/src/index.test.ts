@@ -3,7 +3,9 @@ import {
   AgentJsonSchema,
   AgentSchema,
   CompatibleCursorFocusIntentFrameSchema,
+  CursorFocusResultStatusSchema,
   CursorWindowClientFrameSchema,
+  CursorWindowServerFrameSchema,
   workspaceRootsKey,
 } from "./index.js";
 
@@ -81,7 +83,28 @@ describe("Agent progress contract", () => {
   });
 });
 
+describe("Agent hierarchy contract", () => {
+  it("accepts typed subagents with canonical parents", () => {
+    expect(
+      AgentSchema.parse({
+        ...agent,
+        kind: "subagent",
+        parentAgentId: "cursor-local:parent-1",
+      }),
+    ).toMatchObject({
+      kind: "subagent",
+      parentAgentId: "cursor-local:parent-1",
+    });
+  });
+});
+
 describe("Cursor window focus contract", () => {
+  it("represents focus supersession without treating it as failure", () => {
+    expect(CursorFocusResultStatusSchema.parse("superseded")).toBe(
+      "superseded",
+    );
+  });
+
   it("validates live window registration and normalizes root ordering", () => {
     expect(
       CursorWindowClientFrameSchema.parse({
@@ -91,12 +114,25 @@ describe("Cursor window focus contract", () => {
         launchTarget: "/workspace/project.code-workspace",
         focused: false,
         version: "0.3.0",
+        focusProtocolVersion: 2,
         focusKinds: ["cursor.conversation", "codex.thread"],
       }).type,
     ).toBe("window.register");
     expect(workspaceRootsKey(["/workspace/b", "/workspace/a"])).toBe(
       workspaceRootsKey(["/workspace/a", "/workspace/b"]),
     );
+  });
+
+  it("accepts protocol-v2 focus cancellation frames", () => {
+    expect(
+      CursorWindowServerFrameSchema.parse({
+        type: "focus.cancel",
+        requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }),
+    ).toEqual({
+      type: "focus.cancel",
+      requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    });
   });
 
   it("accepts discriminated and legacy focus intents", () => {

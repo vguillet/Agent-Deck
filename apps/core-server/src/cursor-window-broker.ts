@@ -21,14 +21,21 @@ interface WindowConnection {
 }
 
 interface PendingFocus {
+  acknowledgement?: CursorFocusResult;
+  detachAbort?: () => void;
   requestId: string;
   targetKey: string;
   target: CursorFocusTarget;
   activated: boolean;
-  acknowledgement?: CursorFocusResult;
+  intentSent: boolean;
   timer: NodeJS.Timeout;
   promise: Promise<CursorFocusResult>;
   resolve(result: CursorFocusResult): void;
+}
+
+interface ExpiredFocus {
+  target: CursorFocusTarget;
+  timer: NodeJS.Timeout;
 }
 
 interface WindowMatch {
@@ -43,6 +50,7 @@ const registrationKey = (registration: CursorWindowRegistration): string =>
   [
     workspaceRootsKey(registration.workspaceRoots),
     registration.launchTarget,
+    registration.focusProtocolVersion ?? 1,
     ...(registration.focusKinds ?? []),
   ].join("\0");
 
@@ -67,11 +75,20 @@ const supportedKinds = (
 export class CursorWindowBroker {
   private readonly connections = new Map<string, WindowConnection>();
   private readonly connectionsByWindow = new Map<string, string>();
+  private readonly expired = new Map<string, ExpiredFocus>();
+  private readonly lateOpenedListeners = new Set<
+    (target: CursorFocusTarget) => void
+  >();
 
   constructor(
     private readonly activate: CursorWindowActivator,
     private readonly timeoutMs = 5_000,
   ) {}
+
+  onLateOpened(listener: (target: CursorFocusTarget) => void): () => void {
+    this.lateOpenedListeners.add(listener);
+    return () => this.lateOpenedListeners.delete(listener);
+  }
 
   add(socket: WebSocket): string {
     const id = randomUUID();
@@ -109,7 +126,17 @@ export class CursorWindowBroker {
       connection.focused = frame.focused;
       return true;
     }
-    if (connection.pending?.requestId !== frame.requestId) return true;
+    if (connection.pending?.requestId !== frame.requestId) {
+      const expired = this.expired.get(frame.requestId);
+      if (expired) {
+        clearTimeout(expired.timer);
+        this.expired.delete(frame.requestId);
+        if (frame.status === "opened" && !connection.pending)
+          for (const listener of this.lateOpenedListeners)
+            listener(expired.target);
+      }
+      return true;
+    }
     const result = {
       requestId: frame.requestId,
       status: frame.status,
@@ -123,8 +150,17 @@ export class CursorWindowBroker {
     return true;
   }
 
-  async focus(target: CursorFocusTarget): Promise<CursorFocusResult> {
+  async focus(
+    target: CursorFocusTarget,
+    signal?: AbortSignal,
+  ): Promise<CursorFocusResult> {
     const requestId = randomUUID();
+    if (signal?.aborted)
+      return {
+        requestId,
+        status: "superseded",
+        message: "Superseded by a newer focus request",
+      };
     const validation = this.validateTarget(target);
     if (validation)
       return { requestId, status: "unavailable", message: validation };
@@ -164,11 +200,15 @@ export class CursorWindowBroker {
     if (connection.pending?.targetKey === key)
       return connection.pending.promise;
     if (connection.pending)
-      this.finish(connection, {
-        requestId: connection.pending.requestId,
-        status: "failed",
-        message: "Superseded by a newer focus request",
-      });
+      this.finish(
+        connection,
+        {
+          requestId: connection.pending.requestId,
+          status: "superseded",
+          message: "Superseded by a newer focus request",
+        },
+        false,
+      );
 
     let resolveResult!: (result: CursorFocusResult) => void;
     const promise = new Promise<CursorFocusResult>((resolvePromise) => {
@@ -187,11 +227,27 @@ export class CursorWindowBroker {
       targetKey: key,
       target,
       activated: false,
+      intentSent: false,
       timer,
       promise,
       resolve: resolveResult,
     };
+    if (signal) {
+      const abort = (): void => {
+        this.finish(connection, {
+          requestId,
+          status: "superseded",
+          message: "Superseded by a newer focus request",
+        });
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      connection.pending.detachAbort = () =>
+        signal.removeEventListener("abort", abort);
+      if (signal.aborted) abort();
+    }
+    if (connection.pending?.requestId !== requestId) return promise;
 
+    connection.pending.intentSent = true;
     if (!this.sendIntent(connection, target, requestId)) return promise;
     let activation: Promise<void>;
     try {
@@ -232,6 +288,8 @@ export class CursorWindowBroker {
         // The socket may already be closing.
       }
     }
+    for (const expired of this.expired.values()) clearTimeout(expired.timer);
+    this.expired.clear();
   }
 
   isRegistered(connectionId: string): boolean {
@@ -379,14 +437,51 @@ export class CursorWindowBroker {
     }
   }
 
+  private cancelIntent(connection: WindowConnection, requestId: string): void {
+    if (connection.registration?.focusProtocolVersion !== 2) return;
+    if (connection.socket.readyState !== connection.socket.OPEN) return;
+    try {
+      connection.socket.send(
+        JSON.stringify({ type: "focus.cancel", requestId }),
+      );
+    } catch {
+      // The operation is already terminal; disconnect handling owns cleanup.
+    }
+  }
+
+  private rememberExpired(pending: PendingFocus): void {
+    const previous = this.expired.get(pending.requestId);
+    if (previous) clearTimeout(previous.timer);
+    const timer = setTimeout(() => {
+      this.expired.delete(pending.requestId);
+    }, 30_000);
+    timer.unref();
+    this.expired.set(pending.requestId, { target: pending.target, timer });
+  }
+
   private finish(
     connection: WindowConnection,
     result: CursorFocusResult,
+    retireIntent = true,
   ): void {
     const pending = connection.pending;
     if (!pending || pending.requestId !== result.requestId) return;
     clearTimeout(pending.timer);
+    pending.detachAbort?.();
     delete connection.pending;
+    if (retireIntent && pending.intentSent && result.status !== "opened") {
+      this.rememberExpired(pending);
+      this.cancelIntent(connection, pending.requestId);
+      if (
+        result.status === "timeout" &&
+        connection.registration?.focusProtocolVersion !== 2
+      )
+        try {
+          connection.socket.close(1012, "Focus request timed out");
+        } catch {
+          // The legacy connection may already be closing.
+        }
+    }
     pending.resolve(result);
   }
 }

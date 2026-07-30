@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { WebSocket } from "ws";
+import type { Agent } from "@agent-deck/domain";
+import { SqliteEventStore } from "@agent-deck/persistence-sqlite";
 import type { AgentDeckConfiguration } from "./config.js";
 import { buildServer, type RunningAgentDeckServer } from "./index.js";
 
@@ -37,6 +39,45 @@ const configuration = async (): Promise<AgentDeckConfiguration> => {
       },
     ],
   };
+};
+
+const seedFutureTombstone = (
+  config: AgentDeckConfiguration,
+  externalId: string,
+): void => {
+  const store = new SqliteEventStore(config.databasePath);
+  store.migrate();
+  const agent: Agent = {
+    id: `fake:${externalId}`,
+    providerId: "fake",
+    externalId,
+    title: externalId,
+    state: "idle",
+    freshness: "fresh",
+    requiresAttention: false,
+    lastActivityAt: "2099-01-01T00:00:00.000Z",
+    revision: 0,
+    archived: false,
+    capabilities: {
+      messages: false,
+      approvals: false,
+      cancellation: true,
+      creation: false,
+    },
+    links: [],
+    metadata: {},
+  };
+  store.applySnapshot("fake", {
+    complete: true,
+    observedAt: agent.lastActivityAt,
+    workspaces: [],
+    projects: [],
+    agents: [agent],
+    runs: [],
+    attention: [],
+  });
+  store.deleteAgent(agent.id);
+  store.close();
 };
 
 const nextFrame = (
@@ -154,6 +195,49 @@ describe("Agent Deck HTTP API", () => {
       url: "/api/v1/agents",
     });
     expect(fresh.json().items).toHaveLength(1);
+  });
+
+  it("keeps a tombstone for an agent still reported after restart", async () => {
+    const config = await configuration();
+    seedFutureTombstone(config, "demo-1");
+
+    const first = await buildServer(config);
+    servers.push(first);
+    const initial = await first.app.inject({
+      method: "GET",
+      url: "/api/v1/agents/fake%3Ademo-1",
+    });
+    expect(initial.statusCode).toBe(404);
+    await first.close();
+
+    const restarted = await buildServer(config);
+    servers.push(restarted);
+    const stillDeleted = await restarted.app.inject({
+      method: "GET",
+      url: "/api/v1/agents/fake%3Ademo-1",
+    });
+    expect(stillDeleted.statusCode).toBe(404);
+  });
+
+  it("removes a tombstone absent from complete startup discovery", async () => {
+    const config = await configuration();
+    seedFutureTombstone(config, "demo-3");
+    const provider = config.providers[0];
+    if (!provider) throw new Error("Fake provider configuration missing");
+    provider.config = { count: 1, intervalMs: 60_000 };
+
+    const withoutDeletedAgent = await buildServer(config);
+    servers.push(withoutDeletedAgent);
+    await withoutDeletedAgent.close();
+
+    provider.config = { count: 3, intervalMs: 60_000 };
+    const restored = await buildServer(config);
+    servers.push(restored);
+    const agent = await restored.app.inject({
+      method: "GET",
+      url: "/api/v1/agents/fake%3Ademo-3",
+    });
+    expect(agent.statusCode).toBe(200);
   });
 
   it("enforces optimistic client configuration updates", async () => {

@@ -10,7 +10,11 @@ import {
 import { SqliteEventStore } from "@agent-deck/persistence-sqlite";
 import { SubscriptionBroker } from "./broker.js";
 import { loadConfiguration, type AgentDeckConfiguration } from "./config.js";
-import { activateCursorWindow } from "./cursor-window-activator.js";
+import { AgentFocusCoordinator } from "./agent-focus-coordinator.js";
+import {
+  activateCursorWindow,
+  openCursorFocusLink,
+} from "./cursor-window-activator.js";
 import { CursorWindowBroker } from "./cursor-window-broker.js";
 import { ProviderManager } from "./provider-manager.js";
 import { registerApiRoutes } from "./routes.js";
@@ -34,9 +38,15 @@ export const buildServer = async (
   });
   const store = new SqliteEventStore(config.databasePath);
   store.migrate();
-  store.clearAgents();
+  store.clearAgents({ preserveTombstones: true });
   const broker = new SubscriptionBroker(store);
   const cursorWindows = new CursorWindowBroker(activateCursorWindow);
+  const agentFocus = new AgentFocusCoordinator(
+    (id) => store.getAgent(id),
+    cursorWindows,
+    openCursorFocusLink,
+  );
+  cursorWindows.onLateOpened((target) => agentFocus.lateOpened(target));
   const providerManager = new ProviderManager(
     config.providers,
     store,
@@ -47,7 +57,7 @@ export const buildServer = async (
   );
   await providerManager.initialise();
   providerManager.registerIngressRoutes();
-  registerApiRoutes(app, store, broker, cursorWindows, providerManager);
+  registerApiRoutes(app, store, broker, agentFocus, providerManager);
 
   app.get("/internal/cursor-focus", { websocket: true }, (socket) => {
     const connectionId = cursorWindows.add(socket);
@@ -213,7 +223,7 @@ export const buildServer = async (
       clearInterval(maintenance);
       cursorWindows.close();
       await providerManager.dispose();
-      store.clearAgents();
+      store.clearAgents({ preserveTombstones: true });
       await app.close();
       store.close();
     },

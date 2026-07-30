@@ -1,195 +1,120 @@
-import { spawn } from "node:child_process";
-import { isAbsolute } from "node:path";
-import type { Agent } from "@agent-deck/domain";
+export const focusResultNeedsAlert = (result: { status: string }): boolean =>
+  result.status !== "opened" && result.status !== "superseded";
 
-export type FocusResult =
-  | { status: "opened"; href: string }
-  | { status: "unavailable"; reason: string };
-
-export type FocusLauncher = (href: string) => Promise<void>;
-export type ProcessLauncher = (
-  file: string,
-  arguments_: string[],
-) => Promise<void>;
-
-export class RenderedAgentTargets {
-  private readonly targets = new Map<string, string>();
-
-  set(actionId: string, agentId: string | undefined): void {
-    if (agentId) this.targets.set(actionId, agentId);
-    else this.targets.delete(actionId);
+export const settleFocusTask = async (
+  task: Promise<void>,
+  onFailure: (error: unknown) => Promise<void> | void,
+): Promise<void> => {
+  try {
+    await task;
+  } catch (error) {
+    try {
+      await onFailure(error);
+    } catch {
+      // Detached Stream Deck event work must never reject without an observer.
+    }
   }
+};
 
-  id(actionId: string): string | undefined {
-    return this.targets.get(actionId);
-  }
-
-  resolve(
-    actionId: string,
-    currentAgents: ReadonlyMap<string, Agent>,
-  ): Agent | undefined {
-    const agentId = this.targets.get(actionId);
-    return agentId ? currentAgents.get(agentId) : undefined;
-  }
+interface ActivePress<TTarget, TLongResult> {
+  actionId: string;
+  downAt: number;
+  longPress: (target: TTarget) => Promise<TLongResult> | TLongResult;
+  longPromise?: Promise<TLongResult>;
+  target: TTarget;
+  thresholdTimer: NodeJS.Timeout;
+  watchdogTimer: NodeJS.Timeout;
+  onWatchdog: (() => void) | undefined;
 }
 
-interface PressCallbacks {
-  onLongPress(agentId: string): void;
-}
+export type PressStartResult = "empty" | "ignored" | "started";
 
-interface ActivePress {
-  longPressTimer?: NodeJS.Timeout;
-  handled: boolean;
-  agentId: string;
-}
+export type PressReleaseResult<TTarget, TLongResult> =
+  | { kind: "none" }
+  | { kind: "short"; target: TTarget }
+  | { kind: "long"; completion: Promise<TLongResult> };
 
-export class LongPressDetector {
+/**
+ * Owns the complete down/up/threshold lifecycle for keyed actions.
+ *
+ * The release timestamp is authoritative at the threshold boundary, avoiding a
+ * race between a 650 ms key-up and the timer callback. A watchdog recovers from
+ * hardware or SDK sequences that omit key-up entirely.
+ */
+export class PressGestureController<TTarget, TLongResult = void> {
   private readonly active = new Map<
     string,
-    { longPressTimer: NodeJS.Timeout | undefined }
+    ActivePress<TTarget, TLongResult>
   >();
 
-  constructor(private readonly longPressDurationMs: number) {}
-
-  keyDown(actionId: string, onLongPress: () => void): void {
-    if (this.active.has(actionId)) return;
-
-    const active: { longPressTimer: NodeJS.Timeout | undefined } = {
-      longPressTimer: undefined,
-    };
-    const timer = setTimeout(() => {
-      active.longPressTimer = undefined;
-      onLongPress();
-    }, this.longPressDurationMs);
-    timer.unref();
-    active.longPressTimer = timer;
-    this.active.set(actionId, active);
-  }
-
-  keyUp(actionId: string): void {
-    this.cancel(actionId);
-  }
-
-  cancel(actionId: string): void {
-    const active = this.active.get(actionId);
-    if (!active) return;
-    this.active.delete(actionId);
-    if (active.longPressTimer) clearTimeout(active.longPressTimer);
-  }
-}
-
-export class AgentPressDetector {
-  private readonly active = new Map<string, ActivePress>();
-
-  constructor(private readonly longPressDurationMs: number) {}
+  constructor(
+    private readonly longPressDurationMs: number,
+    private readonly watchdogDurationMs = 10_000,
+    private readonly now: () => number = Date.now,
+  ) {}
 
   keyDown(
     actionId: string,
-    agentId: string | undefined,
-    callbacks: PressCallbacks,
-  ): void {
-    if (this.active.has(actionId)) return;
-    if (!agentId) return;
+    target: TTarget | undefined,
+    onLongPress: (target: TTarget) => Promise<TLongResult> | TLongResult,
+    onWatchdog?: () => void,
+  ): PressStartResult {
+    if (this.active.has(actionId)) return "ignored";
+    if (target === undefined) return "empty";
 
-    const active: ActivePress = { handled: false, agentId };
-    const timer = setTimeout(() => {
-      active.handled = true;
-      callbacks.onLongPress(agentId);
+    const active = {} as ActivePress<TTarget, TLongResult>;
+    active.actionId = actionId;
+    active.downAt = this.now();
+    active.target = target;
+    active.longPress = onLongPress;
+    active.onWatchdog = onWatchdog;
+    active.thresholdTimer = setTimeout(() => {
+      this.startLong(active);
     }, this.longPressDurationMs);
-    timer.unref();
-    active.longPressTimer = timer;
+    active.thresholdTimer.unref();
+    active.watchdogTimer = setTimeout(() => {
+      if (this.active.get(actionId) !== active) return;
+      this.active.delete(actionId);
+      clearTimeout(active.thresholdTimer);
+      active.onWatchdog?.();
+    }, this.watchdogDurationMs);
+    active.watchdogTimer.unref();
     this.active.set(actionId, active);
+    return "started";
   }
 
-  keyUp(actionId: string, onSinglePress: (agentId: string) => void): void {
+  keyUp(actionId: string): PressReleaseResult<TTarget, TLongResult> {
     const active = this.active.get(actionId);
-    if (!active) return;
+    if (!active) return { kind: "none" };
+    if (this.now() - active.downAt >= this.longPressDurationMs)
+      this.startLong(active);
     this.active.delete(actionId);
-    if (active.longPressTimer) clearTimeout(active.longPressTimer);
-    if (active.handled) return;
-    onSinglePress(active.agentId);
+    clearTimeout(active.thresholdTimer);
+    clearTimeout(active.watchdogTimer);
+    return active.longPromise
+      ? { kind: "long", completion: active.longPromise }
+      : { kind: "short", target: active.target };
   }
 
-  cancel(actionId: string): void {
+  cancel(actionId: string): boolean {
     const active = this.active.get(actionId);
-    if (!active) return;
+    if (!active) return false;
     this.active.delete(actionId);
-    if (active.longPressTimer) clearTimeout(active.longPressTimer);
+    clearTimeout(active.thresholdTimer);
+    clearTimeout(active.watchdogTimer);
+    return true;
+  }
+
+  has(actionId: string): boolean {
+    return this.active.has(actionId);
+  }
+
+  private startLong(active: ActivePress<TTarget, TLongResult>): void {
+    if (active.longPromise || this.active.get(active.actionId) !== active)
+      return;
+    active.longPromise = Promise.resolve().then(() =>
+      active.longPress(active.target),
+    );
+    void active.longPromise.catch(() => undefined);
   }
 }
-
-const spawnCommand: ProcessLauncher = (file, arguments_) =>
-  new Promise<void>((resolvePromise, reject) => {
-    const child = spawn(file, arguments_, {
-      stdio: "ignore",
-    });
-    child.once("error", reject);
-    child.once("close", (code) => {
-      if (code === 0) resolvePromise();
-      else reject(new Error(`${file} exited with status ${String(code)}`));
-    });
-  });
-
-export const createMacOSFocusLauncher = (
-  run: ProcessLauncher = spawnCommand,
-): FocusLauncher => {
-  return async (href) => {
-    const url = new URL(href);
-    if (url.protocol !== "cursor:")
-      throw new Error(`Unsupported focus URL scheme: ${url.protocol}`);
-
-    const isLocalCursorAgent =
-      url.protocol === "cursor:" &&
-      url.hostname === "agent-deck.focus" &&
-      url.pathname === "/open";
-    const workspace = isLocalCursorAgent
-      ? (url.searchParams.get("workspace") ?? undefined)
-      : undefined;
-    const windowTarget = isLocalCursorAgent
-      ? (url.searchParams.get("window") ?? workspace)
-      : undefined;
-    if (workspace !== undefined && !isAbsolute(workspace))
-      throw new Error("Cursor agent focus workspace must be an absolute path");
-    if (windowTarget !== undefined && !isAbsolute(windowTarget))
-      throw new Error("Cursor agent focus window must be an absolute path");
-    if (windowTarget)
-      await run("/usr/bin/open", ["-a", "Cursor", windowTarget]);
-    await run("/usr/bin/open", [url.href]);
-  };
-};
-
-export const openMacOSFocusLink = createMacOSFocusLauncher();
-
-export const focusAgent = async (
-  agent: Agent | undefined,
-  launch: FocusLauncher = openMacOSFocusLink,
-): Promise<FocusResult> => {
-  if (!agent)
-    return { status: "unavailable", reason: "The displayed agent is gone" };
-  const link = agent.links.find((candidate) => candidate.rel === "focus");
-  if (!link)
-    return {
-      status: "unavailable",
-      reason: "This agent does not provide a focus link",
-    };
-  let url: URL;
-  try {
-    url = new URL(link.href);
-  } catch {
-    return { status: "unavailable", reason: "The focus link is invalid" };
-  }
-  if (url.protocol !== "cursor:")
-    return {
-      status: "unavailable",
-      reason: `The ${url.protocol} focus scheme is not allowed`,
-    };
-  try {
-    await launch(url.href);
-    return { status: "opened", href: url.href };
-  } catch (error) {
-    return {
-      status: "unavailable",
-      reason: error instanceof Error ? error.message : String(error),
-    };
-  }
-};

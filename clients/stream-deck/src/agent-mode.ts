@@ -27,7 +27,7 @@ export const agentModeStyle = (
 };
 
 export const agentEdgeFrameSvg = (colour: string): string =>
-  `<path d="M0 0H144V144H0Z M7 7H137V137H7Z" fill="${colour}" fill-rule="evenodd"/>`;
+  `<path d="M0 0H144V144H0Z M12 7H132Q137 7 137 12V132Q137 137 132 137H12Q7 137 7 132V12Q7 7 12 7Z" fill="${colour}" fill-rule="evenodd"/>`;
 
 export const agentModeFrameSvg = (style: AgentModeStyle): string =>
   agentEdgeFrameSvg(style.frameColour ?? style.colour);

@@ -12,8 +12,10 @@ export interface FocusHandlerDependencies {
   hasExtension(extensionId: string): boolean;
   executeCommand(command: string, ...arguments_: unknown[]): Promise<unknown>;
   openExternal(uri: string): Promise<boolean>;
-  showError(message: string): Promise<unknown>;
 }
+
+export type FocusHandlerResult =
+  { status: "opened" } | { status: "unavailable" | "failed"; message: string };
 
 const CONVERSATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 
@@ -34,13 +36,15 @@ export const codexThreadUri = (threadId: string): string => {
 export const focusCursorConversation = async (
   uri: string,
   dependencies: FocusHandlerDependencies,
-): Promise<boolean> => {
+): Promise<FocusHandlerResult> => {
   let parsed: URL;
   try {
     parsed = new URL(uri);
   } catch {
-    await dependencies.showError("Agent Deck received an invalid focus link.");
-    return false;
+    return {
+      status: "unavailable",
+      message: "Agent Deck received an invalid focus link.",
+    };
   }
   if (
     parsed.protocol === "cursor:" &&
@@ -56,10 +60,11 @@ export const focusCursorConversation = async (
         .getWorkspaceFolders()
         .some((workspace) => pathContains(workspace, cwd))
     ) {
-      await dependencies.showError(
-        "This Codex thread belongs to another Cursor window. Agent Deck left this window unchanged.",
-      );
-      return false;
+      return {
+        status: "unavailable",
+        message:
+          "This Codex thread belongs to another Cursor window. Agent Deck left this window unchanged.",
+      };
     }
     let codexAvailable = false;
     try {
@@ -72,21 +77,23 @@ export const focusCursorConversation = async (
       codexAvailable = false;
     }
     if (!codexAvailable) {
-      await dependencies.showError(
-        "Cursor cannot open this Codex thread. Install or update the OpenAI Codex extension.",
-      );
-      return false;
+      return {
+        status: "unavailable",
+        message:
+          "Cursor cannot open this Codex thread. Install or update the OpenAI Codex extension.",
+      };
     }
     try {
       await dependencies.executeCommand(CODEX_OPEN_SIDEBAR_COMMAND);
       if (!(await dependencies.openExternal(codexThreadUri(threadId))))
         throw new Error("Cursor rejected the Codex thread link");
-      return true;
+      return { status: "opened" };
     } catch {
-      await dependencies.showError(
-        "Cursor could not open this thread in the Codex sidebar. Update the OpenAI Codex extension and try again.",
-      );
-      return false;
+      return {
+        status: "failed",
+        message:
+          "Cursor could not open this thread in the Codex sidebar. Update the OpenAI Codex extension and try again.",
+      };
     }
   }
 
@@ -106,10 +113,10 @@ export const focusCursorConversation = async (
     workspaceRoots.some((workspace) => !isAbsolute(workspace)) ||
     (command === CURSOR_OPEN_COMPOSER_COMMAND && !workspaceRoots.length)
   ) {
-    await dependencies.showError(
-      "Agent Deck received an invalid Cursor conversation ID.",
-    );
-    return false;
+    return {
+      status: "unavailable",
+      message: "Agent Deck received an invalid Cursor conversation ID.",
+    };
   }
 
   if (
@@ -119,10 +126,11 @@ export const focusCursorConversation = async (
         dependencies.getWorkspaceFolders().map((folder) => resolve(folder)),
       )
   ) {
-    await dependencies.showError(
-      "This agent belongs to another Cursor window. Agent Deck left this window unchanged.",
-    );
-    return false;
+    return {
+      status: "unavailable",
+      message:
+        "This agent belongs to another Cursor window. Agent Deck left this window unchanged.",
+    };
   }
 
   let commands: string[];
@@ -132,19 +140,19 @@ export const focusCursorConversation = async (
     commands = [];
   }
   if (!commands.includes(command)) {
-    await dependencies.showError(
-      `This Cursor version cannot ${command === CURSOR_CANCEL_CHAT_COMMAND ? "stop" : "open"} Agent Deck conversations. Update Cursor or reinstall Agent Deck Focus.`,
-    );
-    return false;
+    return {
+      status: "unavailable",
+      message: `This Cursor version cannot ${command === CURSOR_CANCEL_CHAT_COMMAND ? "stop" : "open"} Agent Deck conversations. Update Cursor or reinstall Agent Deck Focus.`,
+    };
   }
 
   try {
     await dependencies.executeCommand(command, conversationId);
-    return true;
+    return { status: "opened" };
   } catch {
-    await dependencies.showError(
-      `Cursor could not ${command === CURSOR_CANCEL_CHAT_COMMAND ? "stop" : "open"} this Agent Deck conversation. It may no longer exist.`,
-    );
-    return false;
+    return {
+      status: "failed",
+      message: `Cursor could not ${command === CURSOR_CANCEL_CHAT_COMMAND ? "stop" : "open"} this Agent Deck conversation. It may no longer exist.`,
+    };
   }
 };

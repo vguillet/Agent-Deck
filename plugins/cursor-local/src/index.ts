@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readdir } from "node:fs/promises";
+import { watch, type FSWatcher } from "node:fs";
+import { open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -93,7 +94,9 @@ const LifecycleHookSchema = z
     cursor_version: z.string().optional(),
     is_background_agent: z.boolean().optional(),
     is_subagent: z.boolean().optional(),
-    conversation_kind: z.enum(["top_level", "background"]).optional(),
+    conversation_kind: z
+      .enum(["top_level", "subagent", "background"])
+      .optional(),
   })
   .strip();
 
@@ -123,11 +126,18 @@ interface Registry {
   activeGenerations: Array<[string, string]>;
   hiddenConversations?: string[];
   conversationKinds?: Array<[string, ConversationKind]>;
+  parentConversations?: Array<[string, string]>;
+  subagentTranscripts?: Array<[string, string]>;
   sourceRevisions?: Array<[string, number]>;
   pendingHooks?: Array<[string, LifecycleHookInput[]]>;
 }
 
 type ConversationKind = "pending" | "top_level" | "subagent" | "background";
+
+interface SubagentReconciliation {
+  changed: boolean;
+  terminalAgents: Agent[];
+}
 
 const agentWorkspaceRoots = (agent: Agent | undefined): string[] => {
   const roots = agent?.metadata.workspaceRoots;
@@ -254,6 +264,18 @@ class CursorLocalProvider implements AgentProviderPlugin {
   private readonly activeGenerations = new Map<string, string>();
   private readonly hiddenConversations = new Set<string>();
   private readonly conversationKinds = new Map<string, ConversationKind>();
+  private readonly parentConversations = new Map<string, string>();
+  private readonly subagentTranscripts = new Map<string, string>();
+  private readonly subagentTranscriptWatchers = new Map<string, FSWatcher>();
+  private readonly subagentTranscriptRetryTimers = new Map<
+    string,
+    NodeJS.Timeout
+  >();
+  private readonly subagentTranscriptRetryAttempts = new Map<string, number>();
+  private readonly subagentTranscriptDebounceTimers = new Map<
+    string,
+    NodeJS.Timeout
+  >();
   private readonly sourceRevisions = new Map<string, number>();
   private readonly pendingHooks = new Map<string, LifecycleHookInput[]>();
   private readonly migrationAgents = new Set<string>();
@@ -284,11 +306,13 @@ class CursorLocalProvider implements AgentProviderPlugin {
   async discover(): Promise<ProviderSnapshot> {
     return this.enqueue(async () => {
       const observedAt = this.context?.now() ?? new Date().toISOString();
+      const reconciled = await this.reconcileSubagentTranscripts(observedAt);
       const { changed, expiredAgents } = this.pruneRegistry(observedAt);
-      if (changed) await this.persist();
+      if (reconciled.changed || changed) await this.persist();
       const agents = [...this.agents.values()].filter(
         (agent) =>
           this.conversationKinds.get(agent.externalId) === "top_level" ||
+          this.conversationKinds.get(agent.externalId) === "subagent" ||
           this.migrationAgents.has(agent.id),
       );
       this.migrationAgents.clear();
@@ -309,6 +333,9 @@ class CursorLocalProvider implements AgentProviderPlugin {
 
   async subscribe(emit: ProviderEventEmitter): Promise<Unsubscribe> {
     this.emit = emit;
+    for (const agent of this.agents.values())
+      if (agent.kind === "subagent" && agent.state === "running")
+        await this.trackSubagentTranscript(agent.externalId);
     return async () => {
       this.emit = undefined;
     };
@@ -396,19 +423,43 @@ class CursorLocalProvider implements AgentProviderPlugin {
 
   async dispose(): Promise<void> {
     this.emit = undefined;
+    for (const watcher of this.subagentTranscriptWatchers.values())
+      watcher.close();
+    this.subagentTranscriptWatchers.clear();
+    for (const timer of this.subagentTranscriptRetryTimers.values())
+      clearTimeout(timer);
+    this.subagentTranscriptRetryTimers.clear();
+    for (const timer of this.subagentTranscriptDebounceTimers.values())
+      clearTimeout(timer);
+    this.subagentTranscriptDebounceTimers.clear();
   }
 
   private async consumeHook(input: HookInput): Promise<void> {
     if (!this.context) return;
     if (input.hook_event_name === "subagentStart") {
       this.conversationKinds.set(input.subagent_id, "subagent");
-      await this.hideSubagent(input.subagent_id);
+      this.pendingHooks.delete(input.subagent_id);
+      if (input.parent_conversation_id)
+        this.parentConversations.set(
+          input.subagent_id,
+          input.parent_conversation_id,
+        );
+      await this.applyLifecycleHook({
+        protocol_version: 2,
+        hook_event_name: "preToolUse",
+        conversation_id: input.subagent_id,
+        agent_activity: "working",
+        workspace_roots: input.workspace_roots,
+        is_subagent: true,
+        conversation_kind: "subagent",
+      });
+      await this.trackSubagentTranscript(input.subagent_id);
       return;
     }
     this.lastProtocolVersion =
       input.protocol_version ?? this.lastProtocolVersion;
     const explicitKind = explicitConversationKind(input);
-    if (explicitKind === "background" || explicitKind === "subagent") {
+    if (explicitKind === "background") {
       this.conversationKinds.set(input.conversation_id, explicitKind);
       this.context.logger.debug(
         { kind: explicitKind, event: input.hook_event_name },
@@ -417,8 +468,17 @@ class CursorLocalProvider implements AgentProviderPlugin {
       await this.hideSubagent(input.conversation_id);
       return;
     }
+    if (explicitKind === "subagent") {
+      this.conversationKinds.set(input.conversation_id, explicitKind);
+      await this.applyLifecycleHook(input);
+      return;
+    }
     const knownKind = this.conversationKinds.get(input.conversation_id);
-    if (knownKind === "background" || knownKind === "subagent") return;
+    if (knownKind === "background") return;
+    if (knownKind === "subagent") {
+      await this.applyLifecycleHook(input);
+      return;
+    }
     if (explicitKind === "top_level" && knownKind !== "top_level") {
       this.conversationKinds.set(input.conversation_id, "top_level");
       const pending = this.pendingHooks.get(input.conversation_id) ?? [];
@@ -495,7 +555,13 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const primaryProject = resources.projects[0];
     const projectId = primaryProject?.id ?? existing?.projectId;
     const workspaceId = resources.workspace?.id ?? existing?.workspaceId;
-    const mode = cursorMode(input.composer_mode);
+    const kind =
+      this.conversationKinds.get(input.conversation_id) === "subagent"
+        ? "subagent"
+        : "top_level";
+    const parentConversationId = this.parentConversations.get(
+      input.conversation_id,
+    );
     const sourceRevision = this.nextSourceRevision(input.conversation_id);
     const activity =
       input.agent_signal === "question_started"
@@ -516,11 +582,29 @@ class CursorLocalProvider implements AgentProviderPlugin {
               observedAt: now,
             }
           : existing?.progress;
+    const metadata: Record<string, unknown> = {
+      ...existing?.metadata,
+    };
+    if (input.composer_mode !== undefined) {
+      const mode = cursorMode(input.composer_mode);
+      if (mode) {
+        metadata.agentMode = mode;
+        metadata.cursorMode = mode;
+      } else {
+        delete metadata.agentMode;
+        delete metadata.cursorMode;
+      }
+    }
+    if (roots.length) metadata.workspaceRoots = roots;
     const agent: Agent = {
       id: agentId,
       providerId: PROVIDER_ID,
       externalId: input.conversation_id,
       title: this.conversationTitle(input.conversation_id),
+      kind,
+      ...(parentConversationId
+        ? { parentAgentId: canonicalId(PROVIDER_ID, parentConversationId) }
+        : {}),
       ...(projectId ? { projectId } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       state,
@@ -549,11 +633,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
           href: focusLink(input.conversation_id, roots),
         },
       ],
-      metadata: {
-        ...existing?.metadata,
-        ...(mode ? { agentMode: mode, cursorMode: mode } : {}),
-        ...(roots.length ? { workspaceRoots: roots } : {}),
-      },
+      metadata,
     };
     this.agents.set(agent.id, agent);
 
@@ -607,7 +687,6 @@ class CursorLocalProvider implements AgentProviderPlugin {
 
   private async hideSubagent(conversationId: string): Promise<void> {
     if (!this.context) return;
-    this.hiddenConversations.add(conversationId);
     this.pendingHooks.delete(conversationId);
     this.activeGenerations.delete(conversationId);
     const agentId = canonicalId(PROVIDER_ID, conversationId);
@@ -725,6 +804,8 @@ class CursorLocalProvider implements AgentProviderPlugin {
       activeGenerations: [...this.activeGenerations.entries()],
       hiddenConversations: [...this.hiddenConversations],
       conversationKinds: [...this.conversationKinds.entries()],
+      parentConversations: [...this.parentConversations.entries()],
+      subagentTranscripts: [...this.subagentTranscripts.entries()],
       sourceRevisions: [...this.sourceRevisions.entries()],
       pendingHooks: [...this.pendingHooks.entries()],
     };
@@ -764,7 +845,15 @@ class CursorLocalProvider implements AgentProviderPlugin {
       for (const [conversation, kind] of registry.conversationKinds ?? [])
         this.conversationKinds.set(conversation, kind);
       for (const conversation of this.hiddenConversations)
+        if (!this.conversationKinds.has(conversation))
+          this.conversationKinds.set(conversation, "subagent");
+      for (const conversation of transcriptSubagents)
         this.conversationKinds.set(conversation, "subagent");
+      for (const [conversation, parent] of registry.parentConversations ?? [])
+        this.parentConversations.set(conversation, parent);
+      for (const [conversation, transcript] of registry.subagentTranscripts ??
+        [])
+        this.subagentTranscripts.set(conversation, transcript);
       for (const agent of this.agents.values()) {
         if (!this.conversationKinds.has(agent.externalId))
           this.conversationKinds.set(agent.externalId, "top_level");
@@ -777,7 +866,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
         this.pendingHooks.set(conversation, hooks.slice(-32));
       for (const [id, agent] of this.agents) {
         const kind = this.conversationKinds.get(agent.externalId);
-        if ((kind === "subagent" || kind === "background") && !agent.archived) {
+        if (kind === "background" && !agent.archived) {
           const migrated = {
             ...agent,
             sourceRevision: this.nextSourceRevision(agent.externalId),
@@ -886,6 +975,244 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const revision = (this.sourceRevisions.get(conversationId) ?? 0) + 1;
     this.sourceRevisions.set(conversationId, revision);
     return revision;
+  }
+
+  private async reconcileSubagentTranscripts(
+    observedAt: string,
+  ): Promise<SubagentReconciliation> {
+    let changed = await this.assignMissingSubagentTranscripts();
+    const terminalAgents: Agent[] = [];
+    for (const agent of this.agents.values()) {
+      const terminalAgent = await this.finishSubagentFromTranscript(
+        agent,
+        observedAt,
+      );
+      if (!terminalAgent) continue;
+      terminalAgents.push(terminalAgent);
+      changed = true;
+    }
+    return { changed, terminalAgents };
+  }
+
+  private async finishSubagentFromTranscript(
+    agent: Agent,
+    observedAt: string,
+  ): Promise<Agent | undefined> {
+    if (
+      agent.kind !== "subagent" ||
+      agent.state !== "running" ||
+      agent.archived
+    )
+      return undefined;
+    const transcript = this.subagentTranscripts.get(agent.externalId);
+    if (!transcript) return undefined;
+    const terminal = await this.subagentTranscriptTerminal(transcript);
+    if (!terminal) return undefined;
+
+    const sourceRevision = this.nextSourceRevision(agent.externalId);
+    const finishedAt = terminal.finishedAt || observedAt;
+    const terminalAgent: Agent = {
+      ...withoutProgress(agent),
+      state: terminal.status === "error" ? "failed" : "ready_for_review",
+      requiresAttention: false,
+      lastActivityAt: finishedAt,
+      sourceRevision,
+    };
+    this.agents.set(agent.id, terminalAgent);
+    const run = agent.activeRunId
+      ? this.runs.get(agent.activeRunId)
+      : undefined;
+    if (run)
+      this.runs.set(run.id, {
+        ...run,
+        state: terminal.status === "error" ? "failed" : "succeeded",
+        finishedAt,
+        sourceRevision,
+      });
+    this.activeGenerations.delete(agent.externalId);
+    this.stopSubagentTranscriptTracking(agent.externalId);
+    return terminalAgent;
+  }
+
+  private async reconcileAndPublishSubagentTranscripts(): Promise<void> {
+    const observedAt = this.context?.now() ?? new Date().toISOString();
+    const reconciliation = await this.reconcileSubagentTranscripts(observedAt);
+    if (reconciliation.changed) await this.persist();
+    for (const agent of reconciliation.terminalAgents)
+      await this.emitEvent({
+        providerId: PROVIDER_ID,
+        providerEventId: `transcript:terminal:${agent.externalId}:${agent.sourceRevision ?? 0}`,
+        type: "agent.state.changed",
+        occurredAt: agent.lastActivityAt,
+        agentId: agent.id,
+        ...(agent.activeRunId ? { runId: agent.activeRunId } : {}),
+        payload: { agent },
+      });
+  }
+
+  private async trackSubagentTranscript(conversationId: string): Promise<void> {
+    await this.assignMissingSubagentTranscripts();
+    const transcript = this.subagentTranscripts.get(conversationId);
+    if (!transcript) {
+      this.scheduleSubagentTranscriptRetry(conversationId);
+      return;
+    }
+    this.subagentTranscriptRetryAttempts.delete(conversationId);
+    const retry = this.subagentTranscriptRetryTimers.get(conversationId);
+    if (retry) clearTimeout(retry);
+    this.subagentTranscriptRetryTimers.delete(conversationId);
+    if (this.subagentTranscriptWatchers.has(conversationId)) return;
+    try {
+      const watcher = watch(transcript, { persistent: false }, () => {
+        this.scheduleSubagentTranscriptReconciliation(conversationId);
+      });
+      watcher.on("error", () => {
+        this.stopSubagentTranscriptTracking(conversationId);
+      });
+      this.subagentTranscriptWatchers.set(conversationId, watcher);
+      await this.reconcileAndPublishSubagentTranscripts();
+    } catch {
+      this.scheduleSubagentTranscriptRetry(conversationId);
+    }
+  }
+
+  private scheduleSubagentTranscriptRetry(conversationId: string): void {
+    if (this.subagentTranscriptRetryTimers.has(conversationId)) return;
+    const attempt =
+      (this.subagentTranscriptRetryAttempts.get(conversationId) ?? 0) + 1;
+    if (attempt > 50) {
+      this.subagentTranscriptRetryAttempts.delete(conversationId);
+      return;
+    }
+    this.subagentTranscriptRetryAttempts.set(conversationId, attempt);
+    const timer = setTimeout(() => {
+      this.subagentTranscriptRetryTimers.delete(conversationId);
+      void this.enqueue(() => this.trackSubagentTranscript(conversationId));
+    }, 100);
+    timer.unref();
+    this.subagentTranscriptRetryTimers.set(conversationId, timer);
+  }
+
+  private scheduleSubagentTranscriptReconciliation(
+    conversationId: string,
+  ): void {
+    const current = this.subagentTranscriptDebounceTimers.get(conversationId);
+    if (current) clearTimeout(current);
+    const timer = setTimeout(() => {
+      this.subagentTranscriptDebounceTimers.delete(conversationId);
+      void this.enqueue(() => this.reconcileAndPublishSubagentTranscripts());
+    }, 25);
+    timer.unref();
+    this.subagentTranscriptDebounceTimers.set(conversationId, timer);
+  }
+
+  private stopSubagentTranscriptTracking(conversationId: string): void {
+    this.subagentTranscriptWatchers.get(conversationId)?.close();
+    this.subagentTranscriptWatchers.delete(conversationId);
+    const retry = this.subagentTranscriptRetryTimers.get(conversationId);
+    if (retry) clearTimeout(retry);
+    this.subagentTranscriptRetryTimers.delete(conversationId);
+    this.subagentTranscriptRetryAttempts.delete(conversationId);
+    const debounce = this.subagentTranscriptDebounceTimers.get(conversationId);
+    if (debounce) clearTimeout(debounce);
+    this.subagentTranscriptDebounceTimers.delete(conversationId);
+  }
+
+  private async assignMissingSubagentTranscripts(): Promise<boolean> {
+    if (!this.transcriptsRoot) return false;
+    const unassigned = [...this.agents.values()]
+      .filter(
+        (agent) =>
+          agent.kind === "subagent" &&
+          agent.state === "running" &&
+          !this.subagentTranscripts.has(agent.externalId) &&
+          this.parentConversations.has(agent.externalId),
+      )
+      .sort((left, right) =>
+        right.lastActivityAt.localeCompare(left.lastActivityAt),
+      );
+    if (!unassigned.length) return false;
+
+    try {
+      const entries = await readdir(this.transcriptsRoot, { recursive: true });
+      const claimed = new Set(this.subagentTranscripts.values());
+      const candidates = await Promise.all(
+        entries.flatMap((entry) => {
+          const normalized = entry.replaceAll("\\", "/");
+          const segments = normalized.split("/");
+          const subagentsIndex = segments.lastIndexOf("subagents");
+          if (
+            subagentsIndex < 1 ||
+            !normalized.endsWith(".jsonl") ||
+            claimed.has(resolve(this.transcriptsRoot, entry))
+          )
+            return [];
+          const path = resolve(this.transcriptsRoot, entry);
+          return [
+            stat(path).then((details) => ({
+              path,
+              parentConversationId: segments[subagentsIndex - 1]!,
+              createdAt:
+                details.birthtimeMs > 0 ? details.birthtimeMs : details.mtimeMs,
+            })),
+          ];
+        }),
+      );
+      candidates.sort((left, right) => right.createdAt - left.createdAt);
+
+      let changed = false;
+      for (const agent of unassigned) {
+        const parent = this.parentConversations.get(agent.externalId);
+        const candidateIndex = candidates.findIndex(
+          (candidate) => candidate.parentConversationId === parent,
+        );
+        if (candidateIndex < 0) continue;
+        const [candidate] = candidates.splice(candidateIndex, 1);
+        this.subagentTranscripts.set(agent.externalId, candidate!.path);
+        changed = true;
+      }
+      return changed;
+    } catch {
+      return false;
+    }
+  }
+
+  private async subagentTranscriptTerminal(
+    path: string,
+  ): Promise<{ status: "success" | "error"; finishedAt: string } | undefined> {
+    let file: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      const details = await stat(path);
+      const length = Math.min(details.size, 64 * 1_024);
+      if (!length) return undefined;
+      file = await open(path, "r");
+      const buffer = Buffer.alloc(length);
+      await file.read(buffer, 0, length, details.size - length);
+      const lines = buffer.toString("utf8").trimEnd().split("\n");
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        try {
+          const record = JSON.parse(lines[index]!) as {
+            type?: unknown;
+            status?: unknown;
+          };
+          if (
+            record.type === "turn_ended" &&
+            (record.status === "success" || record.status === "error")
+          )
+            return {
+              status: record.status,
+              finishedAt: details.mtime.toISOString(),
+            };
+        } catch {
+          // A partial first line is expected when reading only the file tail.
+        }
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    } finally {
+      await file?.close();
+    }
   }
 
   private async transcriptSubagentIds(): Promise<Set<string>> {

@@ -35,7 +35,7 @@ describe("agentModeStyle", () => {
 
   it("renders the mode frame across every outer edge", () => {
     expect(agentModeFrameSvg({ colour: "#f1b467", icon: "plan" })).toBe(
-      '<path d="M0 0H144V144H0Z M7 7H137V137H7Z" fill="#f1b467" fill-rule="evenodd"/>',
+      '<path d="M0 0H144V144H0Z M12 7H132Q137 7 137 12V132Q137 137 132 137H12Q7 137 7 132V12Q7 7 12 7Z" fill="#f1b467" fill-rule="evenodd"/>',
     );
   });
 

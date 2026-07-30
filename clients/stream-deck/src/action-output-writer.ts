@@ -9,53 +9,74 @@ export interface ActionOutput {
   title?: string;
 }
 
-interface ActionOutputState {
+export interface ActionOutputCommit<TBinding> {
+  binding?: TBinding | undefined;
+}
+
+interface WriteWaiter {
+  resolve(): void;
+  reject(error: unknown): void;
+}
+
+interface PendingOutput<TBinding> {
+  output: ActionOutput;
+  commit: ActionOutputCommit<TBinding> | undefined;
+  waiters: WriteWaiter[];
+}
+
+interface ActionOutputState<TBinding> {
+  binding: TBinding | undefined;
   closed: boolean;
   image: string | undefined;
-  tail: Promise<void>;
+  pending: PendingOutput<TBinding> | undefined;
+  running: boolean;
   title: string | undefined;
 }
 
 /**
- * Orders writes per action and suppresses values already committed to the SDK.
- * Distinct actions remain independent, so a slow key cannot stall another key.
+ * Commits only the newest queued frame for each action.
+ *
+ * Slow writes remain isolated per key. A binding advances only after the
+ * matching frame has been accepted by the SDK, allowing input handling to use
+ * the identity represented by the visible frame.
  */
-export class ActionOutputWriter {
-  private readonly states = new Map<string, ActionOutputState>();
+export class ActionOutputWriter<TBinding = never> {
+  private readonly states = new Map<string, ActionOutputState<TBinding>>();
 
-  write(target: ActionOutputTarget, output: ActionOutput): Promise<void> {
+  write(
+    target: ActionOutputTarget,
+    output: ActionOutput,
+    commit?: ActionOutputCommit<TBinding>,
+  ): Promise<void> {
     let state = this.states.get(target.id);
     if (!state) {
       state = {
+        binding: undefined,
         closed: false,
         image: undefined,
-        tail: Promise.resolve(),
+        pending: undefined,
+        running: false,
         title: undefined,
       };
       this.states.set(target.id, state);
     }
 
-    const run = async (): Promise<void> => {
-      if (state.closed) return;
-      const writes: Promise<void>[] = [];
-      if (output.title !== undefined && output.title !== state.title)
-        writes.push(
-          target.setTitle(output.title).then(() => {
-            state.title = output.title;
-          }),
-        );
-      if (output.image !== undefined && output.image !== state.image)
-        writes.push(
-          target.setImage(output.image).then(() => {
-            state.image = output.image;
-          }),
-        );
-      await Promise.all(writes);
-    };
+    const promise = new Promise<void>((resolve, reject) => {
+      const waiter = { resolve, reject };
+      if (state.pending) {
+        state.pending.output = output;
+        state.pending.commit = commit;
+        state.pending.waiters.push(waiter);
+      } else {
+        state.pending = { output, commit, waiters: [waiter] };
+      }
+    });
+    this.pump(target, state);
+    return promise;
+  }
 
-    const pending = state.tail.catch(() => undefined).then(run);
-    state.tail = pending;
-    return pending;
+  committedBinding(actionId: string): TBinding | undefined {
+    return this.states.get(actionId)?.binding;
   }
 
   clear(actionId: string): void {
@@ -63,5 +84,63 @@ export class ActionOutputWriter {
     if (!state) return;
     state.closed = true;
     this.states.delete(actionId);
+    if (state.pending) {
+      for (const waiter of state.pending.waiters) waiter.resolve();
+      state.pending = undefined;
+    }
+  }
+
+  private pump(
+    target: ActionOutputTarget,
+    state: ActionOutputState<TBinding>,
+  ): void {
+    if (state.running || state.closed || !state.pending) return;
+    const pending = state.pending;
+    state.pending = undefined;
+    state.running = true;
+
+    void this.commit(target, state, pending)
+      .then(
+        () => {
+          for (const waiter of pending.waiters) waiter.resolve();
+        },
+        (error: unknown) => {
+          for (const waiter of pending.waiters) waiter.reject(error);
+        },
+      )
+      .finally(() => {
+        state.running = false;
+        this.pump(target, state);
+      });
+  }
+
+  private async commit(
+    target: ActionOutputTarget,
+    state: ActionOutputState<TBinding>,
+    pending: PendingOutput<TBinding>,
+  ): Promise<void> {
+    if (state.closed) return;
+    const writes: Promise<void>[] = [];
+    if (
+      pending.output.title !== undefined &&
+      pending.output.title !== state.title
+    )
+      writes.push(
+        target.setTitle(pending.output.title).then(() => {
+          if (!state.closed) state.title = pending.output.title;
+        }),
+      );
+    if (
+      pending.output.image !== undefined &&
+      pending.output.image !== state.image
+    )
+      writes.push(
+        target.setImage(pending.output.image).then(() => {
+          if (!state.closed) state.image = pending.output.image;
+        }),
+      );
+    await Promise.all(writes);
+    if (!state.closed && pending.commit && "binding" in pending.commit)
+      state.binding = pending.commit.binding;
   }
 }

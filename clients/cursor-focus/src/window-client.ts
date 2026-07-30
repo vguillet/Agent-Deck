@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import {
-  CompatibleCursorFocusIntentFrameSchema,
+  CursorWindowServerFrameSchema,
   type CompatibleCursorFocusIntentFrame,
   type CursorFocusTarget,
 } from "@agent-deck/api-contract";
@@ -27,10 +27,15 @@ export interface CursorWindowClientDependencies {
   getServerUrl(): string;
   getWindowSnapshot(): CursorWindowSnapshot;
   createSocket(url: URL): FocusSocket;
-  executeTarget(target: CursorFocusTarget): Promise<boolean>;
+  executeTarget(
+    target: CursorFocusTarget,
+  ): Promise<CursorTargetExecutionResult>;
   random(): number;
   log(message: string, error?: unknown): void;
 }
+
+export type CursorTargetExecutionResult =
+  { status: "opened" } | { status: "unavailable" | "failed"; message: string };
 
 const normalizedSnapshot = (
   snapshot: CursorWindowSnapshot,
@@ -50,6 +55,8 @@ export class CursorWindowClient {
   private reconnectTimer: NodeJS.Timeout | undefined;
   private retryMs = 250;
   private pendingIntent: CompatibleCursorFocusIntentFrame | undefined;
+  private executingIntent: CompatibleCursorFocusIntentFrame | undefined;
+  private readonly cancelledExecutions = new Set<string>();
   private executing = false;
   private disposed = false;
 
@@ -140,13 +147,20 @@ export class CursorWindowClient {
       } catch {
         return;
       }
-      const parsed = CompatibleCursorFocusIntentFrameSchema.safeParse(value);
+      const parsed = CursorWindowServerFrameSchema.safeParse(value);
       if (!parsed.success) return;
+      if (parsed.data.type === "focus.cancel") {
+        if (this.pendingIntent?.requestId === parsed.data.requestId)
+          this.pendingIntent = undefined;
+        if (this.executingIntent?.requestId === parsed.data.requestId)
+          this.cancelledExecutions.add(parsed.data.requestId);
+        return;
+      }
       if (this.pendingIntent)
         this.send({
           type: "focus.result",
           requestId: this.pendingIntent.requestId,
-          status: "failed",
+          status: "superseded",
           message: "Superseded by a newer focus request",
         });
       this.pendingIntent = parsed.data;
@@ -196,6 +210,7 @@ export class CursorWindowClient {
       ) {
         const intent = this.pendingIntent;
         this.pendingIntent = undefined;
+        this.executingIntent = intent;
         const snapshot = normalizedSnapshot(
           this.dependencies.getWindowSnapshot(),
         );
@@ -207,22 +222,27 @@ export class CursorWindowClient {
                 conversationId: intent.conversationId,
                 workspaceRoots: snapshot.workspaceRoots,
               };
-        let opened = false;
-        let message: string | undefined;
+        let result: CursorTargetExecutionResult;
         try {
-          opened = await this.dependencies.executeTarget(target);
-          if (!opened) message = "Cursor could not open this agent";
+          result = await this.dependencies.executeTarget(target);
         } catch (error) {
-          message = error instanceof Error ? error.message : String(error);
+          result = {
+            status: "failed",
+            message: error instanceof Error ? error.message : String(error),
+          };
         }
         this.send({
           type: "focus.result",
           requestId: intent.requestId,
-          status: opened ? "opened" : "failed",
-          ...(message ? { message } : {}),
+          status: result.status,
+          ...("message" in result ? { message: result.message } : {}),
         });
+        this.cancelledExecutions.delete(intent.requestId);
+        if (this.executingIntent?.requestId === intent.requestId)
+          this.executingIntent = undefined;
       }
     } finally {
+      this.executingIntent = undefined;
       this.executing = false;
       if (
         this.pendingIntent &&
@@ -241,6 +261,7 @@ export class CursorWindowClient {
         launchTarget: snapshot.launchTarget!,
         focused: snapshot.focused,
         version: this.version,
+        focusProtocolVersion: 2,
         focusKinds: ["cursor.conversation", "codex.thread"],
       })
     )

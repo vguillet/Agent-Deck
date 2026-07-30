@@ -114,8 +114,9 @@ Working variants use energetic tool and writing loops; review variants jump and
 present their finished work. Empty character-mode slots use the same restful
 idle scenes. A single press latches the agent currently rendered on key-down,
 then opens that exact Codex thread in Cursor, local Cursor conversation, or
-Cursor Cloud conversation. A long press deletes the Agent Deck
-record and its history, suppressing provider
+Cursor Cloud conversation. Focus switches are serialized machine-wide, and
+rapid presses retain only the newest queued target. A long press deletes the
+Agent Deck record and its history, suppressing provider
 rediscovery until that external agent reports newer activity. Encoder rotation
 changes pages; keypad presses do not page. Long-pressing System Health clears
 all agent records and the device's in-memory snapshot, then immediately

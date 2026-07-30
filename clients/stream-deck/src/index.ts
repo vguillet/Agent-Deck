@@ -20,14 +20,13 @@ import type {
   Workspace,
 } from "@agent-deck/domain";
 import {
-  AgentPressDetector,
-  focusAgent,
-  LongPressDetector,
-  RenderedAgentTargets,
+  focusResultNeedsAlert,
+  PressGestureController,
+  settleFocusTask,
 } from "./focus.js";
 import {
-  preserveAgentSlotOrder,
-  sortAgentsByWorkspace,
+  isSubagent,
+  orderAgentStack,
   streamDeckAgents,
 } from "./agent-filter.js";
 import {
@@ -53,7 +52,11 @@ import {
   CLASSIC_AGENT_STATE_COLOUR,
   CLASSIC_EMPTY_AGENT_COLOUR,
 } from "./agent-palette.js";
-import { AnimationFrameScheduler } from "./animation-scheduler.js";
+import {
+  AnimationFrameScheduler,
+  runningAnimationNeedsReset,
+  type RunningAnimationStart,
+} from "./animation-scheduler.js";
 import {
   agentEdgeFrameSvg,
   agentModeFrameSvg,
@@ -70,6 +73,7 @@ import {
   workspaceBadgesNeeded,
 } from "./workspace-badge.js";
 import { ActionOutputWriter } from "./action-output-writer.js";
+import { subagentBackgroundSvg } from "./subagent-background.js";
 import {
   addRefreshResources,
   actionManifestIdsForResources,
@@ -82,6 +86,7 @@ interface ActionSettings {
   slot?: number;
   look?: AgentKeyLook;
   summaryProviderId?: string;
+  showSubagents?: boolean;
   [key: string]: string | number | boolean | null | undefined;
 }
 
@@ -91,6 +96,7 @@ interface DeviceConfiguration {
   role: string;
   providers: string[];
   states: Agent["state"][];
+  showSubagents: boolean;
 }
 
 interface DeviceSession {
@@ -122,10 +128,7 @@ interface DeviceSession {
   clearingAgents: boolean;
   lastSnapshotSequence: number;
   animationStartedAt: number;
-  runningAnimationStarts: Map<
-    string,
-    { activeRunId: string | undefined; startedAt: number }
-  >;
+  runningAnimationStarts: Map<string, RunningAnimationStart>;
 }
 
 interface AgentSummary {
@@ -161,6 +164,7 @@ const DEFAULT_CONFIGURATION: DeviceConfiguration = {
   role: "agent-monitor",
   providers: [],
   states: ALL_AGENT_STATES,
+  showSubagents: false,
 };
 
 const settle = async <T>(
@@ -174,7 +178,6 @@ const settle = async <T>(
 };
 
 const LONG_PRESS_DURATION_MS = 650;
-const PRESS_FEEDBACK_DURATION_MS = 450;
 
 interface ProviderStyle {
   accent: string;
@@ -495,6 +498,7 @@ const agentIcon = (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
       ${muteSvgContent(
         `${scene}
+      ${isSubagent(agent) ? subagentBackgroundSvg() : ""}
       ${agentLabelBackgroundSvg()}
       ${agentLabelSvg(agent.title, animation.elapsedMs)}
       ${agentProgressSvg(agent.progress, agent.state)}
@@ -551,21 +555,24 @@ interface AgentRemovalTransition {
   startedAt: number;
 }
 
+type AgentDeletionResult = "blocked" | "ignored" | "missing" | "removed";
+
 class DeviceManager {
   private readonly sessions = new Map<string, DeviceSession>();
   private readonly pendingSessions = new Map<string, Promise<DeviceSession>>();
   private readonly actionSettings = new Map<string, ActionSettings>();
-  private readonly renderedAgents = new RenderedAgentTargets();
+  private readonly desiredAgentIds = new Map<string, string>();
+  private readonly frozenAgentIds = new Map<string, string>();
   private readonly renderedAgentLooks = new Map<string, AgentKeyLook>();
   private readonly renderedAgentLabels = new Map<string, string>();
   private readonly agentStateTransitions = new AgentStateTransitionTracker();
   private readonly pressedAgentActions = new Set<string>();
-  private readonly pressFeedbackTimers = new Map<string, NodeJS.Timeout>();
+  private readonly focusRequestVersions = new Map<string, number>();
   private readonly removalTransitions = new Map<
     string,
     AgentRemovalTransition
   >();
-  private readonly outputWriter = new ActionOutputWriter();
+  private readonly outputWriter = new ActionOutputWriter<string>();
   private readonly animationScheduler =
     new AnimationFrameScheduler<AnimatedTarget>({
       targets: () => this.animatedTargets(),
@@ -596,16 +603,22 @@ class DeviceManager {
     this.actionSettings.set(actionContext.id, settings);
   }
 
+  actionIsVisible(actionId: string): boolean {
+    return this.actionSettings.has(actionId);
+  }
+
   forgetAction(actionId: string): void {
     this.actionSettings.delete(actionId);
-    this.renderedAgents.set(actionId, undefined);
+    this.desiredAgentIds.delete(actionId);
+    this.frozenAgentIds.delete(actionId);
     this.renderedAgentLooks.delete(actionId);
     this.renderedAgentLabels.delete(actionId);
     this.agentStateTransitions.clear(actionId);
     this.pressedAgentActions.delete(actionId);
-    const feedbackTimer = this.pressFeedbackTimers.get(actionId);
-    if (feedbackTimer) clearTimeout(feedbackTimer);
-    this.pressFeedbackTimers.delete(actionId);
+    this.focusRequestVersions.set(
+      actionId,
+      (this.focusRequestVersions.get(actionId) ?? 0) + 1,
+    );
     this.removalTransitions.delete(actionId);
     this.outputWriter.clear(actionId);
   }
@@ -746,14 +759,19 @@ class DeviceManager {
     const slot = Math.max(0, Number(settings.slot ?? automaticSlot));
     const pageSize =
       actionContext.device.size.columns * actionContext.device.size.rows || 1;
-    const agent = session.agents[session.page * pageSize + slot];
+    const slotAgent = session.agents[session.page * pageSize + slot];
+    const frozenAgentId = this.frozenAgentIds.get(actionContext.id);
+    const agent = frozenAgentId
+      ? session.agentById.get(frozenAgentId)
+      : slotAgent;
+    if (frozenAgentId && !agent) return;
     const look = normalizeAgentKeyLook(settings.look);
     const label = agent?.title ?? `Agent ${slot + 1}`;
     const muted = session.connectionStatus !== "connected";
     const removal = this.removalTransitions.get(actionContext.id);
     if (removal) {
       this.agentStateTransitions.clear(actionContext.id);
-      this.renderedAgents.set(actionContext.id, undefined);
+      this.desiredAgentIds.delete(actionContext.id);
       this.renderedAgentLooks.set(actionContext.id, look);
       this.renderedAgentLabels.set(actionContext.id, "Removed");
       const image = removedAgentIcon(
@@ -762,7 +780,11 @@ class DeviceManager {
         muted,
       );
       if (actionContext.isKey() || actionContext.isDial())
-        await this.outputWriter.write(actionContext, { title: "", image });
+        await this.outputWriter.write(
+          actionContext,
+          { title: "", image },
+          { binding: undefined },
+        );
       return;
     }
     let stateTransition: AgentStateTransitionFrame | undefined;
@@ -772,7 +794,8 @@ class DeviceManager {
         agent ? { agentId: agent.id, state: agent.state } : undefined,
       );
     else this.agentStateTransitions.clear(actionContext.id);
-    this.renderedAgents.set(actionContext.id, agent?.id);
+    if (agent) this.desiredAgentIds.set(actionContext.id, agent.id);
+    else this.desiredAgentIds.delete(actionContext.id);
     this.renderedAgentLooks.set(actionContext.id, look);
     this.renderedAgentLabels.set(actionContext.id, label);
     if (!agent) {
@@ -784,18 +807,26 @@ class DeviceManager {
           muted,
         );
         if (actionContext.isKey() || actionContext.isDial())
-          await this.outputWriter.write(actionContext, { title: "", image });
+          await this.outputWriter.write(
+            actionContext,
+            { title: "", image },
+            { binding: undefined },
+          );
         return;
       }
-      await this.render(
-        actionContext,
-        label,
-        CLASSIC_EMPTY_AGENT_COLOUR,
-        "💤",
-        "#475569",
-        "AG",
-        { showStrip: false, showBadge: false, muted },
-      );
+      if (actionContext.isKey() || actionContext.isDial())
+        await this.outputWriter.write(
+          actionContext,
+          {
+            title: label,
+            image: icon(CLASSIC_EMPTY_AGENT_COLOUR, "💤", "#475569", "AG", {
+              showStrip: false,
+              showBadge: false,
+              muted,
+            }),
+          },
+          { binding: undefined },
+        );
       return;
     }
     const now = Date.now();
@@ -806,54 +837,44 @@ class DeviceManager {
       now,
     );
     if (actionContext.isKey() || actionContext.isDial())
-      await this.outputWriter.write(actionContext, {
-        title: "",
-        image: agentIcon(
-          agent,
-          session.agentStaticVisuals.get(agent.id) ??
-            buildAgentStaticVisuals(agent, ""),
-          {
-            elapsedMs: animationElapsedMs,
-            stateElapsedMs: stateAnimationElapsedMs,
-          },
-          look,
-          muted,
-          this.pressedAgentActions.has(actionContext.id),
-          stateTransition,
-        ),
-      });
+      await this.outputWriter.write(
+        actionContext,
+        {
+          title: "",
+          image: agentIcon(
+            agent,
+            session.agentStaticVisuals.get(agent.id) ??
+              buildAgentStaticVisuals(agent, ""),
+            {
+              elapsedMs: animationElapsedMs,
+              stateElapsedMs: stateAnimationElapsedMs,
+            },
+            look,
+            muted,
+            this.pressedAgentActions.has(actionContext.id),
+            stateTransition,
+          ),
+        },
+        { binding: agent.id },
+      );
   }
 
-  async flashRenderedAgent(
+  async beginAgentPress(
     actionContext: Action<ActionSettings>,
+    agentId: string,
   ): Promise<void> {
-    const session = await this.ensure(actionContext);
-    const agent = this.renderedAgents.resolve(
-      actionContext.id,
-      session.agentById,
-    );
-    if (!agent) return;
-
-    const previousTimer = this.pressFeedbackTimers.get(actionContext.id);
-    if (previousTimer) clearTimeout(previousTimer);
+    this.frozenAgentIds.set(actionContext.id, agentId);
     this.pressedAgentActions.add(actionContext.id);
-    const timer = setTimeout(() => {
-      this.pressFeedbackTimers.delete(actionContext.id);
-      this.pressedAgentActions.delete(actionContext.id);
-      void this.renderAgent(
-        actionContext,
-        this.actionSettings.get(actionContext.id) ?? {},
-      ).catch((error: unknown) => {
-        streamDeck.logger.error(
-          `Agent Deck press feedback reset failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      });
-    }, PRESS_FEEDBACK_DURATION_MS);
-    timer.unref();
-    this.pressFeedbackTimers.set(actionContext.id, timer);
+    await this.renderAgent(
+      actionContext,
+      this.actionSettings.get(actionContext.id) ?? {},
+    );
+  }
 
+  async endAgentPress(actionContext: Action<ActionSettings>): Promise<void> {
+    this.frozenAgentIds.delete(actionContext.id);
+    this.pressedAgentActions.delete(actionContext.id);
+    if (!this.actionSettings.has(actionContext.id)) return;
     await this.renderAgent(
       actionContext,
       this.actionSettings.get(actionContext.id) ?? {},
@@ -947,7 +968,7 @@ class DeviceManager {
   }
 
   renderedAgentId(actionContext: Action<ActionSettings>): string | undefined {
-    return this.renderedAgents.id(actionContext.id);
+    return this.outputWriter.committedBinding(actionContext.id);
   }
 
   async focusAgentById(
@@ -955,21 +976,36 @@ class DeviceManager {
     agentId: string,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
-    const agent = session.agentById.get(agentId);
-    if (!agent) {
+    const requestVersion =
+      (this.focusRequestVersions.get(actionContext.id) ?? 0) + 1;
+    this.focusRequestVersions.set(actionContext.id, requestVersion);
+    let result: Awaited<ReturnType<AgentDeckClient["focusAgent"]>>;
+    try {
+      result = await session.client.focusAgent(agentId);
+    } catch (error) {
+      if (
+        this.focusRequestVersions.get(actionContext.id) !== requestVersion ||
+        !this.actionSettings.has(actionContext.id)
+      )
+        return;
       streamDeck.logger.warn(
-        `Agent Deck focus failed: displayed agent ${agentId} is gone`,
+        `Agent Deck focus failed for ${agentId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
       await actionContext.showAlert();
       return;
     }
-    const result =
-      agent.providerId === "cursor-local" || agent.providerId === "codex"
-        ? await session.client.focusAgent(agent.id)
-        : await focusAgent(agent);
-    if (result.status !== "opened") {
+    if (
+      this.focusRequestVersions.get(actionContext.id) !== requestVersion ||
+      !this.actionSettings.has(actionContext.id)
+    )
+      return;
+    if (focusResultNeedsAlert(result)) {
       streamDeck.logger.warn(
-        `Agent Deck focus failed: ${"reason" in result ? result.reason : (result.message ?? result.status)}`,
+        `Agent Deck focus failed for ${agentId} (${result.requestId}): ${
+          result.message ?? result.status
+        }`,
       );
       await actionContext.showAlert();
     }
@@ -978,11 +1014,17 @@ class DeviceManager {
   async deleteAgentById(
     actionContext: Action<ActionSettings>,
     agentId: string,
-  ): Promise<void> {
+  ): Promise<AgentDeletionResult> {
     const session = await this.ensure(actionContext);
     const agent = session.agentById.get(agentId);
-    if (!agent) return;
-    if (this.removalTransitions.has(actionContext.id)) return;
+    if (!agent) return "missing";
+    if (agent.state === "running") {
+      streamDeck.logger.warn(
+        `Agent Deck remove blocked: agent ${agent.id} is still running`,
+      );
+      return "blocked";
+    }
+    if (this.removalTransitions.has(actionContext.id)) return "ignored";
     this.removalTransitions.set(actionContext.id, {
       agentId: agent.id,
       seed: agent.id,
@@ -1007,7 +1049,7 @@ class DeviceManager {
       streamDeck.logger.warn(`Agent Deck remove failed: agent was not found`);
       await this.renderVisible(session.deviceId);
       await actionContext.showAlert();
-      return;
+      return "missing";
     }
     session.allAgents = session.allAgents.filter(
       (candidate) => candidate.id !== agent.id,
@@ -1027,6 +1069,7 @@ class DeviceManager {
     );
     session.page = Math.min(session.page, lastPage);
     await this.renderVisible(session.deviceId);
+    return "removed";
   }
 
   async changeAttention(
@@ -1041,6 +1084,17 @@ class DeviceManager {
   async refreshFor(actionContext: Action<ActionSettings>): Promise<void> {
     const session = await this.ensure(actionContext);
     await this.refresh(session);
+  }
+
+  async setShowSubagents(
+    actionContext: Action<ActionSettings>,
+    showSubagents: boolean | undefined,
+  ): Promise<void> {
+    if (showSubagents === undefined) return;
+    const session = await this.ensure(actionContext);
+    if (session.configuration.showSubagents === showSubagents) return;
+    session.configuration.showSubagents = showSubagents;
+    await this.refresh(session, ["agents", "attention"]);
   }
 
   async clearAndRefreshFor(
@@ -1134,7 +1188,10 @@ class DeviceManager {
       agents.value.asOfSequence >= session.lastSnapshotSequence
     ) {
       session.lastSnapshotSequence = agents.value.asOfSequence;
-      const freshAgents = streamDeckAgents(agents.value.items);
+      const freshAgents = streamDeckAgents(
+        agents.value.items,
+        session.configuration.showSubagents,
+      );
       const observedAt = Date.now();
       const freshAgentIds = new Set(freshAgents.map(({ id }) => id));
       for (const agent of freshAgents) {
@@ -1143,7 +1200,7 @@ class DeviceManager {
           continue;
         }
         const current = session.runningAnimationStarts.get(agent.id);
-        if (current?.activeRunId === agent.activeRunId) continue;
+        if (!runningAnimationNeedsReset(current, agent.activeRunId)) continue;
         const lastActivityAt = Date.parse(agent.lastActivityAt);
         session.runningAnimationStarts.set(agent.id, {
           activeRunId: agent.activeRunId,
@@ -1170,9 +1227,9 @@ class DeviceManager {
             right.lastActivityAt.localeCompare(left.lastActivityAt) ||
             left.id.localeCompare(right.id),
         );
-      session.agents = preserveAgentSlotOrder(session.agents, visibleAgents);
-      session.agents = sortAgentsByWorkspace(
+      session.agents = orderAgentStack(
         session.agents,
+        visibleAgents,
         session.workspaces,
       );
     }
@@ -1186,7 +1243,8 @@ class DeviceManager {
       session.providers = providers.value.items;
     if (health?.status === "fulfilled") session.health = health.value;
     if (workspaces?.status === "fulfilled" && agents?.status !== "fulfilled")
-      session.agents = sortAgentsByWorkspace(
+      session.agents = orderAgentStack(
+        session.agents,
         session.agents,
         session.workspaces,
       );
@@ -1255,10 +1313,8 @@ class DeviceManager {
     if (look === "classic" && this.agentStateTransitions.has(actionContext.id))
       return true;
     if (look === "agent") return true;
-    const agent = this.renderedAgents.resolve(
-      actionContext.id,
-      session.agentById,
-    );
+    const agentId = this.desiredAgentIds.get(actionContext.id);
+    const agent = agentId ? session.agentById.get(agentId) : undefined;
     return Boolean(
       agent &&
       (agent.state === "running" ||
@@ -1283,25 +1339,31 @@ class DeviceManager {
     }
     const removal = this.removalTransitions.get(actionContext.id);
     if (removal) {
-      await this.outputWriter.write(actionContext, {
-        image: removedAgentIcon(removal.seed, now - removal.startedAt),
-      });
+      await this.outputWriter.write(
+        actionContext,
+        {
+          image: removedAgentIcon(removal.seed, now - removal.startedAt),
+        },
+        { binding: undefined },
+      );
       return;
     }
-    const agent = this.renderedAgents.resolve(
-      actionContext.id,
-      session.agentById,
-    );
+    const agentId = this.desiredAgentIds.get(actionContext.id);
+    const agent = agentId ? session.agentById.get(agentId) : undefined;
     const look = this.renderedAgentLooks.get(actionContext.id) ?? "classic";
     if (!agent) {
       if (look !== "agent") return;
-      await this.outputWriter.write(actionContext, {
-        image: emptyAgentIcon(
-          this.renderedAgentLabels.get(actionContext.id) ?? "Agent",
-          actionContext.id,
-          animationElapsedMs,
-        ),
-      });
+      await this.outputWriter.write(
+        actionContext,
+        {
+          image: emptyAgentIcon(
+            this.renderedAgentLabels.get(actionContext.id) ?? "Agent",
+            actionContext.id,
+            animationElapsedMs,
+          ),
+        },
+        { binding: undefined },
+      );
       return;
     }
     const stateTransition =
@@ -1312,21 +1374,25 @@ class DeviceManager {
             now,
           )
         : undefined;
-    await this.outputWriter.write(actionContext, {
-      image: agentIcon(
-        agent,
-        session.agentStaticVisuals.get(agent.id) ??
-          buildAgentStaticVisuals(agent, ""),
-        {
-          elapsedMs: animationElapsedMs,
-          stateElapsedMs: this.runningAnimationElapsedMs(session, agent, now),
-        },
-        look,
-        false,
-        this.pressedAgentActions.has(actionContext.id),
-        stateTransition,
-      ),
-    });
+    await this.outputWriter.write(
+      actionContext,
+      {
+        image: agentIcon(
+          agent,
+          session.agentStaticVisuals.get(agent.id) ??
+            buildAgentStaticVisuals(agent, ""),
+          {
+            elapsedMs: animationElapsedMs,
+            stateElapsedMs: this.runningAnimationElapsedMs(session, agent, now),
+          },
+          look,
+          false,
+          this.pressedAgentActions.has(actionContext.id),
+          stateTransition,
+        ),
+      },
+      { binding: agent.id },
+    );
   }
 
   private async renderVisible(
@@ -1379,11 +1445,15 @@ const devices = new DeviceManager();
 
 @action({ UUID: "com.agentdeck.monitor.agent-slot" })
 class AgentSlotAction extends SingletonAction<ActionSettings> {
-  private readonly presses = new AgentPressDetector(LONG_PRESS_DURATION_MS);
+  private readonly presses = new PressGestureController<
+    string,
+    AgentDeletionResult | "failed"
+  >(LONG_PRESS_DURATION_MS);
 
   override async onWillAppear(
     ev: WillAppearEvent<ActionSettings>,
   ): Promise<void> {
+    this.presses.cancel(ev.action.id);
     devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderAgent(ev.action, ev.payload.settings);
   }
@@ -1391,6 +1461,10 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
     ev: DidReceiveSettingsEvent<ActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.setShowSubagents(
+      ev.action,
+      ev.payload.settings.showSubagents,
+    );
     await devices.renderAgent(ev.action, ev.payload.settings);
   }
   override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
@@ -1399,16 +1473,11 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
   }
   override onKeyDown(ev: KeyDownEvent<ActionSettings>): void {
     const agentId = devices.renderedAgentId(ev.action);
-    void devices.flashRenderedAgent(ev.action).catch((error: unknown) => {
-      streamDeck.logger.error(
-        `Agent Deck press feedback failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    });
-    this.presses.keyDown(ev.action.id, agentId, {
-      onLongPress: (pressedAgentId) => {
-        void devices
+    const started = this.presses.keyDown(
+      ev.action.id,
+      agentId,
+      (pressedAgentId) =>
+        devices
           .deleteAgentById(ev.action, pressedAgentId)
           .catch((error: unknown) => {
             streamDeck.logger.error(
@@ -1416,23 +1485,58 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
                 error instanceof Error ? error.message : String(error)
               }`,
             );
-            void ev.action.showAlert();
-          });
+            return "failed" as const;
+          }),
+      () => {
+        void devices.endAgentPress(ev.action).catch((error: unknown) => {
+          streamDeck.logger.error(
+            `Agent Deck press watchdog reset failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
       },
+    );
+    if (started !== "started" || !agentId) return;
+    void devices.beginAgentPress(ev.action, agentId).catch((error: unknown) => {
+      streamDeck.logger.error(
+        `Agent Deck press feedback failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     });
   }
   override onKeyUp(ev: KeyUpEvent<ActionSettings>): void {
-    this.presses.keyUp(ev.action.id, (agentId) => {
-      void devices
-        .focusAgentById(ev.action, agentId)
-        .catch((error: unknown) => {
+    const result = this.presses.keyUp(ev.action.id);
+    if (result.kind === "none") return;
+    void devices.endAgentPress(ev.action).catch((error: unknown) => {
+      streamDeck.logger.error(
+        `Agent Deck press feedback reset failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+    if (result.kind === "short") {
+      void settleFocusTask(
+        devices.focusAgentById(ev.action, result.target),
+        async (error) => {
           streamDeck.logger.error(
             `Agent Deck focus failed: ${
               error instanceof Error ? error.message : String(error)
             }`,
           );
-          void ev.action.showAlert();
-        });
+          if (devices.actionIsVisible(ev.action.id))
+            await ev.action.showAlert();
+        },
+      );
+      return;
+    }
+    void result.completion.then((outcome) => {
+      if (
+        (outcome === "blocked" || outcome === "failed") &&
+        devices.actionIsVisible(ev.action.id)
+      )
+        return ev.action.showAlert();
     });
   }
   override async onDialRotate(
@@ -1454,6 +1558,10 @@ class AgentSummaryAction extends SingletonAction<ActionSettings> {
     ev: DidReceiveSettingsEvent<ActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.setShowSubagents(
+      ev.action,
+      ev.payload.settings.showSubagents,
+    );
     await devices.renderAgentSummary(ev.action, ev.payload.settings);
   }
   override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
@@ -1474,6 +1582,16 @@ class AttentionAction extends SingletonAction<ActionSettings> {
   }
   override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
     devices.forgetAction(ev.action.id);
+  }
+  override async onDidReceiveSettings(
+    ev: DidReceiveSettingsEvent<ActionSettings>,
+  ): Promise<void> {
+    devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.setShowSubagents(
+      ev.action,
+      ev.payload.settings.showSubagents,
+    );
+    await devices.renderAttention(ev.action);
   }
   override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
     await devices.changeAttention(ev.action, 1);
@@ -1496,6 +1614,16 @@ class ProviderHealthAction extends SingletonAction<ActionSettings> {
   override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
     devices.forgetAction(ev.action.id);
   }
+  override async onDidReceiveSettings(
+    ev: DidReceiveSettingsEvent<ActionSettings>,
+  ): Promise<void> {
+    devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.setShowSubagents(
+      ev.action,
+      ev.payload.settings.showSubagents,
+    );
+    await devices.renderProvider(ev.action);
+  }
   override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
     await devices.refreshFor(ev.action);
   }
@@ -1503,11 +1631,14 @@ class ProviderHealthAction extends SingletonAction<ActionSettings> {
 
 @action({ UUID: "com.agentdeck.monitor.system-health" })
 class SystemHealthAction extends SingletonAction<ActionSettings> {
-  private readonly presses = new LongPressDetector(LONG_PRESS_DURATION_MS);
+  private readonly presses = new PressGestureController<true, void>(
+    LONG_PRESS_DURATION_MS,
+  );
 
   override async onWillAppear(
     ev: WillAppearEvent<ActionSettings>,
   ): Promise<void> {
+    this.presses.cancel(ev.action.id);
     devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderSystem(ev.action);
   }
@@ -1515,15 +1646,25 @@ class SystemHealthAction extends SingletonAction<ActionSettings> {
     this.presses.cancel(ev.action.id);
     devices.forgetAction(ev.action.id);
   }
+  override async onDidReceiveSettings(
+    ev: DidReceiveSettingsEvent<ActionSettings>,
+  ): Promise<void> {
+    devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.setShowSubagents(
+      ev.action,
+      ev.payload.settings.showSubagents,
+    );
+    await devices.renderSystem(ev.action);
+  }
   override onKeyDown(ev: KeyDownEvent<ActionSettings>): void {
-    this.presses.keyDown(ev.action.id, () => {
-      void devices.clearAndRefreshFor(ev.action).catch((error: unknown) => {
+    this.presses.keyDown(ev.action.id, true, async () => {
+      await devices.clearAndRefreshFor(ev.action).catch((error: unknown) => {
         streamDeck.logger.error(
           `Agent Deck clear and refresh failed: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
-        void ev.action.showAlert();
+        if (devices.actionIsVisible(ev.action.id)) void ev.action.showAlert();
       });
     });
   }

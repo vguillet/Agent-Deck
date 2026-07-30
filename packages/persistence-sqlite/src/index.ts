@@ -311,6 +311,11 @@ export class SqliteEventStore implements EventStore {
         ...(attention.runId ? { runId: attention.runId } : {}),
         payload: { attention },
       });
+    if (snapshot.complete)
+      this.reconcileDeletedAgents(
+        providerId,
+        snapshot.agents.map((agent) => agent.id),
+      );
     return output;
   }
 
@@ -747,7 +752,7 @@ export class SqliteEventStore implements EventStore {
     })(id);
   }
 
-  clearAgents(): number {
+  clearAgents(options: { preserveTombstones?: boolean } = {}): number {
     return this.db.transaction(() => {
       const result = this.db.prepare("DELETE FROM agents").run();
       this.db.prepare("DELETE FROM attention WHERE agent_id IS NOT NULL").run();
@@ -757,8 +762,30 @@ export class SqliteEventStore implements EventStore {
         )
         .run();
       this.db.prepare("DELETE FROM runs").run();
-      this.db.prepare("DELETE FROM deleted_agents").run();
+      if (!options.preserveTombstones)
+        this.db.prepare("DELETE FROM deleted_agents").run();
       return result.changes;
+    })();
+  }
+
+  reconcileDeletedAgents(
+    providerId: string,
+    agentIds: readonly string[],
+  ): number {
+    const reported = new Set(agentIds);
+    return this.db.transaction(() => {
+      const rows = this.db
+        .prepare("SELECT agent_id FROM deleted_agents WHERE provider_id = ?")
+        .all(providerId) as Row[];
+      let removed = 0;
+      const remove = this.db.prepare(
+        "DELETE FROM deleted_agents WHERE agent_id = ?",
+      );
+      for (const row of rows) {
+        const agentId = String(row.agent_id);
+        if (!reported.has(agentId)) removed += remove.run(agentId).changes;
+      }
+      return removed;
     })();
   }
 

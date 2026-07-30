@@ -4,6 +4,7 @@ import {
   ANIMATION_UPDATES_PER_SECOND,
   AnimationFrameScheduler,
   MAX_PROGRAMMATIC_CALLS_PER_SECOND,
+  runningAnimationNeedsReset,
 } from "./animation-scheduler.js";
 
 describe("Stream Deck animation scheduler", () => {
@@ -37,6 +38,16 @@ describe("Stream Deck animation scheduler", () => {
         render.mock.calls.filter(([rendered]) => rendered === target),
       ).toHaveLength(framesInFirstSecond);
     scheduler.stop();
+  });
+
+  it("initializes animations for agents without a run id", () => {
+    expect(runningAnimationNeedsReset(undefined, undefined)).toBe(true);
+    expect(
+      runningAnimationNeedsReset(
+        { activeRunId: undefined, startedAt: 100 },
+        undefined,
+      ),
+    ).toBe(false);
   });
 
   it("updates every visible key on each frame", async () => {

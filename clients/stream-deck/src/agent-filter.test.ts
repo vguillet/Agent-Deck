@@ -1,6 +1,7 @@
 import type { Agent } from "@agent-deck/domain";
 import { describe, expect, it } from "vitest";
 import {
+  orderAgentStack,
   preserveAgentSlotOrder,
   sortAgentsByWorkspace,
   streamDeckAgents,
@@ -37,6 +38,21 @@ describe("Stream Deck agent filtering", () => {
         agent({ id: "cursor-cloud:stale", freshness: "stale" }),
       ]).map(({ id }) => id),
     ).toEqual(["cursor-cloud:agent-1"]);
+  });
+
+  it("hides subagents by default and only shows running ones when enabled", () => {
+    const agents = [
+      agent({ id: "top", kind: "top_level" }),
+      agent({ id: "sub-running", kind: "subagent", state: "running" }),
+      agent({ id: "sub-idle", kind: "subagent", state: "idle" }),
+      agent({ id: "sub-failed", kind: "subagent", state: "failed" }),
+    ];
+
+    expect(streamDeckAgents(agents).map(({ id }) => id)).toEqual(["top"]);
+    expect(streamDeckAgents(agents, true).map(({ id }) => id)).toEqual([
+      "top",
+      "sub-running",
+    ]);
   });
 
   it("groups agents by workspace name while keeping group slots stable", () => {
@@ -127,5 +143,54 @@ describe("Stream Deck agent filtering", () => {
         [newcomer, { ...second }, { ...first }],
       ).map(({ id }) => id),
     ).toEqual(["first", "second", "new"]);
+  });
+
+  it("appends workspace-grouped subagents without moving top-level agents", () => {
+    const workspaces = [
+      {
+        id: "workspace:alpha",
+        providerId: "agent-deck",
+        externalId: "alpha",
+        name: "Alpha",
+        metadata: {},
+      },
+      {
+        id: "workspace:beta",
+        providerId: "agent-deck",
+        externalId: "beta",
+        name: "Beta",
+        metadata: {},
+      },
+    ];
+    const topAlpha = agent({
+      id: "top-alpha",
+      kind: "top_level",
+      workspaceId: "workspace:alpha",
+    });
+    const topBeta = agent({
+      id: "top-beta",
+      kind: "top_level",
+      workspaceId: "workspace:beta",
+    });
+    const subBeta = agent({
+      id: "sub-beta",
+      kind: "subagent",
+      state: "running",
+      workspaceId: "workspace:beta",
+    });
+    const subAlpha = agent({
+      id: "sub-alpha",
+      kind: "subagent",
+      state: "running",
+      workspaceId: "workspace:alpha",
+    });
+
+    expect(
+      orderAgentStack(
+        [topAlpha, topBeta],
+        [subBeta, topBeta, subAlpha, topAlpha],
+        workspaces,
+      ).map(({ id }) => id),
+    ).toEqual(["top-alpha", "top-beta", "sub-alpha", "sub-beta"]);
   });
 });

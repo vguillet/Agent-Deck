@@ -4,6 +4,7 @@ import {
   CursorWindowClient,
   type CursorWindowClientDependencies,
   type CursorWindowSnapshot,
+  type CursorTargetExecutionResult,
   type FocusSocket,
 } from "./window-client.js";
 
@@ -82,7 +83,9 @@ const harness = (
   let serverUrl = "http://127.0.0.1:47831";
   const sockets: FakeSocket[] = [];
   const urls: URL[] = [];
-  const executeTarget = vi.fn(async (_target: CursorFocusTarget) => true);
+  const executeTarget = vi.fn(async (_target: CursorFocusTarget) => ({
+    status: "opened" as const,
+  }));
   const dependencies: CursorWindowClientDependencies = {
     getServerUrl: () => serverUrl,
     getWindowSnapshot: () => snapshot,
@@ -98,7 +101,7 @@ const harness = (
   };
   const client = new CursorWindowClient(
     dependencies,
-    "0.3.0",
+    "0.4.0",
     "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   );
   return {
@@ -151,7 +154,8 @@ describe("Cursor window connection lifecycle", () => {
       workspaceRoots: ["/workspace/alpha", "/workspace/beta"],
       launchTarget: "/workspace/project.code-workspace",
       focused: true,
-      version: "0.3.0",
+      version: "0.4.0",
+      focusProtocolVersion: 2,
       focusKinds: ["cursor.conversation", "codex.thread"],
     });
 
@@ -203,7 +207,7 @@ describe("Cursor window connection lifecycle", () => {
     const superseded = test.sockets[0]!.sent.at(-1) as Record<string, unknown>;
     expect(superseded).toMatchObject({
       requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-      status: "failed",
+      status: "superseded",
     });
     expect(superseded.message).toContain("Superseded");
 
@@ -212,6 +216,92 @@ describe("Cursor window connection lifecycle", () => {
     await vi.waitFor(() => expect(test.executeTarget).toHaveBeenCalledOnce());
     expect(test.executeTarget).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: "thread-2" }),
+    );
+  });
+
+  it("executes the newest local conversation last in the same window", async () => {
+    let finishFirst!: (result: CursorTargetExecutionResult) => void;
+    const firstExecution = new Promise<CursorTargetExecutionResult>(
+      (resolve) => {
+        finishFirst = resolve;
+      },
+    );
+    const test = harness();
+    test.executeTarget
+      .mockImplementationOnce(async () => firstExecution)
+      .mockResolvedValue({ status: "opened" });
+    test.client.start();
+    test.sockets[0]!.open();
+
+    test.sockets[0]!.message(intent("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"));
+    await vi.waitFor(() => expect(test.executeTarget).toHaveBeenCalledOnce());
+    test.sockets[0]!.message(
+      intent("cccccccc-cccc-4ccc-8ccc-cccccccccccc", {
+        kind: "cursor.conversation",
+        conversationId: "conversation-2",
+        workspaceRoots: ["/workspace/alpha"],
+      }),
+    );
+    test.sockets[0]!.message(
+      intent("dddddddd-dddd-4ddd-8ddd-dddddddddddd", {
+        kind: "cursor.conversation",
+        conversationId: "conversation-3",
+        workspaceRoots: ["/workspace/alpha"],
+      }),
+    );
+
+    expect(test.sockets[0]!.sent.at(-1)).toMatchObject({
+      requestId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      status: "superseded",
+    });
+    finishFirst({ status: "opened" });
+    await vi.waitFor(() => expect(test.executeTarget).toHaveBeenCalledTimes(2));
+    expect(test.executeTarget).toHaveBeenLastCalledWith(
+      expect.objectContaining({ conversationId: "conversation-3" }),
+    );
+  });
+
+  it("drops cancelled queued intents and reports late executing results", async () => {
+    const background = harness({
+      workspaceRoots: ["/workspace/alpha"],
+      launchTarget: "/workspace/alpha",
+      focused: false,
+    });
+    background.client.start();
+    background.sockets[0]!.open();
+    const queuedId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    background.sockets[0]!.message(intent(queuedId));
+    background.sockets[0]!.message({
+      type: "focus.cancel",
+      requestId: queuedId,
+    });
+    background.setSnapshot({ ...background.getSnapshot(), focused: true });
+    background.client.windowStateChanged(true);
+    await Promise.resolve();
+    expect(background.executeTarget).not.toHaveBeenCalled();
+
+    let finish!: (result: CursorTargetExecutionResult) => void;
+    const execution = new Promise<CursorTargetExecutionResult>((resolve) => {
+      finish = resolve;
+    });
+    const active = harness();
+    active.executeTarget.mockImplementationOnce(async () => execution);
+    active.client.start();
+    active.sockets[0]!.open();
+    const activeId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    active.sockets[0]!.message(intent(activeId));
+    await vi.waitFor(() => expect(active.executeTarget).toHaveBeenCalledOnce());
+    active.sockets[0]!.message({
+      type: "focus.cancel",
+      requestId: activeId,
+    });
+    finish({ status: "opened" });
+    await vi.waitFor(() =>
+      expect(active.sockets[0]!.sent.at(-1)).toMatchObject({
+        type: "focus.result",
+        requestId: activeId,
+        status: "opened",
+      }),
     );
   });
 

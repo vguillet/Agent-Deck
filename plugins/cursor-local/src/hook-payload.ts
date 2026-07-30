@@ -17,7 +17,7 @@ export interface SanitizedCursorHook {
   conversation_id?: string;
   subagent_id?: string;
   parent_conversation_id?: string;
-  conversation_kind?: "top_level" | "background";
+  conversation_kind?: "top_level" | "subagent" | "background";
   generation_id?: string;
   tool_use_id?: string;
   agent_activity?: AgentProgressActivity;
@@ -196,7 +196,6 @@ export const sanitizeCursorHook = (
     (event === "subagentStart" ? !subagentId : !conversation)
   )
     return undefined;
-  if (isSubagent && event !== "subagentStart") return undefined;
   const workspaceRoots = Array.isArray(input.workspace_roots)
     ? input.workspace_roots.filter(
         (root): root is string => typeof root === "string" && root.length > 0,
@@ -232,8 +231,9 @@ export const sanitizeCursorHook = (
   const reason = stringValue(input, "reason");
   const composerMode = stringValue(input, "composer_mode");
   const cursorVersion = stringValue(input, "cursor_version");
-  let conversationKind: "top_level" | "background" | undefined;
-  if (isBackgroundAgent === true) conversationKind = "background";
+  let conversationKind: "top_level" | "subagent" | "background" | undefined;
+  if (isSubagent) conversationKind = "subagent";
+  else if (isBackgroundAgent === true) conversationKind = "background";
   else if (isBackgroundAgent === false || event === "beforeSubmitPrompt")
     conversationKind = "top_level";
   return {

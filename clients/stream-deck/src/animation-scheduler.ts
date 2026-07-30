@@ -4,6 +4,16 @@ export const ANIMATION_INTERVAL_MS = Math.ceil(
   1_000 / ANIMATION_UPDATES_PER_SECOND,
 );
 
+export interface RunningAnimationStart {
+  activeRunId: string | undefined;
+  startedAt: number;
+}
+
+export const runningAnimationNeedsReset = (
+  current: RunningAnimationStart | undefined,
+  activeRunId: string | undefined,
+): boolean => !current || current.activeRunId !== activeRunId;
+
 interface AnimationFrameSchedulerOptions<T> {
   targets(): readonly T[];
   key(target: T): string;

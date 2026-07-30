@@ -13,6 +13,7 @@ export const AGENT_STATES = [
 ] as const;
 
 export type AgentState = (typeof AGENT_STATES)[number];
+export type AgentKind = "top_level" | "subagent";
 
 export const RUN_STATES = [
   "queued",
@@ -108,6 +109,8 @@ export interface Agent {
   providerId: string;
   externalId: string;
   title: string;
+  kind?: AgentKind;
+  parentAgentId?: string;
   projectId?: string;
   workspaceId?: string;
   state: AgentState;

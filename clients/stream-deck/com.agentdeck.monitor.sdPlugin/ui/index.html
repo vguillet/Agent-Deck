@@ -38,6 +38,17 @@
       small {
         color: #aaa;
       }
+      label.checkbox {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      label.checkbox input {
+        width: auto;
+      }
+      label.checkbox span {
+        margin: 0;
+      }
     </style>
   </head>
   <body>
@@ -54,6 +65,11 @@
     <label
       ><span>Provider IDs (comma-separated)</span><input id="providers"
     /></label>
+    <label class="checkbox"
+      ><input id="showSubagents" type="checkbox" /><span
+        >Show running sub-agents</span
+      ></label
+    >
     <label id="slotField"
       ><span>Slot override</span
       ><input
@@ -87,6 +103,7 @@
       let actionId;
       let settings = {};
       const defaults = {
+        showSubagents: false,
         states: [
           "idle",
           "running",
@@ -111,6 +128,8 @@
           settings.look = document.querySelector("#look").value;
         settings.summaryProviderId =
           document.querySelector("#summaryProviderId").value;
+        settings.showSubagents =
+          document.querySelector("#showSubagents").checked;
         send("setSettings", settings);
         const serverUrl = document
           .querySelector("#serverUrl")
@@ -126,6 +145,7 @@
             .value.split(",")
             .map((v) => v.trim())
             .filter(Boolean),
+          showSubagents: document.querySelector("#showSubagents").checked,
         };
         try {
           const existing = await fetch(
@@ -216,6 +236,8 @@
             document.querySelector("#providers").value = (
               data.providers ?? []
             ).join(",");
+            document.querySelector("#showSubagents").checked =
+              data.showSubagents ?? false;
           } catch {}
         };
       };

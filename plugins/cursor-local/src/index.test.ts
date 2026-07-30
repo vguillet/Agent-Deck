@@ -1,10 +1,14 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
-import type { Agent, ProviderEvent } from "@agent-deck/domain";
+import { describe, expect, it, vi } from "vitest";
+import {
+  canonicalId,
+  type Agent,
+  type ProviderEvent,
+} from "@agent-deck/domain";
 import type {
   ProviderContext,
   ProviderIngressRegistration,
@@ -217,6 +221,31 @@ describe("Cursor local provider", () => {
     await harness.close();
   });
 
+  it("clears a stale rendered mode when Cursor reports another mode", async () => {
+    const harness = await setup();
+    const base = {
+      conversation_id: "conversation-mode-transition",
+      workspace_roots: ["/workspace/alpha"],
+    };
+    await harness.handle({
+      ...base,
+      hook_event_name: "beforeSubmitPrompt",
+      generation_id: "generation-plan",
+      composer_mode: "plan",
+    });
+    await harness.handle({
+      ...base,
+      hook_event_name: "beforeSubmitPrompt",
+      generation_id: "generation-edit",
+      composer_mode: "edit",
+    });
+
+    expect((await harness.plugin.discover()).agents[0]?.metadata).toEqual({
+      workspaceRoots: ["/workspace/alpha"],
+    });
+    await harness.close();
+  });
+
   it("waits for input while Cursor asks a question", async () => {
     const harness = await setup();
     const base = {
@@ -288,7 +317,7 @@ describe("Cursor local provider", () => {
     await harness.close();
   });
 
-  it("does not expose subagents as deck agents", async () => {
+  it("does not expose background conversations as deck agents", async () => {
     const harness = await setup();
     await harness.handle({
       hook_event_name: "sessionStart",
@@ -314,7 +343,7 @@ describe("Cursor local provider", () => {
     await harness.close();
   });
 
-  it("suppresses a subagent on its first lifecycle event", async () => {
+  it("exposes a typed subagent on its first lifecycle event", async () => {
     const harness = await setup();
     await harness.handle({
       hook_event_name: "preToolUse",
@@ -324,8 +353,106 @@ describe("Cursor local provider", () => {
       workspace_roots: ["/workspace/alpha"],
     });
 
-    expect((await harness.plugin.discover()).agents).toHaveLength(0);
-    expect(harness.events).toHaveLength(0);
+    expect((await harness.plugin.discover()).agents).toEqual([
+      expect.objectContaining({
+        externalId: "conversation-child",
+        kind: "subagent",
+        state: "running",
+        archived: false,
+      }),
+    ]);
+    expect(harness.events).toHaveLength(2);
+    await harness.handle({
+      hook_event_name: "stop",
+      conversation_id: "conversation-child",
+      generation_id: "generation-child",
+      is_subagent: true,
+      workspace_roots: ["/workspace/alpha"],
+    });
+    expect((await harness.plugin.discover()).agents[0]).toMatchObject({
+      kind: "subagent",
+      state: "ready_for_review",
+    });
+    await harness.close();
+  });
+
+  it.each([
+    ["success", "ready_for_review"],
+    ["error", "failed"],
+  ] as const)(
+    "reconciles a completed subagent transcript with %s status",
+    async (status, expectedState) => {
+      const transcriptsRoot = await mkdtemp(
+        resolve(tmpdir(), "agent-deck-subagent-terminal-"),
+      );
+      const subagents = resolve(
+        transcriptsRoot,
+        "workspace",
+        "agent-transcripts",
+        "conversation-parent",
+        "subagents",
+      );
+      await mkdir(subagents, { recursive: true });
+      await writeFile(
+        resolve(subagents, "child-task.jsonl"),
+        `${JSON.stringify({ type: "turn_ended", status })}\n`,
+      );
+      const harness = await setup(undefined, { transcriptsRoot });
+      await harness.handle({
+        hook_event_name: "subagentStart",
+        subagent_id: "conversation-child",
+        parent_conversation_id: "conversation-parent",
+        workspace_roots: ["/workspace/alpha"],
+      });
+
+      expect((await harness.plugin.discover()).agents[0]).toMatchObject({
+        kind: "subagent",
+        state: expectedState,
+        requiresAttention: false,
+      });
+      await harness.close();
+    },
+  );
+
+  it("publishes a terminal state immediately when a watched transcript finishes", async () => {
+    const transcriptsRoot = await mkdtemp(
+      resolve(tmpdir(), "agent-deck-subagent-watch-"),
+    );
+    const subagents = resolve(
+      transcriptsRoot,
+      "workspace",
+      "agent-transcripts",
+      "conversation-parent",
+      "subagents",
+    );
+    await mkdir(subagents, { recursive: true });
+    const transcript = resolve(subagents, "child-task.jsonl");
+    await writeFile(
+      transcript,
+      `${JSON.stringify({ role: "user", message: "working" })}\n`,
+    );
+    const harness = await setup(undefined, { transcriptsRoot });
+    await harness.handle({
+      hook_event_name: "subagentStart",
+      subagent_id: "conversation-child",
+      parent_conversation_id: "conversation-parent",
+      workspace_roots: ["/workspace/alpha"],
+    });
+    await appendFile(
+      transcript,
+      `${JSON.stringify({ type: "turn_ended", status: "success" })}\n`,
+    );
+
+    await vi.waitFor(() => {
+      expect(
+        harness.events.some(
+          (event) =>
+            event.type === "agent.state.changed" &&
+            (event.payload.agent as Agent | undefined)?.state ===
+              "ready_for_review",
+        ),
+      ).toBe(true);
+    });
     await harness.close();
   });
 
@@ -356,7 +483,7 @@ describe("Cursor local provider", () => {
     await harness.close();
   });
 
-  it("discards quarantined events when a conversation is classified as a child", async () => {
+  it("replaces quarantined events when a conversation is classified as a child", async () => {
     const harness = await setup();
     await harness.handle({
       protocol_version: 2,
@@ -371,7 +498,14 @@ describe("Cursor local provider", () => {
       parent_conversation_id: "parent",
       workspace_roots: [],
     });
-    expect((await harness.plugin.discover()).agents).toHaveLength(0);
+    expect((await harness.plugin.discover()).agents).toEqual([
+      expect.objectContaining({
+        externalId: "pending-child",
+        kind: "subagent",
+        parentAgentId: canonicalId("cursor-local", "parent"),
+        state: "running",
+      }),
+    ]);
     const registry = JSON.parse(harness.checkpoint()!) as {
       pendingHooks?: Array<[string, unknown[]]>;
     };
@@ -379,7 +513,7 @@ describe("Cursor local provider", () => {
     await harness.close();
   });
 
-  it("archives a previously observed agent when identified as a subagent", async () => {
+  it("reclassifies a previously observed agent as a running subagent", async () => {
     const harness = await setup();
     await harness.handle({
       hook_event_name: "sessionStart",
@@ -393,10 +527,13 @@ describe("Cursor local provider", () => {
       workspace_roots: ["/workspace/alpha"],
     });
 
-    expect((await harness.plugin.discover()).agents).toHaveLength(0);
+    expect((await harness.plugin.discover()).agents).toHaveLength(1);
     expect(harness.events.at(-1)?.payload.agent).toMatchObject({
       externalId: "conversation-child",
-      archived: true,
+      kind: "subagent",
+      parentAgentId: canonicalId("cursor-local", "conversation-parent"),
+      archived: false,
+      state: "running",
       requiresAttention: false,
     });
     await harness.close();
@@ -629,7 +766,7 @@ describe("Cursor local provider", () => {
     await restored.close();
   });
 
-  it("migrates transcript subagents without exposing them", async () => {
+  it("migrates transcript subagents as stale typed agents", async () => {
     const first = await setup();
     await first.handle({
       hook_event_name: "sessionStart",
@@ -662,10 +799,10 @@ describe("Cursor local provider", () => {
     expect(migrationSnapshot.agents).toEqual([
       expect.objectContaining({
         externalId: "legacy-child",
-        archived: true,
+        freshness: "stale",
       }),
     ]);
-    expect((await restored.plugin.discover()).agents).toHaveLength(0);
+    expect((await restored.plugin.discover()).agents).toHaveLength(1);
     await restored.close();
   });
 

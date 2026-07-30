@@ -14,14 +14,12 @@ const dependencies = (
 ): FocusHandlerDependencies & {
   executeCommand: ReturnType<typeof vi.fn>;
   openExternal: ReturnType<typeof vi.fn>;
-  showError: ReturnType<typeof vi.fn>;
 } => ({
   getWorkspaceFolders: () => ["/workspace/alpha"],
   getCommands: async () => commands,
   hasExtension: () => true,
   executeCommand: vi.fn(async () => undefined),
   openExternal: vi.fn(async () => true),
-  showError: vi.fn(async () => undefined),
 });
 
 describe("Cursor focus URI handler", () => {
@@ -32,26 +30,24 @@ describe("Cursor focus URI handler", () => {
         "cursor://agent-deck.focus/open?conversationId=conversation-123&workspace=%2Fworkspace%2Falpha",
         deps,
       ),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ status: "opened" });
     expect(deps.executeCommand).toHaveBeenCalledWith(
       CURSOR_OPEN_COMPOSER_COMMAND,
       "conversation-123",
     );
-    expect(deps.showError).not.toHaveBeenCalled();
   });
 
   it("leaves the current window unchanged when the workspace differs", async () => {
     const deps = dependencies();
-    await expect(
-      focusCursorConversation(
-        "cursor://agent-deck.focus/open?conversationId=conversation-123&workspace=%2Fworkspace%2Fbeta",
-        deps,
-      ),
-    ).resolves.toBe(false);
-    expect(deps.executeCommand).not.toHaveBeenCalled();
-    expect(deps.showError).toHaveBeenCalledWith(
-      expect.stringContaining("another Cursor window"),
+    const result = await focusCursorConversation(
+      "cursor://agent-deck.focus/open?conversationId=conversation-123&workspace=%2Fworkspace%2Fbeta",
+      deps,
     );
+    expect(result.status).toBe("unavailable");
+    expect("message" in result ? result.message : "").toContain(
+      "another Cursor window",
+    );
+    expect(deps.executeCommand).not.toHaveBeenCalled();
   });
 
   it("requires the complete multi-root workspace identity", async () => {
@@ -62,7 +58,7 @@ describe("Cursor focus URI handler", () => {
         "cursor://agent-deck.focus/open?conversationId=conversation-123&workspace=%2Fworkspace%2Falpha&workspace=%2Fworkspace%2Fbeta",
         deps,
       ),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ status: "opened" });
 
     const incomplete = dependencies();
     incomplete.getWorkspaceFolders = () => [
@@ -74,7 +70,7 @@ describe("Cursor focus URI handler", () => {
         "cursor://agent-deck.focus/open?conversationId=conversation-123&workspace=%2Fworkspace%2Falpha",
         incomplete,
       ),
-    ).resolves.toBe(false);
+    ).resolves.toMatchObject({ status: "unavailable" });
     expect(incomplete.executeCommand).not.toHaveBeenCalled();
   });
 
@@ -88,12 +84,11 @@ describe("Cursor focus URI handler", () => {
         "cursor://agent-deck.focus/stop?conversationId=conversation-123",
         deps,
       ),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ status: "opened" });
     expect(deps.executeCommand).toHaveBeenCalledWith(
       CURSOR_CANCEL_CHAT_COMMAND,
       "conversation-123",
     );
-    expect(deps.showError).not.toHaveBeenCalled();
   });
 
   it("opens an exact local thread in the Cursor Codex sidebar", async () => {
@@ -103,7 +98,7 @@ describe("Cursor focus URI handler", () => {
         "cursor://agent-deck.focus/codex?threadId=thread-123&cwd=%2Fworkspace%2Falpha%2Fproject",
         deps,
       ),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ status: "opened" });
     expect(deps.executeCommand).toHaveBeenCalledWith(
       CODEX_OPEN_SIDEBAR_COMMAND,
     );
@@ -122,7 +117,7 @@ describe("Cursor focus URI handler", () => {
         "cursor://agent-deck.focus/codex?threadId=thread-123&cwd=%2Fworkspace%2Fbeta",
         wrongWindow,
       ),
-    ).resolves.toBe(false);
+    ).resolves.toMatchObject({ status: "unavailable" });
     expect(wrongWindow.executeCommand).not.toHaveBeenCalled();
 
     const missingExtension = dependencies([CODEX_OPEN_SIDEBAR_COMMAND]);
@@ -133,7 +128,7 @@ describe("Cursor focus URI handler", () => {
         "cursor://agent-deck.focus/codex?threadId=thread-123&cwd=%2Fworkspace%2Falpha",
         missingExtension,
       ),
-    ).resolves.toBe(false);
+    ).resolves.toMatchObject({ status: "unavailable" });
     expect(missingExtension.executeCommand).not.toHaveBeenCalled();
 
     const missingCommand = dependencies([]);
@@ -142,21 +137,20 @@ describe("Cursor focus URI handler", () => {
         "cursor://agent-deck.focus/codex?threadId=thread-123&cwd=%2Fworkspace%2Falpha",
         missingCommand,
       ),
-    ).resolves.toBe(false);
+    ).resolves.toMatchObject({ status: "unavailable" });
     expect(missingCommand.executeCommand).not.toHaveBeenCalled();
   });
 
   it("fails when Cursor rejects exact Codex thread navigation", async () => {
     const deps = dependencies([CODEX_OPEN_SIDEBAR_COMMAND]);
     deps.openExternal.mockResolvedValueOnce(false);
-    await expect(
-      focusCursorConversation(
-        "cursor://agent-deck.focus/codex?threadId=thread-123&cwd=%2Fworkspace%2Falpha",
-        deps,
-      ),
-    ).resolves.toBe(false);
-    expect(deps.showError).toHaveBeenCalledWith(
-      expect.stringContaining("Codex sidebar"),
+    const result = await focusCursorConversation(
+      "cursor://agent-deck.focus/codex?threadId=thread-123&cwd=%2Fworkspace%2Falpha",
+      deps,
+    );
+    expect(result.status).toBe("failed");
+    expect("message" in result ? result.message : "").toContain(
+      "Codex sidebar",
     );
   });
 
@@ -167,39 +161,36 @@ describe("Cursor focus URI handler", () => {
         "cursor://agent-deck.focus/open?conversationId=bad%20id",
         deps,
       ),
-    ).resolves.toBe(false);
+    ).resolves.toMatchObject({ status: "unavailable" });
     await expect(
       focusCursorConversation(
         "https://agent-deck.focus/open?conversationId=conversation-123",
         deps,
       ),
-    ).resolves.toBe(false);
+    ).resolves.toMatchObject({ status: "unavailable" });
     expect(deps.executeCommand).not.toHaveBeenCalled();
-    expect(deps.showError).toHaveBeenCalledTimes(2);
   });
 
   it("reports incompatible Cursor versions and missing conversations", async () => {
     const incompatible = dependencies([]);
-    await expect(
-      focusCursorConversation(
-        "cursor://agent-deck.focus/open?conversationId=conversation-123&workspace=%2Fworkspace%2Falpha",
-        incompatible,
-      ),
-    ).resolves.toBe(false);
-    expect(incompatible.showError).toHaveBeenCalledWith(
-      expect.stringContaining("cannot open"),
+    const incompatibleResult = await focusCursorConversation(
+      "cursor://agent-deck.focus/open?conversationId=conversation-123&workspace=%2Fworkspace%2Falpha",
+      incompatible,
     );
+    expect(incompatibleResult.status).toBe("unavailable");
+    expect(
+      "message" in incompatibleResult ? incompatibleResult.message : "",
+    ).toContain("cannot open");
 
     const unavailable = dependencies();
     unavailable.executeCommand.mockRejectedValueOnce(new Error("not found"));
-    await expect(
-      focusCursorConversation(
-        "cursor://agent-deck.focus/open?conversationId=conversation-123&workspace=%2Fworkspace%2Falpha",
-        unavailable,
-      ),
-    ).resolves.toBe(false);
-    expect(unavailable.showError).toHaveBeenCalledWith(
-      expect.stringContaining("no longer exist"),
+    const unavailableResult = await focusCursorConversation(
+      "cursor://agent-deck.focus/open?conversationId=conversation-123&workspace=%2Fworkspace%2Falpha",
+      unavailable,
     );
+    expect(unavailableResult.status).toBe("failed");
+    expect(
+      "message" in unavailableResult ? unavailableResult.message : "",
+    ).toContain("no longer exist");
   });
 });

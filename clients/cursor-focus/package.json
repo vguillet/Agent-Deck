@@ -2,7 +2,7 @@
   "name": "focus",
   "displayName": "Agent Deck Focus",
   "description": "Opens exact Cursor conversations and local Codex threads from Agent Deck.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "publisher": "agent-deck",
   "type": "module",
@@ -38,7 +38,7 @@
   "scripts": {
     "build": "tsc -b && node scripts/build-extension.mjs",
     "prepackage": "node scripts/prepare-package.mjs",
-    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out release/agent-deck.focus-0.3.0.vsix"
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out release/agent-deck.focus-$npm_package_version.vsix"
   },
   "dependencies": {
     "@agent-deck/api-contract": "0.1.0",

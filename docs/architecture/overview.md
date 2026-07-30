@@ -15,11 +15,13 @@ the SQLite reducer owns revisions, event sequences, deduplication, attention,
 and freshness.
 
 During a server run, the core stores current snapshots and canonical
-state-event history. Graceful shutdown and every startup clear agent snapshots,
-agent-scoped history, and deletion tombstones; startup provider discovery
-therefore always rebuilds the active view from a clean state. Provider outages
-during a run change provider health and data freshness, not the last known
-agent lifecycle state.
+state-event history. Graceful shutdown and every startup clear agent snapshots
+and agent-scoped history while preserving deletion tombstones. Startup provider
+discovery rebuilds the active view, suppresses agents still covered by a
+tombstone, and removes tombstones that a complete provider snapshot proves are
+no longer needed. Incomplete or failed discovery leaves tombstones intact.
+Provider outages during a run change provider health and data freshness, not
+the last known agent lifecycle state.
 
 Provider catalogs retain running and waiting agents regardless of age.
 Non-active agents and completed runs expire 24 hours after their last activity.
@@ -27,10 +29,11 @@ Codex rebuilds its registry from app-server discovery plus recent hook-only
 sessions rather than retaining the full thread archive.
 
 Providers may attach semantic `focus` or `view` links to agents. The core
-persists and serves these links. Cloud and generic links remain client-side
-navigation hints. Local Cursor and Codex focus use a separate brokered endpoint
-so the core can select and activate one registered Cursor window without
-turning focus into an agent command or state mutation.
+persists these links and coordinates every focus request through one serialized
+machine-wide queue. Local Cursor and Codex targets use the exact-window broker;
+validated Cursor Cloud and generic `cursor:` links use the core's macOS
+launcher. Focus remains navigation rather than an agent command or state
+mutation.
 
 Cancellation is a separate provider command. The core validates the target and
 optional expected revision, then dispatches `cancel` only to the provider that

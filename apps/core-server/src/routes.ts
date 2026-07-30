@@ -7,12 +7,11 @@ import {
   ListQuerySchema,
   decodeCursor,
   encodeCursor,
-  type CursorFocusTarget,
 } from "@agent-deck/api-contract";
 import type { EventStore, StorePage } from "@agent-deck/event-store";
 import { RevisionConflictError } from "@agent-deck/event-store";
 import type { SubscriptionBroker } from "./broker.js";
-import type { CursorWindowBroker } from "./cursor-window-broker.js";
+import type { AgentFocusCoordinator } from "./agent-focus-coordinator.js";
 import type { ProviderManager } from "./provider-manager.js";
 
 const pageResponse = <T>(
@@ -52,7 +51,7 @@ export const registerApiRoutes = (
   app: FastifyInstance,
   store: EventStore,
   broker: SubscriptionBroker,
-  cursorWindows: CursorWindowBroker,
+  agentFocus: AgentFocusCoordinator,
   providers: ProviderManager,
 ): void => {
   app.get("/healthz", async () => ({ status: "ok" }));
@@ -163,49 +162,7 @@ export const registerApiRoutes = (
 
   app.post<{ Params: { id: string } }>(
     "/api/v1/agents/:id/focus",
-    async (request, reply) => {
-      const agent = store.getAgent(request.params.id);
-      if (!agent) return notFound(request, reply, "Agent");
-      let target: CursorFocusTarget | undefined;
-      if (agent.providerId === "cursor-local") {
-        const roots = agent.metadata.workspaceRoots;
-        target = {
-          kind: "cursor.conversation",
-          conversationId: agent.externalId,
-          workspaceRoots: Array.isArray(roots)
-            ? roots.filter(
-                (root): root is string => typeof root === "string" && !!root,
-              )
-            : [],
-        };
-      } else if (agent.providerId === "codex") {
-        const cwd = agent.metadata.cwd;
-        if (typeof cwd === "string" && cwd)
-          target = {
-            kind: "codex.thread",
-            threadId: agent.externalId,
-            cwd,
-          };
-      } else {
-        return reply.code(409).send({
-          error: {
-            code: "unsupported",
-            message: "This agent does not support brokered Cursor focus",
-            requestId: request.id,
-          },
-        });
-      }
-      if (!target)
-        return {
-          requestId: randomUUID(),
-          status: "unavailable",
-          message:
-            agent.providerId === "codex"
-              ? "The Codex thread has no working directory"
-              : "The agent has no Cursor workspace identity",
-        };
-      return cursorWindows.focus(target);
-    },
+    async (request) => agentFocus.focusAgent(request.params.id),
   );
 
   app.get<{ Params: { id: string } }>(
@@ -311,7 +268,7 @@ export const registerApiRoutes = (
         health: provider.health,
       })),
       connectedClients: broker.listPresence().length,
-      connectedCursorWindows: cursorWindows.registeredCount(),
+      connectedCursorWindows: agentFocus.registeredCursorWindowCount(),
       timestamp: new Date().toISOString(),
     };
   });

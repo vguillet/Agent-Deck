@@ -42,7 +42,11 @@ export interface EventStore {
   listAgents(filters: AgentFilters, page: PageRequest): StorePage<Agent>;
   getAgent(id: string): Agent | undefined;
   deleteAgent(id: string): boolean;
-  clearAgents(): number;
+  clearAgents(options?: { preserveTombstones?: boolean }): number;
+  reconcileDeletedAgents(
+    providerId: string,
+    agentIds: readonly string[],
+  ): number;
   listRuns(agentId: string, page: PageRequest): StorePage<AgentRun>;
   getRun(id: string): AgentRun | undefined;
   listEvents(

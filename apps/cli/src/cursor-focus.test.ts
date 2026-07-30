@@ -22,7 +22,7 @@ const setup = async (initialVersion?: string) => {
           : "",
         stderr: "",
       };
-    if (arguments_[0] === "--install-extension") version = "0.3.0";
+    if (arguments_[0] === "--install-extension") version = "0.4.0";
     if (arguments_[0] === "--uninstall-extension") version = undefined;
     return { stdout: "", stderr: "" };
   });
@@ -44,7 +44,7 @@ describe("Cursor focus extension installer", () => {
       "already installed",
     );
     await expect(cursorFocusStatus(harness.options)).resolves.toContain(
-      "0.3.0 is installed",
+      "0.4.0 is installed",
     );
     expect(
       harness.run.mock.calls.filter(

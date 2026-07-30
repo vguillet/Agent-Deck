@@ -1,7 +1,17 @@
 import type { Agent, Workspace } from "@agent-deck/domain";
 
-export const streamDeckAgents = (agents: Agent[]): Agent[] =>
-  agents.filter((agent) => agent.freshness === "fresh" && !agent.archived);
+export const isSubagent = (agent: Agent): boolean => agent.kind === "subagent";
+
+export const streamDeckAgents = (
+  agents: Agent[],
+  showSubagents = false,
+): Agent[] =>
+  agents.filter(
+    (agent) =>
+      agent.freshness === "fresh" &&
+      !agent.archived &&
+      (!isSubagent(agent) || (showSubagents && agent.state === "running")),
+  );
 
 export const sortAgentsByWorkspace = (
   agents: Agent[],
@@ -51,5 +61,27 @@ export const preserveAgentSlotOrder = (
       return updated ? [updated] : [];
     }),
     ...next.filter((agent) => !previousIds.has(agent.id)),
+  ];
+};
+
+export const orderAgentStack = (
+  previous: Agent[],
+  next: Agent[],
+  workspaces: Workspace[],
+): Agent[] => {
+  const previousTopLevel = previous.filter((agent) => !isSubagent(agent));
+  const previousSubagents = previous.filter(isSubagent);
+  const nextTopLevel = next.filter((agent) => !isSubagent(agent));
+  const nextSubagents = next.filter(isSubagent);
+
+  return [
+    ...sortAgentsByWorkspace(
+      preserveAgentSlotOrder(previousTopLevel, nextTopLevel),
+      workspaces,
+    ),
+    ...sortAgentsByWorkspace(
+      preserveAgentSlotOrder(previousSubagents, nextSubagents),
+      workspaces,
+    ),
   ];
 };

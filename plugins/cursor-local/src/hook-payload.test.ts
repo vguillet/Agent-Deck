@@ -188,6 +188,12 @@ describe("Cursor hook payload sanitizer", () => {
       transcript_path:
         "/private/cursor/agent-transcripts/parent/subagents/child-1.jsonl",
     });
-    expect(sanitized).toBeUndefined();
+    expect(sanitized).toMatchObject({
+      protocol_version: 2,
+      hook_event_name: "preToolUse",
+      conversation_id: "child-1",
+      conversation_kind: "subagent",
+    });
+    expect(sanitized).not.toHaveProperty("transcript_path");
   });
 });

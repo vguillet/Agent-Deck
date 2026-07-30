@@ -7,8 +7,6 @@ import {
   type CursorWindowSnapshot,
 } from "./window-client.js";
 
-const EXTENSION_VERSION = "0.3.0";
-
 const focusDependencies = (): Parameters<
   typeof focusCursorConversation
 >[1] => ({
@@ -21,8 +19,6 @@ const focusDependencies = (): Parameters<
   executeCommand: (command, ...arguments_) =>
     Promise.resolve(vscode.commands.executeCommand(command, ...arguments_)),
   openExternal: async (uri) => vscode.env.openExternal(vscode.Uri.parse(uri)),
-  showError: (message) =>
-    Promise.resolve(vscode.window.showErrorMessage(message)),
 });
 
 const windowSnapshot = (): CursorWindowSnapshot => {
@@ -60,6 +56,13 @@ const targetUri = (target: CursorFocusTarget): string => {
 };
 
 export const activate = (context: vscode.ExtensionContext): void => {
+  const packageJson: unknown = context.extension.packageJSON;
+  const extensionVersion =
+    typeof packageJson === "object" &&
+    packageJson !== null &&
+    "version" in packageJson
+      ? String(packageJson.version)
+      : "unknown";
   const windowClient = new CursorWindowClient(
     {
       getServerUrl: () =>
@@ -76,7 +79,7 @@ export const activate = (context: vscode.ExtensionContext): void => {
         else console.warn(`[Agent Deck] ${message}`, error);
       },
     },
-    EXTENSION_VERSION,
+    extensionVersion,
   );
   windowClient.start();
   context.subscriptions.push(
@@ -93,7 +96,12 @@ export const activate = (context: vscode.ExtensionContext): void => {
     }),
     vscode.window.registerUriHandler({
       handleUri: async (uri) => {
-        await focusCursorConversation(uri.toString(true), focusDependencies());
+        const result = await focusCursorConversation(
+          uri.toString(true),
+          focusDependencies(),
+        );
+        if (result.status !== "opened")
+          await vscode.window.showErrorMessage(result.message);
       },
     }),
   );

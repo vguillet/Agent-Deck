@@ -49,6 +49,8 @@ export const AgentSchema = z.object({
   providerId: z.string().min(1),
   externalId: z.string().min(1),
   title: z.string().min(1),
+  kind: z.enum(["top_level", "subagent"]).optional(),
+  parentAgentId: z.string().min(3).optional(),
   projectId: z.string().optional(),
   workspaceId: z.string().optional(),
   state: AgentStateSchema,
@@ -234,6 +236,7 @@ export const CursorWindowRegistrationSchema = z.object({
   launchTarget: z.string().min(1),
   focused: z.boolean(),
   version: z.string().min(1),
+  focusProtocolVersion: z.literal(2).optional(),
   focusKinds: z
     .array(CursorFocusTargetKindSchema)
     .min(1)
@@ -251,6 +254,7 @@ export const CursorFocusResultStatusSchema = z.enum([
   "unavailable",
   "ambiguous",
   "timeout",
+  "superseded",
   "failed",
 ]);
 
@@ -284,6 +288,11 @@ export const CursorFocusIntentFrameSchema = z.object({
   target: CursorFocusTargetSchema,
 });
 
+export const CursorFocusCancelFrameSchema = z.object({
+  type: z.literal("focus.cancel"),
+  requestId: z.string().uuid(),
+});
+
 export const LegacyCursorFocusIntentFrameSchema = z.object({
   type: z.literal("focus.intent"),
   requestId: z.string().uuid(),
@@ -293,6 +302,11 @@ export const LegacyCursorFocusIntentFrameSchema = z.object({
 export const CompatibleCursorFocusIntentFrameSchema = z.union([
   CursorFocusIntentFrameSchema,
   LegacyCursorFocusIntentFrameSchema,
+]);
+
+export const CursorWindowServerFrameSchema = z.union([
+  CompatibleCursorFocusIntentFrameSchema,
+  CursorFocusCancelFrameSchema,
 ]);
 
 export const CursorWindowClientFrameSchema = z.discriminatedUnion("type", [
@@ -361,6 +375,12 @@ export type CursorFocusIntentFrame = z.infer<
 >;
 export type CompatibleCursorFocusIntentFrame = z.infer<
   typeof CompatibleCursorFocusIntentFrameSchema
+>;
+export type CursorFocusCancelFrame = z.infer<
+  typeof CursorFocusCancelFrameSchema
+>;
+export type CursorWindowServerFrame = z.infer<
+  typeof CursorWindowServerFrameSchema
 >;
 
 export const workspaceRootsKey = (roots: readonly string[]): string =>

@@ -1,10 +1,17 @@
 import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EXTENSION_ID = "agent-deck.focus";
-const EXTENSION_VERSION = "0.3.0";
+const EXTENSION_VERSION = String(
+  (
+    createRequire(import.meta.url)("focus/package.json") as {
+      version: string;
+    }
+  ).version,
+);
 const DEFAULT_CURSOR_BINARY =
   "/Applications/Cursor.app/Contents/Resources/app/bin/cursor";
 

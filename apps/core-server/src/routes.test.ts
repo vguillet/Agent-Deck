@@ -2,8 +2,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@agent-deck/domain";
 import type { EventStore } from "@agent-deck/event-store";
+import type { AgentFocusCoordinator } from "./agent-focus-coordinator.js";
 import type { SubscriptionBroker } from "./broker.js";
-import type { CursorWindowBroker } from "./cursor-window-broker.js";
 import type { ProviderManager } from "./provider-manager.js";
 import { registerApiRoutes } from "./routes.js";
 
@@ -52,22 +52,25 @@ const setup = async (agents: Agent[]) => {
     currentSequence: () => 0,
     clearAgents,
   } as unknown as EventStore;
-  const focus = vi.fn(async () => ({
+  const focusAgent = vi.fn(async () => ({
     requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     status: "opened" as const,
   }));
-  const cursorWindows = { focus } as unknown as CursorWindowBroker;
+  const agentFocus = {
+    focusAgent,
+    registeredCursorWindowCount: () => 0,
+  } as unknown as AgentFocusCoordinator;
   const requestResync = vi.fn();
   const rediscover = vi.fn(async () => {});
   registerApiRoutes(
     app,
     store,
     { requestResync } as unknown as SubscriptionBroker,
-    cursorWindows,
+    agentFocus,
     { rediscover } as unknown as ProviderManager,
   );
   await app.ready();
-  return { app, clearAgents, focus, rediscover, requestResync };
+  return { app, clearAgents, focusAgent, rediscover, requestResync };
 };
 
 describe("agent collection route", () => {
@@ -90,8 +93,8 @@ describe("agent collection route", () => {
   });
 });
 
-describe("brokered agent focus route", () => {
-  it("maps local Cursor and Codex agents to discriminated targets", async () => {
+describe("agent focus route", () => {
+  it("delegates every provider and missing ID to the unified coordinator", async () => {
     const cursor = agent("cursor-local", "conversation-1", {
       workspaceRoots: ["/workspace/beta", "/workspace/alpha"],
     });
@@ -105,44 +108,20 @@ describe("brokered agent focus route", () => {
       url: `/api/v1/agents/${encodeURIComponent(cursor.id)}/focus`,
     });
     expect(cursorResponse.statusCode).toBe(200);
-    expect(test.focus).toHaveBeenLastCalledWith({
-      kind: "cursor.conversation",
-      conversationId: "conversation-1",
-      workspaceRoots: ["/workspace/beta", "/workspace/alpha"],
-    });
+    expect(test.focusAgent).toHaveBeenLastCalledWith(cursor.id);
 
     const codexResponse = await test.app.inject({
       method: "POST",
       url: `/api/v1/agents/${encodeURIComponent(codex.id)}/focus`,
     });
     expect(codexResponse.statusCode).toBe(200);
-    expect(test.focus).toHaveBeenLastCalledWith({
-      kind: "codex.thread",
-      threadId: "thread-1",
-      cwd: "/workspace/alpha/project",
-    });
-  });
+    expect(test.focusAgent).toHaveBeenLastCalledWith(codex.id);
 
-  it("fails unavailable metadata and unsupported providers safely", async () => {
-    const codex = agent("codex", "thread-without-cwd", {});
-    const cloud = agent("cursor-cloud", "cloud-1", {});
-    const test = await setup([codex, cloud]);
-
-    const unavailable = await test.app.inject({
+    const missing = await test.app.inject({
       method: "POST",
-      url: `/api/v1/agents/${encodeURIComponent(codex.id)}/focus`,
+      url: "/api/v1/agents/missing%3Aagent/focus",
     });
-    expect(unavailable.statusCode).toBe(200);
-    expect(unavailable.json()).toMatchObject({ status: "unavailable" });
-    expect(test.focus).not.toHaveBeenCalled();
-
-    const unsupported = await test.app.inject({
-      method: "POST",
-      url: `/api/v1/agents/${encodeURIComponent(cloud.id)}/focus`,
-    });
-    expect(unsupported.statusCode).toBe(409);
-    expect(unsupported.json()).toMatchObject({
-      error: { code: "unsupported" },
-    });
+    expect(missing.statusCode).toBe(200);
+    expect(test.focusAgent).toHaveBeenLastCalledWith("missing:agent");
   });
 });
