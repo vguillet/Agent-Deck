@@ -9,6 +9,7 @@ import {
 import { agentLabelSvg } from "./agent-label.js";
 import { agentProgressSvg } from "./agent-progress.js";
 import { agentStateIndicatorSvg } from "./agent-state-indicator.js";
+import { bringUpImage } from "./bring-up-animation.js";
 import { connectorBubblesSvg } from "./connector-bubbles.js";
 import { workspaceBadgeSvg } from "./workspace-badge.js";
 
@@ -66,5 +67,21 @@ describe("Stream Deck visual regression", () => {
         ),
       ]),
     ).toBe("181115196430c368615f11e47020b2f3da9633b4f1c5151111d688c672ea3e44");
+  });
+
+  it("keeps fixed-time deck bring-up frames stable", () => {
+    const position = { index: 2, total: 5 };
+    const frames = [0, 300, 520, 1_040].map((elapsedMs) =>
+      bringUpImage(
+        "data:image/svg+xml,visual-frame",
+        elapsedMs,
+        position,
+        "data:image/svg+xml,disconnected-frame",
+      ),
+    );
+
+    expect(digest(frames)).toBe(
+      "cd1295782fef6f39f95674e35dd0aabfcccc60971f2ea2e7b1fb4138dd25663c",
+    );
   });
 });

@@ -63,6 +63,10 @@ import {
   type RunningAnimationStart,
 } from "./animation-scheduler.js";
 import {
+  bringUpImage,
+  bringUpSequenceDurationMs,
+} from "./bring-up-animation.js";
+import {
   agentEdgeFrameSvg,
   agentModeFrameSvg,
   agentModeStyle,
@@ -135,6 +139,10 @@ interface DeviceSession {
   lastSnapshotSequence: number;
   animationStartedAt: number;
   runningAnimationStarts: Map<string, RunningAnimationStart>;
+  bringUpStartedAt: number | undefined;
+  bringUpHeldActionIds: Set<string>;
+  bringUpImages: Map<string, BringUpSnapshot>;
+  bringUpTimer: NodeJS.Timeout | undefined;
   creationContext?: Awaited<
     ReturnType<AgentDeckClient["getAgentCreationContext"]>
   >;
@@ -577,7 +585,16 @@ const removedAgentIcon = (
 interface AnimatedTarget {
   actionContext: DialAction<ActionSettings> | KeyAction<ActionSettings>;
   session: DeviceSession;
-  kind: "agent" | "system";
+  kind: "agent" | "bring-up" | "system";
+}
+
+interface BringUpSnapshot {
+  binding: string | undefined;
+  image: string;
+  index: number;
+  previousImage: string | undefined;
+  title: string | undefined;
+  total: number;
 }
 
 interface AgentRemovalTransition {
@@ -596,6 +613,7 @@ class DeviceManager {
   private readonly frozenAgentIds = new Map<string, string>();
   private readonly renderedAgentLooks = new Map<string, AgentKeyLook>();
   private readonly renderedAgentLabels = new Map<string, string>();
+  private readonly renderedAgentSlots = new Map<string, number>();
   private readonly agentStateTransitions = new AgentStateTransitionTracker();
   private readonly pressedAgentActions = new Set<string>();
   private readonly focusRequestVersions = new Map<string, number>();
@@ -644,6 +662,7 @@ class DeviceManager {
     this.frozenAgentIds.delete(actionId);
     this.renderedAgentLooks.delete(actionId);
     this.renderedAgentLabels.delete(actionId);
+    this.renderedAgentSlots.delete(actionId);
     this.agentStateTransitions.clear(actionId);
     this.pressedAgentActions.delete(actionId);
     this.focusRequestVersions.set(
@@ -721,6 +740,10 @@ class DeviceManager {
       lastSnapshotSequence: 0,
       animationStartedAt: Date.now(),
       runningAnimationStarts: new Map(),
+      bringUpStartedAt: undefined,
+      bringUpHeldActionIds: new Set(),
+      bringUpImages: new Map(),
+      bringUpTimer: undefined,
       creationContextCheckedAt: 0,
       creationContextPromise: undefined,
     };
@@ -762,6 +785,7 @@ class DeviceManager {
           const previousStatus = session.connectionStatus;
           session.connectionStatus = status;
           if (status === "disconnected") {
+            this.cancelBringUp(session);
             session.allAgents = [];
             session.agents = [];
             session.attention = [];
@@ -770,7 +794,7 @@ class DeviceManager {
             rebuildAgentRenderCache(session);
             void this.renderVisible(session.deviceId);
           } else if (status === "connected" && previousStatus !== "connected")
-            void this.refresh(session);
+            void this.refreshAndStartBringUp(session);
           else void this.renderVisible(session.deviceId);
         },
       },
@@ -798,6 +822,99 @@ class DeviceManager {
     return session;
   }
 
+  private cancelBringUp(session: DeviceSession): void {
+    if (session.bringUpTimer) clearTimeout(session.bringUpTimer);
+    session.bringUpTimer = undefined;
+    session.bringUpStartedAt = undefined;
+    session.bringUpImages.clear();
+    this.releaseBringUpHeldActions(session);
+  }
+
+  private releaseBringUpHeldActions(session: DeviceSession): void {
+    for (const actionId of session.bringUpHeldActionIds)
+      this.outputWriter.discardStaged(actionId);
+    session.bringUpHeldActionIds.clear();
+  }
+
+  private async refreshAndStartBringUp(session: DeviceSession): Promise<void> {
+    const device = streamDeck.devices.getDeviceById(session.deviceId);
+    if (!device) return;
+
+    this.cancelBringUp(session);
+    const agentKeys = [...device.actions]
+      .flatMap((actionContext) => {
+        const slot = this.renderedAgentSlots.get(actionContext.id);
+        return actionContext.isKey() &&
+          actionContext.manifestId === "com.agentdeck.monitor.agent-slot" &&
+          typeof slot === "number"
+          ? [{ actionContext, slot }]
+          : [];
+      })
+      .sort((left, right) => left.slot - right.slot);
+    const previousImages = new Map(
+      agentKeys.map(({ actionContext }) => [
+        actionContext.id,
+        this.outputWriter.committedImage(actionContext.id),
+      ]),
+    );
+    for (const actionContext of device.actions) {
+      if (!actionContext.isKey()) continue;
+      this.outputWriter.beginStaging(actionContext.id);
+      session.bringUpHeldActionIds.add(actionContext.id);
+    }
+
+    try {
+      await this.refresh(session);
+    } catch (error) {
+      this.releaseBringUpHeldActions(session);
+      throw error;
+    }
+    if (session.connectionStatus !== "connected") {
+      this.releaseBringUpHeldActions(session);
+      await this.renderVisible(session.deviceId);
+      return;
+    }
+
+    for (const [index, { actionContext }] of agentKeys.entries()) {
+      const staged = this.outputWriter.takeStaged(actionContext.id);
+      session.bringUpHeldActionIds.delete(actionContext.id);
+      if (staged?.output.image)
+        session.bringUpImages.set(actionContext.id, {
+          binding: staged.commit?.binding,
+          image: staged.output.image,
+          index,
+          previousImage: previousImages.get(actionContext.id),
+          title: staged.output.title,
+          total: agentKeys.length,
+        });
+    }
+    if (session.bringUpImages.size === 0) {
+      this.releaseBringUpHeldActions(session);
+      await this.renderVisible(session.deviceId);
+      return;
+    }
+
+    session.bringUpStartedAt = Date.now();
+    await Promise.all(
+      agentKeys.map(({ actionContext }) =>
+        this.renderAnimatedTarget({
+          actionContext,
+          session,
+          kind: "bring-up",
+        }),
+      ),
+    );
+    session.bringUpTimer = setTimeout(() => {
+      session.bringUpTimer = undefined;
+      session.bringUpStartedAt = undefined;
+      session.bringUpImages.clear();
+      this.releaseBringUpHeldActions(session);
+      if (session.connectionStatus === "connected")
+        void this.renderVisible(session.deviceId);
+    }, bringUpSequenceDurationMs(agentKeys.length));
+    session.bringUpTimer.unref();
+  }
+
   async renderAgent(
     actionContext: Action<ActionSettings>,
     settings: ActionSettings,
@@ -809,6 +926,7 @@ class DeviceManager {
           actionContext.coordinates.column
         : 0;
     const slot = Math.max(0, Number(settings.slot ?? automaticSlot));
+    this.renderedAgentSlots.set(actionContext.id, slot);
     const pageSize =
       actionContext.device.size.columns * actionContext.device.size.rows || 1;
     const slotAgent = session.agents[session.page * pageSize + slot];
@@ -1484,6 +1602,14 @@ class DeviceManager {
       if (!device) continue;
       for (const actionContext of device.actions) {
         if (
+          session.bringUpStartedAt !== undefined &&
+          actionContext.isKey() &&
+          session.bringUpImages.has(actionContext.id)
+        ) {
+          targets.push({ actionContext, session, kind: "bring-up" });
+          continue;
+        }
+        if (
           actionContext.manifestId === "com.agentdeck.monitor.agent-slot" &&
           this.agentSlotIsAnimated(session, actionContext)
         )
@@ -1526,6 +1652,32 @@ class DeviceManager {
   }: AnimatedTarget): Promise<void> {
     const now = Date.now();
     const animationElapsedMs = now - session.animationStartedAt;
+    if (kind === "bring-up") {
+      const snapshot = session.bringUpImages.get(actionContext.id);
+      if (
+        !snapshot ||
+        session.bringUpStartedAt === undefined ||
+        !actionContext.isKey()
+      )
+        return;
+      await this.outputWriter.write(
+        actionContext,
+        {
+          image: bringUpImage(
+            snapshot.image,
+            now - session.bringUpStartedAt,
+            {
+              index: snapshot.index,
+              total: snapshot.total,
+            },
+            snapshot.previousImage,
+          ),
+          ...(snapshot.title === undefined ? {} : { title: snapshot.title }),
+        },
+        { binding: snapshot.binding },
+      );
+      return;
+    }
     if (kind === "system") {
       await this.outputWriter.write(actionContext, {
         image: systemIcon(session, animationElapsedMs),

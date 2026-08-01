@@ -16,12 +16,35 @@ describe("Stream Deck action output writer", () => {
     const writer = new ActionOutputWriter();
     const action = target();
 
+    expect(writer.committedImage(action.id)).toBeUndefined();
     await writer.write(action, { title: "", image: "frame-1" });
+    expect(writer.committedImage(action.id)).toBe("frame-1");
     await writer.write(action, { title: "", image: "frame-1" });
     await writer.write(action, { title: "", image: "frame-2" });
 
     expect(action.setTitle).toHaveBeenCalledOnce();
     expect(action.setImage).toHaveBeenCalledTimes(2);
+    expect(writer.committedImage(action.id)).toBe("frame-2");
+  });
+
+  it("stages output without exposing an intermediate frame", async () => {
+    const writer = new ActionOutputWriter<string>();
+    const action = target();
+    await writer.write(action, { image: "connecting" });
+
+    writer.beginStaging(action.id);
+    await writer.write(
+      action,
+      { image: "connected", title: "Agent" },
+      { binding: "agent-1" },
+    );
+
+    expect(action.setImage).toHaveBeenCalledOnce();
+    expect(writer.committedImage(action.id)).toBe("connecting");
+    expect(writer.takeStaged(action.id)).toEqual({
+      output: { image: "connected", title: "Agent" },
+      commit: { binding: "agent-1" },
+    });
   });
 
   it("serializes writes for one action without blocking another", async () => {

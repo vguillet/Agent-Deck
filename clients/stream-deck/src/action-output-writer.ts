@@ -13,6 +13,11 @@ export interface ActionOutputCommit<TBinding> {
   binding?: TBinding | undefined;
 }
 
+export interface StagedActionOutput<TBinding> {
+  output: ActionOutput;
+  commit: ActionOutputCommit<TBinding> | undefined;
+}
+
 interface WriteWaiter {
   resolve(): void;
   reject(error: unknown): void;
@@ -42,12 +47,18 @@ interface ActionOutputState<TBinding> {
  */
 export class ActionOutputWriter<TBinding = never> {
   private readonly states = new Map<string, ActionOutputState<TBinding>>();
+  private readonly staging = new Set<string>();
+  private readonly staged = new Map<string, StagedActionOutput<TBinding>>();
 
   write(
     target: ActionOutputTarget,
     output: ActionOutput,
     commit?: ActionOutputCommit<TBinding>,
   ): Promise<void> {
+    if (this.staging.has(target.id)) {
+      this.staged.set(target.id, { output, commit });
+      return Promise.resolve();
+    }
     let state = this.states.get(target.id);
     if (!state) {
       state = {
@@ -79,7 +90,29 @@ export class ActionOutputWriter<TBinding = never> {
     return this.states.get(actionId)?.binding;
   }
 
+  committedImage(actionId: string): string | undefined {
+    return this.states.get(actionId)?.image;
+  }
+
+  beginStaging(actionId: string): void {
+    this.staging.add(actionId);
+    this.staged.delete(actionId);
+  }
+
+  takeStaged(actionId: string): StagedActionOutput<TBinding> | undefined {
+    this.staging.delete(actionId);
+    const output = this.staged.get(actionId);
+    this.staged.delete(actionId);
+    return output;
+  }
+
+  discardStaged(actionId: string): void {
+    this.staging.delete(actionId);
+    this.staged.delete(actionId);
+  }
+
   clear(actionId: string): void {
+    this.discardStaged(actionId);
     const state = this.states.get(actionId);
     if (!state) return;
     state.closed = true;
