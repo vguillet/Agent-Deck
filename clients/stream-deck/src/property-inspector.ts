@@ -67,6 +67,23 @@ interface ProviderItem {
   name: string;
 }
 
+export const providerItems = (value: unknown): ProviderItem[] => {
+  const body = asRecord(value);
+  return Array.isArray(body.items)
+    ? body.items
+        .map(asRecord)
+        .filter(
+          (provider) =>
+            typeof provider.id === "string" &&
+            typeof provider.displayName === "string",
+        )
+        .map((provider) => ({
+          id: provider.id as string,
+          name: provider.displayName as string,
+        }))
+    : [];
+};
+
 export const buildCommonConfiguration = (
   existing: Readonly<Record<string, unknown>>,
   values: CommonControlValues,
@@ -156,11 +173,14 @@ const readConfigurationDocument = async (
 export const writeConfigurationWithRetry = async (
   serverUrl: string,
   deviceId: string,
-  data: Readonly<Record<string, unknown>>,
+  update: (
+    existing: Readonly<Record<string, unknown>>,
+  ) => Record<string, unknown>,
   attempts = 2,
-): Promise<void> => {
+): Promise<Record<string, unknown>> => {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const existing = await readConfigurationDocument(serverUrl, deviceId);
+    const data = update(existing.data);
     const response = await fetch(configurationUrl(serverUrl, deviceId), {
       method: "PUT",
       headers: {
@@ -171,10 +191,11 @@ export const writeConfigurationWithRetry = async (
       },
       body: JSON.stringify({ schema: CONFIGURATION_SCHEMA, data }),
     });
-    if (response.ok) return;
+    if (response.ok) return data;
     if (response.status !== 409 || attempt === attempts - 1)
       throw new Error(`Configuration save failed (${response.status})`);
   }
+  throw new Error("Configuration save failed");
 };
 
 let websocket: WebSocket | undefined;
@@ -211,10 +232,13 @@ const saveCommonSettings = async (
   values: CommonControlValues,
 ): Promise<void> => {
   const serverUrl = normalizeServerUrl(values.serverUrl);
-  send("setGlobalSettings", { serverUrl });
-  const data = buildCommonConfiguration(configurationData, values);
-  await writeConfigurationWithRetry(serverUrl, deviceId, data);
+  const data = await writeConfigurationWithRetry(
+    serverUrl,
+    deviceId,
+    (existing) => buildCommonConfiguration(existing, values),
+  );
   configurationData = data;
+  send("setGlobalSettings", { serverUrl });
   send("sendToPlugin", { type: "common-settings-updated" });
   setStatus("Saved");
 };
@@ -252,20 +276,7 @@ const populateProviders = async (serverUrl: string): Promise<void> => {
       `${normalizeServerUrl(serverUrl)}/api/v1/providers?limit=200`,
     );
     if (!response.ok) return;
-    const body = asRecord(await response.json());
-    const providers = Array.isArray(body.items)
-      ? body.items
-          .map(asRecord)
-          .filter(
-            (provider) =>
-              typeof provider.id === "string" &&
-              typeof provider.name === "string",
-          )
-          .map((provider): ProviderItem => ({
-            id: provider.id as string,
-            name: provider.name as string,
-          }))
-      : [];
+    const providers = providerItems(await response.json());
     const select = element<HTMLSelectElement>("summaryProviderId");
     const selected =
       typeof actionSettings.summaryProviderId === "string"

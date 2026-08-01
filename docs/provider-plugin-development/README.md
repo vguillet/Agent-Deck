@@ -34,10 +34,9 @@ an epoch Agent Deck previously observed active. Terminal agents remain visible
 until dismissed. Removal is represented by `agent.removed` and `run.removed`
 events.
 
-The local Cursor provider is intentionally separate from Cursor Cloud. Local
-Cursor uses user hooks and needs no API key, has no historical backfill, and
-cannot reliably infer approval or input-waiting states. Cursor Cloud uses the
-Cursor SDK catalog and stream APIs.
+The local Cursor provider uses user hooks and needs no API key, has no
+historical backfill, and cannot reliably infer approval or input-waiting
+states.
 
 Claude Code is a hook-driven incremental provider shared by standalone CLI
 sessions and the official Anthropic extension in Cursor. Its reporter strips

@@ -1,6 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
-  <rect width="144" height="144" fill="#10b981"/>
-  <rect width="144" height="13" rx="7" fill="#94a3b8"/>
-  <circle cx="114" cy="31" r="20" fill="#94a3b8"/>
-  <text x="72" y="98" text-anchor="middle" font-family="system-ui" font-size="58" font-weight="700" fill="#fff">P</text>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144"><defs><filter id="agent-slot-muted"><feColorMatrix type="saturate" values="0"/></filter></defs><g filter="url(#agent-slot-muted)" opacity=".55"><rect width="144" height="144" fill="#334155"/><text x="72" y="93" text-anchor="middle" font-family="system-ui" font-size="58" font-weight="700" fill="#fff">P</text></g><rect width="144" height="144" fill="#64748b" opacity=".32"/></svg>

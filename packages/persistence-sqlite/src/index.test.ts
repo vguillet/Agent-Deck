@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { Agent, AgentRun, ProviderSnapshot } from "@agent-deck/domain";
+import type {
+  Agent,
+  AgentRun,
+  Provider,
+  ProviderSnapshot,
+} from "@agent-deck/domain";
 import { createMemoryStore } from "./index.js";
 
 const makeAgent = (
@@ -54,6 +59,21 @@ const snapshot = (
   agents,
   runs: agents.map(makeRun),
   attention: [],
+});
+
+const provider = (
+  health: Provider["health"],
+  checkedAt: string,
+  healthMessage?: string,
+): Provider => ({
+  id: "fake",
+  displayName: "Fake",
+  version: "0.1.0",
+  health,
+  ...(healthMessage ? { healthMessage } : {}),
+  lastCheckedAt: checkedAt,
+  consecutiveFailures: health === "healthy" ? 0 : 1,
+  capabilities: { discovery: true, liveEvents: true, commands: [] },
 });
 
 describe("SqliteEventStore live projection", () => {
@@ -178,6 +198,46 @@ describe("SqliteEventStore live projection", () => {
       ]),
     );
     expect(store.listAgents({}, { offset: 0, limit: 10 }).items).toEqual([]);
+    store.close();
+  });
+
+  it("keeps one provider-health incident timestamp until resolution", () => {
+    const store = createMemoryStore();
+    store.updateProvider(
+      provider("unhealthy", "2026-07-28T09:00:00.000Z", "Offline"),
+    );
+    store.updateProvider(
+      provider("degraded", "2026-07-28T09:01:00.000Z", "Retrying"),
+    );
+    expect(
+      store.listAttention({ offset: 0, limit: 10 }).items[0]?.openedAt,
+    ).toBe("2026-07-28T09:00:00.000Z");
+
+    store.updateProvider(provider("healthy", "2026-07-28T09:02:00.000Z"));
+    expect(store.listAttention({ offset: 0, limit: 10 }).items).toEqual([]);
+
+    store.updateProvider(
+      provider("unhealthy", "2026-07-28T09:03:00.000Z", "Offline again"),
+    );
+    expect(
+      store.listAttention({ offset: 0, limit: 10 }).items[0]?.openedAt,
+    ).toBe("2026-07-28T09:03:00.000Z");
+    store.close();
+  });
+
+  it("clears agent state while retaining provider-health attention", () => {
+    const store = createMemoryStore();
+    store.updateProvider(
+      provider("unhealthy", "2026-07-28T09:00:00.000Z", "Offline"),
+    );
+    store.applySnapshot("fake", snapshot([makeAgent("waiting_for_input")]));
+    expect(store.listAttention({ offset: 0, limit: 10 }).items).toHaveLength(2);
+
+    expect(store.clearAgents()).toBe(1);
+    expect(store.listAgents({}, { offset: 0, limit: 10 }).items).toEqual([]);
+    expect(store.listAttention({ offset: 0, limit: 10 }).items).toMatchObject([
+      { type: "provider_health", providerId: "fake" },
+    ]);
     store.close();
   });
 });

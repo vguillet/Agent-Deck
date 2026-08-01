@@ -1,7 +1,7 @@
 # Agent Deck
 
 Agent Deck is a headless, local agent observability service. Provider plugins
-translate Claude Code, Codex, local Cursor, and Cursor Cloud state into one canonical
+translate Claude Code, Codex, and local Cursor state into one canonical
 registry; CLI and Stream Deck clients render that state without
 provider-specific logic.
 
@@ -12,6 +12,11 @@ For Codex and local Cursor, it can display an allowlisted coarse activity and
 numeric plan completion. Plan counts appear only when a recognized plan/Todo
 tool supplies structured statuses; step text is discarded before ingestion.
 
+Existing developer-preview configurations that reference
+`@agent-deck/provider-cursor-cloud` must remove that provider entry. Cursor
+Cloud support was removed because its SDK dependency graph had unresolved
+production security advisories.
+
 ## Requirements
 
 - macOS 13 or newer
@@ -20,7 +25,6 @@ tool supplies structured statuses; step text is discarded before ingestion.
 - Codex CLI for the Codex provider
 - Cursor IDE or Agent CLI for the local Cursor provider
 - OpenAI Codex extension (`openai.chatgpt`) in Cursor for Codex thread focus
-- A Cursor API key for the Cursor Cloud provider
 - Stream Deck 7.1 or newer for the hardware client
 
 ## Quick start
@@ -29,7 +33,6 @@ tool supplies structured statuses; step text is discarded before ingestion.
 npm install
 npm run build
 cp agent-deck.config.example.json agent-deck.config.json
-export CURSOR_API_KEY="..."
 npm run dev
 ```
 
@@ -153,8 +156,8 @@ subscribers after the first API response in a session.
 Working variants use energetic tool and writing loops; review variants jump and
 present their finished work. Empty character-mode slots use the same restful
 idle scenes. A single press latches the agent currently rendered on key-down,
-then opens that exact Claude Code session or Codex thread in Cursor, local Cursor conversation, or
-Cursor Cloud conversation. Focus switches are serialized machine-wide, and
+then opens that exact Claude Code session or Codex thread in Cursor, or local
+Cursor conversation. Focus switches are serialized machine-wide, and
 rapid presses retain only the newest queued target. A long press deletes the
 Agent Deck record and its history, suppressing provider
 rediscovery until that external agent reports newer activity. Encoder rotation
@@ -168,7 +171,6 @@ rediscovers active agents.
 agent-deck server
 agent-deck agents [--watch] [--json]
 agent-deck agent <id>
-agent-deck events --agent <id> [--watch]
 agent-deck attention [--watch]
 agent-deck providers
 agent-deck health

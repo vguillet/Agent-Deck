@@ -22,15 +22,6 @@
       }
     },
     {
-      "id": "cursor-cloud",
-      "module": "@agent-deck/provider-cursor-cloud",
-      "enabled": true,
-      "discoveryIntervalMs": 30000,
-      "config": {
-        "apiKeyEnv": "CURSOR_API_KEY"
-      }
-    },
-    {
       "id": "cursor-local",
       "module": "@agent-deck/provider-cursor-local",
       "enabled": true,

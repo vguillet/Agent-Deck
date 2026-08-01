@@ -5,6 +5,7 @@ import {
   COMMON_SETTING_IDS,
   actionValuesFromControls,
   buildCommonConfiguration,
+  providerItems,
   writeConfigurationWithRetry,
 } from "./property-inspector.js";
 
@@ -79,22 +80,33 @@ describe("property inspector settings scopes", () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: {}, revision: 4 }), {
-          status: 200,
-        }),
+        new Response(
+          JSON.stringify({ data: { serverOwned: "old" }, revision: 4 }),
+          {
+            status: 200,
+          },
+        ),
       )
       .mockResolvedValueOnce(new Response(null, { status: 409 }))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: {}, revision: 5 }), {
-          status: 200,
-        }),
+        new Response(
+          JSON.stringify({
+            data: { serverOwned: "new", concurrent: true },
+            revision: 5,
+          }),
+          {
+            status: 200,
+          },
+        ),
       )
       .mockResolvedValueOnce(new Response(null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await writeConfigurationWithRetry("http://localhost:47831", "device-1", {
-      keyVisualTheme: "light",
-    });
+    await writeConfigurationWithRetry(
+      "http://localhost:47831",
+      "device-1",
+      (existing) => ({ ...existing, keyVisualTheme: "light" }),
+    );
 
     expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
@@ -111,5 +123,25 @@ describe("property inspector settings scopes", () => {
         "if-match": '"5"',
       },
     });
+    expect(
+      JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body)),
+    ).toMatchObject({
+      data: {
+        serverOwned: "new",
+        concurrent: true,
+        keyVisualTheme: "light",
+      },
+    });
+  });
+
+  it("uses provider displayName values from the API contract", () => {
+    expect(
+      providerItems({
+        items: [
+          { id: "codex", displayName: "Codex" },
+          { id: "invalid", name: "Legacy name" },
+        ],
+      }),
+    ).toEqual([{ id: "codex", name: "Codex" }]);
   });
 });

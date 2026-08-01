@@ -30,15 +30,13 @@ log is retained only as a bounded transport replay buffer.
 Providers may attach semantic `focus` or `view` links to agents. The core
 persists these links and coordinates every focus request through one serialized
 machine-wide queue. Local Cursor and Codex targets use the exact-window broker;
-validated Cursor Cloud and generic `cursor:` links use the core's macOS
-launcher. Focus remains navigation rather than an agent command or state
-mutation.
+validated generic `cursor:` links use the core's macOS launcher. Focus remains
+navigation rather than an agent command or state mutation.
 
 Cancellation is a separate provider command. The core validates the target and
 optional expected revision, then dispatches `cancel` only to the provider that
-owns the agent. Codex interrupts the active turn, Cursor Cloud cancels the
-active run, and local Cursor sends the conversation ID to the companion
-extension's cancel command.
+owns the agent. Codex interrupts the active turn, and local Cursor sends the
+conversation ID to the companion extension's cancel command.
 
 ## Local Cursor boundary
 

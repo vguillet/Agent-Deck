@@ -284,8 +284,10 @@ export class ProviderManager {
     let health: ProviderHealth;
     try {
       health = await managed.plugin.healthCheck();
+      const providerWithoutMessage = { ...managed.provider };
+      delete providerWithoutMessage.healthMessage;
       managed.provider = {
-        ...managed.provider,
+        ...providerWithoutMessage,
         health: health.status,
         ...(health.message ? { healthMessage: health.message } : {}),
         lastCheckedAt: health.checkedAt,

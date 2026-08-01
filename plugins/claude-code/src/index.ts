@@ -370,6 +370,12 @@ class ClaudeCodeProvider implements AgentProviderPlugin {
     const nativeId = this.nativeId(input);
     const agentId = canonicalId(PROVIDER_ID, nativeId);
     const existing = this.agents.get(agentId);
+    const runExternalId = this.runExternalId(input);
+    const runId = runExternalId
+      ? canonicalId(PROVIDER_ID, `${nativeId}:${runExternalId}`)
+      : existing?.activeRunId;
+    const activityEpoch =
+      runId ?? existing?.activityEpoch ?? `${nativeId}:session`;
     const state = eventState(input, existing?.state);
     const terminal = [
       "Stop",
@@ -379,6 +385,13 @@ class ClaudeCodeProvider implements AgentProviderPlugin {
     ].includes(input.hook_event_name);
     if (!existing && terminal) return;
     const resources = this.resources(input.session_id, input.cwd);
+    const startsActivity =
+      input.hook_event_name === "UserPromptSubmit" ||
+      input.hook_event_name === "SubagentStart";
+    if (startsActivity) {
+      this.taskIds.delete(nativeId);
+      this.completedTaskIds.delete(nativeId);
+    }
     const taskIds = this.taskIds.get(nativeId) ?? new Set<string>();
     const completedIds =
       this.completedTaskIds.get(nativeId) ?? new Set<string>();
@@ -407,15 +420,11 @@ class ClaudeCodeProvider implements AgentProviderPlugin {
                   total: taskIds.size,
                 },
               }
-            : existing?.progress?.plan
+            : !startsActivity && existing?.progress?.plan
               ? { plan: existing.progress.plan }
               : {}),
           observedAt: now,
         };
-    const runExternalId = this.runExternalId(input);
-    const runId = runExternalId
-      ? canonicalId(PROVIDER_ID, `${nativeId}:${runExternalId}`)
-      : existing?.activeRunId;
     const sourceRevision = this.nextRevision(nativeId);
     const title =
       (input.agent_id ? input.agent_type : this.names.get(input.session_id)) ||
@@ -443,7 +452,7 @@ class ClaudeCodeProvider implements AgentProviderPlugin {
       ...(resources.project ? { projectId: resources.project.id } : {}),
       ...(resources.workspace ? { workspaceId: resources.workspace.id } : {}),
       state,
-      activityEpoch: runId ?? existing?.activityEpoch ?? `${nativeId}:session`,
+      activityEpoch,
       ...(runId ? { activeRunId: runId } : {}),
       requiresAttention:
         !input.agent_id &&
@@ -481,7 +490,7 @@ class ClaudeCodeProvider implements AgentProviderPlugin {
         : "agent.upserted",
       this.agents.get(agent.id)!,
       runId,
-      this.eventId(input, "agent"),
+      this.eventId(input, "agent", activityEpoch),
     );
     if (runId && runExternalId) {
       const previous = this.runs.get(runId);
@@ -506,13 +515,17 @@ class ClaudeCodeProvider implements AgentProviderPlugin {
       this.runs.set(run.id, run);
       await this.emit?.({
         providerId: PROVIDER_ID,
-        providerEventId: this.eventId(input, "run"),
+        providerEventId: this.eventId(input, "run", activityEpoch),
         type: previous ? "run.state.changed" : "run.upserted",
         occurredAt: now,
         agentId,
         runId,
         payload: { run },
       });
+    }
+    if (terminal) {
+      this.taskIds.delete(nativeId);
+      this.completedTaskIds.delete(nativeId);
     }
   }
 
@@ -523,7 +536,11 @@ class ClaudeCodeProvider implements AgentProviderPlugin {
     return url.href;
   }
 
-  private eventId(input: HookInput, kind: string): string {
+  private eventId(
+    input: HookInput,
+    kind: string,
+    activityEpoch: string,
+  ): string {
     return `hook:${createHash("sha256")
       .update(
         JSON.stringify([
@@ -534,6 +551,8 @@ class ClaudeCodeProvider implements AgentProviderPlugin {
           input.tool_use_id ?? "",
           input.agent_id ?? "",
           input.task_id ?? "",
+          input.notification_type ?? "",
+          activityEpoch,
         ]),
       )
       .digest("base64url")}`;

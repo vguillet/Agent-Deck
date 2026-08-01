@@ -4,6 +4,7 @@ import { AgentDeckClient, workspaceColour } from "./index.js";
 class FakeWebSocket extends EventTarget {
   static instances: FakeWebSocket[] = [];
   readonly sent: string[] = [];
+  readonly closes: Array<{ code?: number; reason?: string }> = [];
 
   constructor(readonly url: string | URL) {
     super();
@@ -14,7 +15,12 @@ class FakeWebSocket extends EventTarget {
     this.sent.push(data);
   }
 
-  close(): void {}
+  close(code?: number, reason?: string): void {
+    this.closes.push({
+      ...(code === undefined ? {} : { code }),
+      ...(reason === undefined ? {} : { reason }),
+    });
+  }
 
   open(): void {
     this.dispatchEvent(new Event("open"));
@@ -24,6 +30,10 @@ class FakeWebSocket extends EventTarget {
     this.dispatchEvent(
       new MessageEvent("message", { data: JSON.stringify(frame) }),
     );
+  }
+
+  receiveRaw(data: string): void {
+    this.dispatchEvent(new MessageEvent("message", { data }));
   }
 
   disconnect(): void {
@@ -130,6 +140,98 @@ describe("AgentDeckClient watch", () => {
 
     watch.close();
   });
+
+  it("closes malformed JSON and schema-invalid event streams safely", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    new AgentDeckClient().watch(descriptor, {
+      topics: ["agents.summary"],
+      onEvent: vi.fn(),
+    });
+    const socket = FakeWebSocket.instances[0]!;
+
+    socket.receiveRaw("{");
+    expect(socket.closes.at(-1)).toEqual({
+      code: 1008,
+      reason: "Invalid server frame",
+    });
+
+    socket.receive({ type: "event", event: { invalid: true } });
+    expect(socket.closes.at(-1)).toEqual({
+      code: 1008,
+      reason: "Invalid server event",
+    });
+  });
+});
+
+describe("AgentDeckClient pagination", () => {
+  const agent = (id: string) => ({
+    id,
+    providerId: "fake",
+    externalId: id,
+    title: id,
+    state: "running",
+    activityEpoch: "run-1",
+    requiresAttention: false,
+    lastActivityAt: "2026-08-01T18:00:00.000Z",
+    revision: 0,
+    capabilities: {
+      messages: false,
+      approvals: false,
+      cancellation: false,
+      creation: false,
+    },
+    links: [],
+    metadata: {},
+  });
+
+  it("collects all pages, deduplicates IDs, and keeps the earliest sequence", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [agent("fake:one")],
+            nextCursor: "page-2",
+            asOfSequence: 10,
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [agent("fake:one"), agent("fake:two")],
+            asOfSequence: 12,
+          }),
+        ),
+      );
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(new AgentDeckClient().listAllAgents()).resolves.toMatchObject({
+      items: [{ id: "fake:one" }, { id: "fake:two" }],
+      asOfSequence: 10,
+    });
+    expect(String(fetch.mock.calls[1]?.[0])).toContain("cursor=page-2");
+  });
+
+  it("rejects a repeated pagination cursor", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              items: [],
+              nextCursor: "same",
+              asOfSequence: 1,
+            }),
+          ),
+      ),
+    );
+
+    await expect(new AgentDeckClient().listAllAgents()).rejects.toThrow(
+      "Pagination cursor repeated",
+    );
+  });
 });
 
 describe("AgentDeckClient focus", () => {
@@ -209,6 +311,20 @@ describe("AgentDeckClient dismissTerminalAgents", () => {
     );
     expect(fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:47831/api/v1/agents/dismiss-terminal",
+      { method: "POST" },
+    );
+  });
+
+  it("clears all agent activity before rediscovery", async () => {
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ cleared: 4 }),
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(new AgentDeckClient().clearAgents()).resolves.toBe(4);
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:47831/api/v1/agents/clear",
       { method: "POST" },
     );
   });

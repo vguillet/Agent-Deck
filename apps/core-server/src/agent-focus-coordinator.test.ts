@@ -75,14 +75,14 @@ describe("Agent focus coordinator", () => {
     const claude = agent("claude-code", "session-1", {
       workspaceRoots: ["/workspace/alpha"],
     });
-    const cloud = agent("cursor-cloud", "cloud-1", {}, [
+    const generic = agent("external-provider", "external-1", {}, [
       {
         rel: "focus",
         label: "Open",
-        href: "cursor://anysphere.cursor-deeplink/background-agent?bcId=cloud-1",
+        href: "cursor://anysphere.cursor-deeplink/background-agent?bcId=external-1",
       },
     ]);
-    const test = harness([local, codex, claude, cloud]);
+    const test = harness([local, codex, claude, generic]);
 
     await expect(test.coordinator.focusAgent(local.id)).resolves.toMatchObject({
       status: "opened",
@@ -107,8 +107,8 @@ describe("Agent focus coordinator", () => {
       workspaceRoots: ["/workspace/alpha"],
     });
 
-    await test.coordinator.focusAgent(cloud.id);
-    expect(test.launch).toHaveBeenCalledWith(cloud.links[0]!.href);
+    await test.coordinator.focusAgent(generic.id);
+    expect(test.launch).toHaveBeenCalledWith(generic.links[0]!.href);
   });
 
   it("starts a replacement local conversation without waiting for prior work", async () => {

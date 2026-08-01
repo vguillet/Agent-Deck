@@ -8,9 +8,9 @@ export const streamDeckAgents = (
 ): Agent[] =>
   agents.filter(
     (agent) =>
-      (!isSubagent(agent) ||
-        (showSubagents &&
-          (agent.state === "running" || agent.state === "recovering"))),
+      !isSubagent(agent) ||
+      (showSubagents &&
+        (agent.state === "running" || agent.state === "recovering")),
   );
 
 export const sortAgentsByWorkspace = (

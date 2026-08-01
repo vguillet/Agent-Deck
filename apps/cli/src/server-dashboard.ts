@@ -58,12 +58,11 @@ export const formatServerDashboard = (
   width = 100,
 ): string => {
   const now = new Date(snapshot.updatedAt).getTime();
-  const alive = snapshot.agents
-    .sort(
-      (left, right) =>
-        new Date(right.lastActivityAt).getTime() -
-        new Date(left.lastActivityAt).getTime(),
-    );
+  const alive = snapshot.agents.sort(
+    (left, right) =>
+      new Date(right.lastActivityAt).getTime() -
+      new Date(left.lastActivityAt).getTime(),
+  );
   const healthyProviders = snapshot.providers.filter(
     (provider) => provider.health === "healthy",
   ).length;

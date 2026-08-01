@@ -91,6 +91,13 @@ export const registerApiRoutes = (
     };
   });
 
+  app.post("/api/v1/agents/clear", async () => {
+    const cleared = store.clearAgents();
+    await providers.rediscover();
+    broker.requestResync();
+    return { cleared };
+  });
+
   app.post("/api/v1/agents/create", async (request, reply) => {
     const input = AgentCreationRequestSchema.safeParse(request.body);
     if (!input.success)
@@ -316,6 +323,7 @@ export const registerApiRoutes = (
         "/api/v1/agents",
         "/api/v1/agents/create",
         "/api/v1/agents/create/context",
+        "/api/v1/agents/clear",
         "/api/v1/agents/dismiss-terminal",
         "/api/v1/agents/{id}",
         "/api/v1/agents/{id}/dismiss",
@@ -335,6 +343,7 @@ export const registerApiRoutes = (
         path,
         path.endsWith("/commands") ||
         path.endsWith("/create") ||
+        path.endsWith("/clear") ||
         path.endsWith("/focus") ||
         path.endsWith("/dismiss") ||
         path.endsWith("/dismiss-terminal")

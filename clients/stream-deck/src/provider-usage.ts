@@ -16,6 +16,18 @@ export const usageColour = (usedPercent: number): string => {
   return "#22c55e";
 };
 
+export const providerUsageAfterFailure = (
+  previous: ProviderUsage | undefined,
+  providerId: string,
+  error: unknown,
+  observedAt = new Date().toISOString(),
+): ProviderUsage => {
+  const message = error instanceof Error ? error.message : String(error);
+  return previous?.status === "available"
+    ? { ...previous, stale: true, message }
+    : { providerId, status: "unavailable", windows: [], observedAt, message };
+};
+
 export const usageResetLabel = (
   window: ProviderUsageWindow | undefined,
   now: number,

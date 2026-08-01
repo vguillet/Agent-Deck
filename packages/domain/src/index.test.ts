@@ -85,9 +85,7 @@ describe("lifecycle state predicates", () => {
         "failed",
         "cancelled",
         "unknown",
-      ].filter((state) =>
-        isTerminalVisibleAgentState(state as Agent["state"]),
-      ),
+      ].filter((state) => isTerminalVisibleAgentState(state as Agent["state"])),
     ).toEqual(["ready_for_review", "failed", "cancelled"]);
   });
 

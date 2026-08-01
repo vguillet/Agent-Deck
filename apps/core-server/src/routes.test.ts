@@ -56,11 +56,17 @@ const setup = async (agents: Agent[], workspaces: Workspace[] = []) => {
       },
     ];
   });
+  const clearAgents = vi.fn(() => {
+    const count = byId.size;
+    byId.clear();
+    return count;
+  });
   const store = {
     getAgent: (id: string) => byId.get(id),
     currentSequence: () => 0,
     dismissAgent,
     dismissTerminalAgents: () => [],
+    clearAgents,
     listWorkspaces: () => ({ items: workspaces, hasMore: false }),
   } as unknown as EventStore;
   const focusAgent = vi.fn(async () => ({
@@ -72,6 +78,7 @@ const setup = async (agents: Agent[], workspaces: Workspace[] = []) => {
     registeredCursorWindowCount: () => 0,
   } as unknown as AgentFocusCoordinator;
   const publish = vi.fn();
+  const requestResync = vi.fn();
   const rediscover = vi.fn(async () => {});
   const usage = vi.fn(async (providerId: string) => ({
     providerId,
@@ -94,7 +101,11 @@ const setup = async (agents: Agent[], workspaces: Workspace[] = []) => {
   registerApiRoutes(
     app,
     store,
-    { publish, listPresence: () => [] } as unknown as SubscriptionBroker,
+    {
+      publish,
+      requestResync,
+      listPresence: () => [],
+    } as unknown as SubscriptionBroker,
     agentFocus,
     { create, creationContext } as unknown as CursorWindowBroker,
     { rediscover, usage } as unknown as ProviderManager,
@@ -105,10 +116,13 @@ const setup = async (agents: Agent[], workspaces: Workspace[] = []) => {
     app,
     create,
     creationContext,
+    clearAgents,
     dismissAgent,
     focusAgent,
     usage,
     publish,
+    rediscover,
+    requestResync,
     workspaceColours,
   };
 };
@@ -145,6 +159,32 @@ describe("agent collection route", () => {
     expect(response.statusCode).toBe(204);
     expect(test.dismissAgent).toHaveBeenCalledWith("fake:one");
     expect(test.publish).toHaveBeenCalledOnce();
+  });
+
+  it("clears, rediscovers, and then requests a client resync", async () => {
+    const test = await setup([
+      agent("fake", "one", {}),
+      agent("fake", "two", {}),
+    ]);
+
+    const response = await test.app.inject({
+      method: "POST",
+      url: "/api/v1/agents/clear",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ cleared: 2 });
+    expect(test.clearAgents).toHaveBeenCalledOnce();
+    expect(test.rediscover).toHaveBeenCalledOnce();
+    expect(test.requestResync).toHaveBeenCalledOnce();
+    expect(test.rediscover.mock.invocationCallOrder[0]).toBeLessThan(
+      test.requestResync.mock.invocationCallOrder[0]!,
+    );
+    const openapi = await test.app.inject({
+      method: "GET",
+      url: "/api/v1/openapi.json",
+    });
+    expect(openapi.json().paths["/api/v1/agents/clear"]).toHaveProperty("post");
   });
 });
 

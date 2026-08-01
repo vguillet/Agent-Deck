@@ -7,6 +7,11 @@ const sourceFiles = async (directory: string): Promise<string[]> => {
   const nested = await Promise.all(
     entries.map((entry) => {
       const path = resolve(directory, entry.name);
+      if (
+        entry.isDirectory() &&
+        (entry.name === "node_modules" || entry.name === "dist")
+      )
+        return Promise.resolve([]);
       return entry.isDirectory()
         ? sourceFiles(path)
         : Promise.resolve(entry.name.endsWith(".ts") ? [path] : []);
@@ -26,9 +31,23 @@ describe("core dependency boundary", () => {
     const source = contents.join("\n");
     expect(source).not.toMatch(/@cursor\/sdk/);
     expect(source).not.toMatch(/@elgato\/streamdeck/);
-    expect(source).not.toMatch(
-      /@agent-deck\/provider-(codex|cursor-cloud|cursor-local)/,
-    );
+    expect(source).not.toMatch(/@agent-deck\/provider-(codex|cursor-local)/);
     expect(source).not.toMatch(/clients\/stream-deck/);
+  });
+
+  it("contains no committed ad-hoc diagnostic transport", async () => {
+    const root = resolve(import.meta.dirname, "../../..");
+    const files = (
+      await Promise.all(
+        ["apps", "clients", "packages", "plugins"].map((directory) =>
+          sourceFiles(resolve(root, directory)),
+        ),
+      )
+    ).flat();
+    const source = (
+      await Promise.all(files.map((path) => readFile(path, "utf8")))
+    ).join("\n");
+    expect(source).not.toContain(["127.0.0.1", "7387"].join(":"));
+    expect(source).not.toContain(["#region", "agent", "log"].join(" "));
   });
 });

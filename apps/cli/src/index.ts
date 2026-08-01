@@ -80,14 +80,19 @@ const watch = (
     "agents.summary" | "attention" | "providers.health" | "system.health"
   >,
   onEvent: (event: CanonicalEvent) => void,
+  onResync: () => Promise<void>,
 ): Promise<never> =>
   new Promise(() => {
     const handle = client.watch(descriptor, {
       topics,
       afterSequence,
       onEvent,
-      onResyncRequired: () =>
-        console.error("Event history was pruned; refresh the snapshot"),
+      onResyncRequired: () => {
+        console.error("Event history was pruned; refreshing the snapshot");
+        void onResync().catch((error: unknown) =>
+          console.error(error instanceof Error ? error.message : String(error)),
+        );
+      },
       onStatus: (status) => {
         if (status !== "connected") console.error(`[${status}]`);
       },
@@ -116,17 +121,22 @@ const main = async (): Promise<void> => {
       return;
     }
     case "agents": {
-      const page = await client.listAgents();
+      const page = await client.listAllAgents();
       printAgents(page.items);
       if (flag("--watch")) {
-        await watch(page.asOfSequence, ["agents.summary"], (event) => {
-          if (event.type === "agent.removed") {
-            console.log(JSON.stringify({ id: event.agentId, removed: true }));
-            return;
-          }
-          const agent = event.payload.agent as Agent | undefined;
-          if (agent) printAgents([agent]);
-        });
+        await watch(
+          page.asOfSequence,
+          ["agents.summary"],
+          (event) => {
+            if (event.type === "agent.removed") {
+              console.log(JSON.stringify({ id: event.agentId, removed: true }));
+              return;
+            }
+            const agent = event.payload.agent as Agent | undefined;
+            if (agent) printAgents([agent]);
+          },
+          async () => printAgents((await client.listAllAgents()).items),
+        );
       }
       return;
     }
@@ -137,19 +147,23 @@ const main = async (): Promise<void> => {
       return;
     }
     case "attention": {
-      const page = await client.listAttention();
+      const page = await client.listAllAttention();
       console.log(JSON.stringify(page.items, null, 2));
       if (flag("--watch"))
         await watch(
           page.asOfSequence,
-          ["attention", "agents.summary"],
+          ["attention", "agents.summary", "providers.health"],
           (event) => console.log(JSON.stringify(event)),
+          async () =>
+            console.log(
+              JSON.stringify((await client.listAllAttention()).items, null, 2),
+            ),
         );
       return;
     }
     case "providers":
       console.log(
-        JSON.stringify((await client.listProviders()).items, null, 2),
+        JSON.stringify((await client.listAllProviders()).items, null, 2),
       );
       return;
     case "health":
@@ -211,7 +225,6 @@ Commands:
   agent-deck server
   agent-deck agents [--watch] [--json]
   agent-deck agent <id>
-  agent-deck events --agent <id> [--watch]
   agent-deck attention [--watch]
   agent-deck providers
   agent-deck health

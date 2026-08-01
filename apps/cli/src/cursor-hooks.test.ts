@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   cursorHookStatus,
@@ -8,15 +8,17 @@ import {
   uninstallCursorHooks,
 } from "./cursor-hooks.js";
 
-const temporaryHooksPath = async (): Promise<string> =>
-  resolve(
-    await mkdtemp(resolve(tmpdir(), "agent-deck-cursor-hooks-")),
-    "hooks.json",
+const temporaryHooksPath = async (): Promise<string> => {
+  const directory = await mkdtemp(
+    resolve(tmpdir(), "agent-deck-cursor-hooks-"),
   );
+  await writeFile(resolve(directory, "reporter.js"), "");
+  return resolve(directory, "hooks.json");
+};
 
 const options = (path: string) => ({
   path,
-  reporterPath: "/Applications/Agent Deck/reporter.js",
+  reporterPath: resolve(dirname(path), "reporter.js"),
   nodePath: "/Applications/Node Runtime/node",
   now: () => new Date("2026-07-28T10:00:00.000Z"),
 });
@@ -54,8 +56,9 @@ describe("Cursor hook installer", () => {
 
   it("adds newly supported events to an existing installation", async () => {
     const path = await temporaryHooksPath();
-    const command =
-      '"/Applications/Node Runtime/node" "/Applications/Agent Deck/reporter.js" --agent-deck-cursor-local-hook';
+    const command = `"/Applications/Node Runtime/node" ${JSON.stringify(
+      resolve(dirname(path), "reporter.js"),
+    )} --agent-deck-cursor-local-hook`;
     await writeFile(
       path,
       JSON.stringify({
@@ -83,8 +86,9 @@ describe("Cursor hook installer", () => {
 
   it("repairs hooks that reference an obsolete Node runtime", async () => {
     const path = await temporaryHooksPath();
-    const staleCommand =
-      '"/obsolete/node" "/Applications/Agent Deck/reporter.js" --agent-deck-cursor-local-hook';
+    const staleCommand = `"/obsolete/node" ${JSON.stringify(
+      resolve(dirname(path), "reporter.js"),
+    )} --agent-deck-cursor-local-hook`;
     await writeFile(
       path,
       JSON.stringify({
@@ -147,5 +151,31 @@ describe("Cursor hook installer", () => {
     const malformed = await temporaryHooksPath();
     await writeFile(malformed, "{");
     await expect(installCursorHooks(options(malformed))).rejects.toThrow();
+  });
+
+  it("reports partial installations and refuses a missing reporter", async () => {
+    const path = await temporaryHooksPath();
+    const command = `"/Applications/Node Runtime/node" ${JSON.stringify(
+      resolve(dirname(path), "reporter.js"),
+    )} --agent-deck-cursor-local-hook`;
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 1,
+        hooks: { sessionStart: [{ command }] },
+      }),
+    );
+    expect(await cursorHookStatus(options(path))).toContain(
+      "partially installed",
+    );
+
+    await installCursorHooks(options(path));
+    await unlink(resolve(dirname(path), "reporter.js"));
+    expect(await cursorHookStatus(options(path))).toContain(
+      "reporter is unavailable",
+    );
+    await expect(installCursorHooks(options(path))).rejects.toThrow(
+      "reporter is unavailable",
+    );
   });
 });

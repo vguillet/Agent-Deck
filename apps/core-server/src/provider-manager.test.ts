@@ -94,3 +94,54 @@ describe("ProviderManager usage cache", () => {
     });
   });
 });
+
+describe("ProviderManager health projection", () => {
+  it("removes a stale health message after recovery", async () => {
+    const updateProvider = vi.fn(() => undefined);
+    const manager = new ProviderManager(
+      [],
+      { updateProvider } as unknown as EventStore,
+      Fastify(),
+      "/tmp/agent-deck-test",
+      30_000,
+      vi.fn(),
+    );
+    const healthCheck = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "unhealthy",
+        message: "Offline",
+        checkedAt: "2026-08-01T18:00:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        status: "healthy",
+        checkedAt: "2026-08-01T18:01:00.000Z",
+      });
+    const managed = {
+      configuration: {},
+      plugin: { healthCheck },
+      provider: {
+        id: "fake",
+        displayName: "Fake",
+        version: "0.1.0",
+        health: "starting" as const,
+        consecutiveFailures: 0,
+        capabilities: { discovery: true, liveEvents: true, commands: [] },
+      },
+    };
+    const checkHealth = (
+      manager as unknown as {
+        checkHealth(value: typeof managed): Promise<void>;
+      }
+    ).checkHealth.bind(manager);
+
+    await checkHealth(managed);
+    expect(managed.provider).toMatchObject({
+      health: "unhealthy",
+      healthMessage: "Offline",
+    });
+    await checkHealth(managed);
+    expect(managed.provider).toMatchObject({ health: "healthy" });
+    expect(managed.provider).not.toHaveProperty("healthMessage");
+  });
+});

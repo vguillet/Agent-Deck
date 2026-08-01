@@ -61,6 +61,11 @@ export interface AgentListOptions {
   cursor?: string;
 }
 
+export interface PageListOptions {
+  limit?: number;
+  cursor?: string;
+}
+
 export interface WatchOptions {
   topics: Array<
     "agents.summary" | "attention" | "providers.health" | "system.health"
@@ -110,9 +115,13 @@ export class AgentDeckClient {
     ) as Agent;
   }
 
-  async listRuns(agentId: string): Promise<Page<AgentRun>> {
+  async listRuns(
+    agentId: string,
+    options: PageListOptions = {},
+  ): Promise<Page<AgentRun>> {
+    const query = this.pageQuery(options);
     const page = await this.get<Page<unknown>>(
-      `/api/v1/agents/${encodeURIComponent(agentId)}/runs`,
+      `/api/v1/agents/${encodeURIComponent(agentId)}/runs${query}`,
     );
     return {
       ...page,
@@ -120,16 +129,20 @@ export class AgentDeckClient {
     };
   }
 
-  async listAttention(): Promise<Page<Attention>> {
-    const page = await this.get<Page<unknown>>("/api/v1/attention");
+  async listAttention(options: PageListOptions = {}): Promise<Page<Attention>> {
+    const page = await this.get<Page<unknown>>(
+      `/api/v1/attention${this.pageQuery(options)}`,
+    );
     return {
       ...page,
       items: page.items.map((item) => AttentionSchema.parse(item) as Attention),
     };
   }
 
-  async listProviders(): Promise<Page<Provider>> {
-    const page = await this.get<Page<unknown>>("/api/v1/providers");
+  async listProviders(options: PageListOptions = {}): Promise<Page<Provider>> {
+    const page = await this.get<Page<unknown>>(
+      `/api/v1/providers${this.pageQuery(options)}`,
+    );
     return {
       ...page,
       items: page.items.map((item) => ProviderSchema.parse(item) as Provider),
@@ -149,14 +162,54 @@ export class AgentDeckClient {
     ) as ProviderUsage;
   }
 
-  async listWorkspaces(limit = 200): Promise<Page<Workspace>> {
+  async listWorkspaces(
+    options: PageListOptions | number = { limit: 200 },
+  ): Promise<Page<Workspace>> {
+    const normalized =
+      typeof options === "number" ? { limit: options } : options;
     const page = await this.get<Page<unknown>>(
-      `/api/v1/workspaces?limit=${limit}`,
+      `/api/v1/workspaces${this.pageQuery(normalized)}`,
     );
     return {
       ...page,
       items: page.items.map((item) => WorkspaceSchema.parse(item) as Workspace),
     };
+  }
+
+  async listAllAgents(
+    options: Omit<AgentListOptions, "cursor" | "limit"> = {},
+  ): Promise<Page<Agent>> {
+    return this.collectAll((cursor) =>
+      this.listAgents({
+        ...options,
+        limit: 200,
+        ...(cursor ? { cursor } : {}),
+      }),
+    );
+  }
+
+  async listAllRuns(agentId: string): Promise<Page<AgentRun>> {
+    return this.collectAll((cursor) =>
+      this.listRuns(agentId, { limit: 200, ...(cursor ? { cursor } : {}) }),
+    );
+  }
+
+  async listAllAttention(): Promise<Page<Attention>> {
+    return this.collectAll((cursor) =>
+      this.listAttention({ limit: 200, ...(cursor ? { cursor } : {}) }),
+    );
+  }
+
+  async listAllProviders(): Promise<Page<Provider>> {
+    return this.collectAll((cursor) =>
+      this.listProviders({ limit: 200, ...(cursor ? { cursor } : {}) }),
+    );
+  }
+
+  async listAllWorkspaces(): Promise<Page<Workspace>> {
+    return this.collectAll((cursor) =>
+      this.listWorkspaces({ limit: 200, ...(cursor ? { cursor } : {}) }),
+    );
   }
 
   async health(): Promise<Record<string, unknown>> {
@@ -241,6 +294,17 @@ export class AgentDeckClient {
     return result.dismissed;
   }
 
+  async clearAgents(): Promise<number> {
+    const response = await fetch(`${this.baseUrl}/api/v1/agents/clear`, {
+      method: "POST",
+    });
+    if (!response.ok) throw await responseError(response);
+    const result = (await response.json()) as { cleared?: unknown };
+    if (typeof result.cleared !== "number")
+      throw new Error("Agent clear response did not include a count");
+    return result.cleared;
+  }
+
   async getClientConfiguration(
     clientId: string,
   ): Promise<ClientConfigurationDocument | undefined> {
@@ -289,11 +353,17 @@ export class AgentDeckClient {
         socket?.send(JSON.stringify({ type: "register", client: descriptor }));
       });
       socket.addEventListener("message", (message) => {
-        const frame = JSON.parse(String(message.data)) as {
+        let frame: {
           type?: string;
           event?: unknown;
           currentSequence?: number;
         };
+        try {
+          frame = JSON.parse(String(message.data)) as typeof frame;
+        } catch {
+          socket?.close(1008, "Invalid server frame");
+          return;
+        }
         if (frame.type === "registered") {
           socket?.send(
             JSON.stringify({
@@ -307,7 +377,12 @@ export class AgentDeckClient {
           retry = 250;
           options.onStatus?.("connected");
         } else if (frame.type === "event" && frame.event) {
-          const event = EventSchema.parse(frame.event) as CanonicalEvent;
+          const parsed = EventSchema.safeParse(frame.event);
+          if (!parsed.success) {
+            socket?.close(1008, "Invalid server event");
+            return;
+          }
+          const event = parsed.data as CanonicalEvent;
           sequence = Math.max(sequence, event.sequence);
           options.onEvent(event);
         } else if (frame.type === "stream.resync_required") {
@@ -340,6 +415,37 @@ export class AgentDeckClient {
     const response = await fetch(`${this.baseUrl}${path}`);
     if (!response.ok) throw await responseError(response);
     return (await response.json()) as T;
+  }
+
+  private pageQuery(options: PageListOptions): string {
+    const query = new URLSearchParams();
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    if (options.cursor) query.set("cursor", options.cursor);
+    return query.size ? `?${query}` : "";
+  }
+
+  private async collectAll<T extends { id: string }>(
+    load: (cursor?: string) => Promise<Page<T>>,
+  ): Promise<Page<T>> {
+    const items = new Map<string, T>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    let asOfSequence: number | undefined;
+    do {
+      const page = await load(cursor);
+      asOfSequence = Math.min(
+        asOfSequence ?? page.asOfSequence,
+        page.asOfSequence,
+      );
+      for (const item of page.items) items.set(item.id, item);
+      cursor = page.nextCursor;
+      if (cursor) {
+        if (seenCursors.has(cursor))
+          throw new Error(`Pagination cursor repeated: ${cursor}`);
+        seenCursors.add(cursor);
+      }
+    } while (cursor);
+    return { items: [...items.values()], asOfSequence: asOfSequence ?? 0 };
   }
 }
 

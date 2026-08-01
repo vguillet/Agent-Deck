@@ -14,7 +14,7 @@ inside the client.
 Agent links are semantic. Clients use `AgentDeckClient.focusAgent` for
 `rel: "focus"` navigation and must not treat it as a provider command. The
 loopback core validates and serializes brokered local Cursor/Codex targets and
-allowlisted `cursor:` links such as Cursor Cloud. `rel: "view"` remains a
+allowlisted `cursor:` links. `rel: "view"` remains a
 secondary inspection surface and is never a focus fallback. No generic
 `codex:` launcher is available.
 

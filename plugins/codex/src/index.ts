@@ -754,11 +754,6 @@ class CodexProvider implements AgentProviderPlugin {
               observedAt: now,
             }
           : existing?.progress;
-    if (terminal || state === "failed" || state === "recovering") {
-      // #region agent log
-      fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'eef5ae'},body:JSON.stringify({sessionId:'eef5ae',runId:'pre-fix',hypothesisId:'H1,H2',location:'plugins/codex/src/index.ts:consumeHook:failure-progress',message:'Codex failure progress transition',data:{event:input.hook_event_name,state,terminal,startsTurn,hadExistingPlan:Boolean(existing?.progress?.plan),hasInputPlan:Boolean(input.plan_progress),hasOutputPlan:Boolean(progress?.plan),outputActivity:progress?.activity ?? null},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-    }
     const runId = input.turn_id
       ? canonicalId(PROVIDER_ID, `${input.session_id}:${input.turn_id}`)
       : existing?.activeRunId;

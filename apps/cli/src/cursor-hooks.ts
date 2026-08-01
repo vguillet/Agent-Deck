@@ -4,6 +4,7 @@ import {
   mkdir,
   readFile,
   rename,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -73,6 +74,28 @@ const isAgentDeckHook = (hook: CursorHook): boolean =>
 const hasAgentDeckHook = (file: CursorHooksFile): boolean =>
   Object.values(file.hooks ?? {}).some((hooks) => hooks.some(isAgentDeckHook));
 
+const commandFor = (options: CursorHookOptions): string =>
+  `${quote(options.nodePath ?? process.execPath)} ${quote(
+    options.reporterPath ?? reporterPath(),
+  )} ${MARKER}`;
+
+const hasCompleteInstallation = (
+  file: CursorHooksFile,
+  command: string,
+): boolean =>
+  EVENTS.every((event) => {
+    const hooks = file.hooks?.[event]?.filter(isAgentDeckHook) ?? [];
+    return hooks.length === 1 && hooks[0]?.command === command;
+  });
+
+const reporterAvailable = async (path: string): Promise<boolean> => {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+};
+
 const validate = (file: CursorHooksFile, path: string): void => {
   if (file.version !== undefined && file.version !== 1)
     throw new Error(`Unsupported Cursor hooks version in ${path}`);
@@ -107,9 +130,12 @@ export const installCursorHooks = async (
   const path = options.path ?? defaultHooksPath();
   const file = await load(path);
   validate(file, path);
-  const command = `${quote(options.nodePath ?? process.execPath)} ${quote(
-    options.reporterPath ?? reporterPath(),
-  )} ${MARKER}`;
+  const resolvedReporterPath = options.reporterPath ?? reporterPath();
+  if (!(await reporterAvailable(resolvedReporterPath)))
+    throw new Error(
+      `Cursor hook reporter is unavailable: ${resolvedReporterPath}`,
+    );
+  const command = commandFor(options);
   const eventsNeedingUpdate = EVENTS.filter(
     (event) =>
       file.hooks?.[event]?.filter(isAgentDeckHook).length !== 1 ||
@@ -134,13 +160,15 @@ export const installCursorHooks = async (
   file.version = 1;
   file.hooks ??= {};
   for (const event of eventsNeedingUpdate) {
-    const existing = file.hooks[event]?.filter((hook) => !isAgentDeckHook(hook));
+    const existing = file.hooks[event]?.filter(
+      (hook) => !isAgentDeckHook(hook),
+    );
     file.hooks[event] = [
       ...(existing ?? []),
       {
-      command,
-      timeout: 1,
-      failClosed: false,
+        command,
+        timeout: 1,
+        failClosed: false,
       },
     ];
   }
@@ -171,7 +199,13 @@ export const cursorHookStatus = async (
   const path = options.path ?? defaultHooksPath();
   const file = await load(path);
   validate(file, path);
+  if (hasCompleteInstallation(file, commandFor(options))) {
+    const resolvedReporterPath = options.reporterPath ?? reporterPath();
+    return (await reporterAvailable(resolvedReporterPath))
+      ? `Agent Deck Cursor hooks are installed in ${path}`
+      : `Agent Deck Cursor hooks are configured in ${path}, but the reporter is unavailable at ${resolvedReporterPath}`;
+  }
   return hasAgentDeckHook(file)
-    ? `Agent Deck Cursor hooks are installed in ${path}`
+    ? `Agent Deck Cursor hooks are partially installed in ${path}`
     : `Agent Deck Cursor hooks are not installed in ${path}`;
 };

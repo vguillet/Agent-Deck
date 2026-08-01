@@ -110,6 +110,7 @@ import {
   type ProviderUsageSettings,
 } from "./action-settings.js";
 import {
+  providerUsageAfterFailure,
   providerUsageImage,
   providerUsageResetImage,
 } from "./provider-usage.js";
@@ -644,9 +645,20 @@ const emptyAgentIcon = (
 const newAgentIcon = (
   providerId: string,
   workspaceAccent: string,
+  status: "available" | "unavailable" | "ambiguous" | "disconnected",
   muted = false,
   palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string => {
+  const indicatorColour =
+    status === "available"
+      ? workspaceAccent
+      : status === "ambiguous"
+        ? palette.stateSurface.waiting_for_input
+        : palette.stateSurface.failed;
+  const indicator =
+    status === "available"
+      ? `<path d="M112 15h9v8h8v9h-8v8h-9v-8h-8v-9h8z" fill="${indicatorColour}"/>`
+      : `<text x="116" y="35" text-anchor="middle" font-family="system-ui" font-size="25" font-weight="800" fill="${indicatorColour}">${status === "ambiguous" ? "?" : "×"}</text>`;
   return `data:image/svg+xml,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
       ${muteSvgContent(
@@ -654,8 +666,8 @@ const newAgentIcon = (
         <g transform="translate(50 45) scale(1.55) translate(-118.5 -118.5)">${providerLogo(providerId, palette)}</g>
         <circle cx="72" cy="51" r="20" fill="${palette.newAgentCharacter}" stroke="${palette.newAgentSurface}" stroke-width="3"/>
         <path d="M40 127c3-32 14-49 32-49s29 17 32 49z" fill="${palette.newAgentCharacter}" stroke="${palette.newAgentSurface}" stroke-width="3" stroke-linejoin="round"/>
-        <circle cx="116" cy="27" r="18" fill="none" stroke="${workspaceAccent}" stroke-width="3"/>
-        <path d="M112 15h9v8h8v9h-8v8h-9v-8h-8v-9h8z" fill="${workspaceAccent}"/>`,
+        <circle cx="116" cy="27" r="18" fill="none" stroke="${indicatorColour}" stroke-width="3"/>
+        ${indicator}`,
         muted,
         palette,
       )}
@@ -907,6 +919,25 @@ class DeviceManager {
             session.allAgents = [];
             session.agents = [];
             session.attention = [];
+            session.providers = [];
+            session.providerBubbles = [];
+            session.providerBubblesOverflow = false;
+            session.unhealthyProviderCount = 0;
+            session.workspaces = [];
+            session.workspaceById.clear();
+            session.visibleWorkspaceIds = [];
+            session.health = {};
+            session.creationContext = {
+              status: "unavailable",
+              message: "Agent Deck is disconnected",
+            };
+            for (const [providerId, usage] of session.providerUsage)
+              if (usage.status === "available")
+                session.providerUsage.set(providerId, {
+                  ...usage,
+                  stale: true,
+                  message: "Agent Deck is disconnected",
+                });
             session.page = 0;
             session.attentionIndex = 0;
             rebuildAgentRenderCache(session);
@@ -1083,6 +1114,7 @@ class DeviceManager {
             actionContext,
             (this.actionSettings.get(actionContext.id) ??
               {}) as ProviderUsageSettings,
+            true,
             true,
           ),
         ),
@@ -1320,6 +1352,19 @@ class DeviceManager {
   ): Promise<void> {
     const session = await this.ensure(actionContext);
     const palette = sessionPalette(session);
+    if (session.connectionStatus !== "connected") {
+      await this.render(
+        actionContext,
+        "Disconnected",
+        palette.stateSurface.failed,
+        "×",
+        undefined,
+        undefined,
+        {},
+        palette,
+      );
+      return;
+    }
     const providerId = String(settings.summaryProviderId ?? "").trim();
     const summary =
       session.agentSummaries.get(providerId) ?? emptyAgentSummary();
@@ -1351,6 +1396,19 @@ class DeviceManager {
   async renderAttention(actionContext: Action<ActionSettings>): Promise<void> {
     const session = await this.ensure(actionContext);
     const palette = sessionPalette(session);
+    if (session.connectionStatus !== "connected") {
+      await this.render(
+        actionContext,
+        "Disconnected",
+        palette.stateSurface.failed,
+        "×",
+        undefined,
+        undefined,
+        {},
+        palette,
+      );
+      return;
+    }
     const attention =
       session.attention[
         session.attentionIndex % Math.max(session.attention.length, 1)
@@ -1385,6 +1443,19 @@ class DeviceManager {
   async renderProvider(actionContext: Action<ActionSettings>): Promise<void> {
     const session = await this.ensure(actionContext);
     const palette = sessionPalette(session);
+    if (session.connectionStatus !== "connected") {
+      await this.render(
+        actionContext,
+        "Disconnected",
+        palette.stateSurface.failed,
+        "×",
+        undefined,
+        undefined,
+        {},
+        palette,
+      );
+      return;
+    }
     const unhealthy = session.unhealthyProviderCount;
     await this.render(
       actionContext,
@@ -1409,6 +1480,18 @@ class DeviceManager {
       windows: [],
       observedAt: new Date().toISOString(),
     };
+  }
+
+  private failedUsage(
+    session: DeviceSession,
+    providerId: UsageProviderId,
+    error: unknown,
+  ): ProviderUsage {
+    return providerUsageAfterFailure(
+      session.providerUsage.get(providerId),
+      providerId,
+      error,
+    );
   }
 
   cancelUsageReset(actionId: string): void {
@@ -1459,15 +1542,18 @@ class DeviceManager {
     actionContext: Action<ProviderUsageSettings>,
     settings: ProviderUsageSettings,
     forceColour = false,
+    forceRefresh = false,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
     const providerId = normalizeUsageProviderId(
       settings.usageDefaultProviderId,
     );
-    if (!session.providerUsage.has(providerId)) {
+    if (forceRefresh || !session.providerUsage.has(providerId)) {
       const usage = await session.client
-        .getProviderUsage(providerId)
-        .catch(() => this.unavailableUsage(providerId));
+        .getProviderUsage(providerId, forceRefresh)
+        .catch((error: unknown) =>
+          this.failedUsage(session, providerId, error),
+        );
       session.providerUsage.set(providerId, usage);
     }
     await this.writeUsage(actionContext, session, providerId, forceColour);
@@ -1507,7 +1593,9 @@ class DeviceManager {
             providerId,
             await session.client
               .getProviderUsage(providerId)
-              .catch(() => this.unavailableUsage(providerId)),
+              .catch((error: unknown) =>
+                this.failedUsage(session, providerId, error),
+              ),
           ] as const,
       ),
     );
@@ -1544,6 +1632,10 @@ class DeviceManager {
         session.creationContext = context;
       })
       .catch((error: unknown) => {
+        session.creationContext = {
+          status: "unavailable",
+          message: error instanceof Error ? error.message : String(error),
+        };
         streamDeck.logger.debug(
           `Agent Deck creation context unavailable: ${
             error instanceof Error ? error.message : String(error)
@@ -1566,6 +1658,10 @@ class DeviceManager {
     const palette = sessionPalette(session);
     await this.refreshCreationContext(session);
     const providerId = settings.creationProviderId ?? "cursor-local";
+    const creationStatus =
+      forceDisconnected || session.connectionStatus !== "connected"
+        ? "disconnected"
+        : (session.creationContext?.status ?? "unavailable");
     const roots =
       session.creationContext?.status === "available"
         ? session.creationContext.workspaceRoots
@@ -1582,6 +1678,7 @@ class DeviceManager {
         image: newAgentIcon(
           providerId,
           workspaceAccent,
+          creationStatus,
           forceDisconnected || session.connectionStatus !== "connected",
           palette,
         ),
@@ -1772,7 +1869,7 @@ class DeviceManager {
     session.attentionIndex = 0;
     try {
       await this.renderVisible(session.deviceId);
-      await session.client.dismissTerminalAgents();
+      await session.client.clearAgents();
     } catch (error) {
       session.clearingAgents = false;
       await this.refresh(session);
@@ -1784,34 +1881,6 @@ class DeviceManager {
 
   private onEvent(session: DeviceSession, event: CanonicalEvent): void {
     const resources = refreshResourcesForEvent(event.type);
-    if (event.type === "agent.progress.changed") {
-      // #region agent log
-      fetch(
-        "http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Debug-Session-Id": "d833c3",
-          },
-          body: JSON.stringify({
-            sessionId: "d833c3",
-            runId: "pre-fix",
-            hypothesisId: "H5",
-            location: "clients/stream-deck/src/index.ts:onEvent",
-            message: "Stream Deck received progress event",
-            data: {
-              sequence: event.sequence,
-              refreshAgents: resources.has("agents"),
-              refreshPending: Boolean(session.refreshTimer),
-              refreshInFlight: Boolean(session.refreshPromise),
-            },
-            timestamp: Date.now(),
-          }),
-        },
-      ).catch(() => {});
-      // #endregion
-    }
     if (!resources.size) return;
     addRefreshResources(session.refreshResources, resources);
     if (session.refreshTimer) return;
@@ -1847,61 +1916,21 @@ class DeviceManager {
     const [agents, attention, providers, workspaces, health] =
       await Promise.all([
         resources.has("agents")
-          ? settle(session.client.listAgents({ limit: 200 }))
+          ? settle(session.client.listAllAgents())
           : Promise.resolve(undefined),
         resources.has("attention")
-          ? settle(session.client.listAttention())
+          ? settle(session.client.listAllAttention())
           : Promise.resolve(undefined),
         resources.has("providers")
-          ? settle(session.client.listProviders())
+          ? settle(session.client.listAllProviders())
           : Promise.resolve(undefined),
         resources.has("workspaces")
-          ? settle(session.client.listWorkspaces())
+          ? settle(session.client.listAllWorkspaces())
           : Promise.resolve(undefined),
         resources.has("health")
           ? settle(session.client.health())
           : Promise.resolve(undefined),
       ] as const);
-    if (resources.has("agents")) {
-      // #region agent log
-      fetch(
-        "http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Debug-Session-Id": "d833c3",
-          },
-          body: JSON.stringify({
-            sessionId: "d833c3",
-            runId: "pre-fix",
-            hypothesisId: "H5",
-            location: "clients/stream-deck/src/index.ts:refreshOnce",
-            message: "Stream Deck fetched agent snapshot",
-            data: {
-              status: agents?.status,
-              snapshotSequence:
-                agents?.status === "fulfilled"
-                  ? agents.value.asOfSequence
-                  : undefined,
-              lastSnapshotSequence: session.lastSnapshotSequence,
-              clearingAgents: session.clearingAgents,
-              progressAgents:
-                agents?.status === "fulfilled"
-                  ? agents.value.items
-                      .filter((agent) => agent.progress?.plan)
-                      .map((agent) => ({
-                        state: agent.state,
-                        plan: agent.progress?.plan,
-                      }))
-                  : [],
-            },
-            timestamp: Date.now(),
-          }),
-        },
-      ).catch(() => {});
-      // #endregion
-    }
     if (session.connectionStatus === "disconnected") {
       await this.renderVisible(session.deviceId);
       return;

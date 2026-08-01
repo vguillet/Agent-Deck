@@ -30,10 +30,10 @@ interface Connection {
   subscription?: Subscription;
 }
 
-const topicsForEvent = (event: CanonicalEvent): Topic[] => {
+export const topicsForEvent = (event: CanonicalEvent): Topic[] => {
   if (event.type.startsWith("attention.")) return ["attention"];
   if (event.type === "provider.health.changed")
-    return ["providers.health", "system.health"];
+    return ["attention", "providers.health", "system.health"];
   if (
     event.type === "agent.state.changed" ||
     event.type === "agent.progress.changed" ||
@@ -173,8 +173,7 @@ export class SubscriptionBroker {
         this.store.getAgent(event.agentId) ??
         (event.type === "agent.removed"
           ? (event.payload.agent as
-              | { projectId?: string; state: AgentState }
-              | undefined)
+              { projectId?: string; state: AgentState } | undefined)
           : undefined);
       if (
         filter.projects?.length &&

@@ -8,8 +8,8 @@ import {
 } from "./agent-filter.js";
 
 const agent = (overrides: Partial<Agent> = {}): Agent => ({
-  id: "cursor-cloud:agent-1",
-  providerId: "cursor-cloud",
+  id: "cursor-local:agent-1",
+  providerId: "cursor-local",
   externalId: "agent-1",
   title: "Cloud agent",
   state: "running",
@@ -31,10 +31,10 @@ const agent = (overrides: Partial<Agent> = {}): Agent => ({
 describe("Stream Deck agent filtering", () => {
   it("trusts server membership for top-level agents", () => {
     expect(
-      streamDeckAgents([agent(), agent({ id: "cursor-cloud:other" })]).map(
+      streamDeckAgents([agent(), agent({ id: "cursor-local:other" })]).map(
         ({ id }) => id,
       ),
-    ).toEqual(["cursor-cloud:agent-1", "cursor-cloud:other"]);
+    ).toEqual(["cursor-local:agent-1", "cursor-local:other"]);
   });
 
   it("hides subagents by default and shows working ones when enabled", () => {

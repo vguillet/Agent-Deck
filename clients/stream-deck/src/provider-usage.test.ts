@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DARK_KEY_VISUAL_PALETTE } from "./agent-palette.js";
 import {
   providerUsageImage,
+  providerUsageAfterFailure,
   providerUsageResetImage,
   soonestUsageReset,
   usageColour,
@@ -11,6 +12,26 @@ import {
 } from "./provider-usage.js";
 
 describe("provider usage key", () => {
+  it("retains the last successful values as stale after a refresh failure", () => {
+    expect(
+      providerUsageAfterFailure(
+        {
+          providerId: "codex",
+          status: "available",
+          windows: [{ id: "weekly", label: "Week", usedPercent: 42 }],
+          observedAt: "2026-08-01T18:00:00.000Z",
+        },
+        "codex",
+        new Error("Offline"),
+      ),
+    ).toMatchObject({
+      status: "available",
+      stale: true,
+      message: "Offline",
+      windows: [{ usedPercent: 42 }],
+    });
+  });
+
   it("uses the documented warning thresholds", () => {
     expect([69, 70, 90, 100].map(usageColour)).toEqual([
       "#22c55e",

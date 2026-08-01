@@ -134,4 +134,85 @@ describe("Claude Code provider", () => {
       message: "Claude Code does not support cancel",
     });
   });
+
+  it("scopes task progress and notification deduplication to one activity", async () => {
+    const registrations: ProviderIngressRegistration[] = [];
+    const plugin = createProviderPlugin();
+    await plugin.initialise(contextFor(registrations));
+    const emitted: ProviderEvent[] = [];
+    await plugin.subscribe(async (event) => {
+      emitted.push(event);
+    });
+    const hooks = registrations.find(({ path }) => path === "/hooks")!;
+    const send = (input: Record<string, unknown>) =>
+      hooks.handle({
+        protocol_version: 1,
+        session_id: "session-1",
+        cwd: "/workspace/aquila",
+        ...input,
+      });
+
+    await send({ hook_event_name: "UserPromptSubmit", prompt_id: "prompt-1" });
+    await send({
+      hook_event_name: "TaskCompleted",
+      prompt_id: "prompt-1",
+      task_id: "task-1",
+    });
+    await send({ hook_event_name: "UserPromptSubmit", prompt_id: "prompt-2" });
+
+    const topLevel = (await plugin.discover()).agents.find(
+      ({ kind }) => kind === "top_level",
+    );
+    expect(topLevel?.progress?.plan).toBeUndefined();
+
+    await send({
+      hook_event_name: "Notification",
+      notification_type: "permission_prompt",
+    });
+    await send({
+      hook_event_name: "Notification",
+      notification_type: "agent_needs_input",
+    });
+    const notificationEvents = emitted.slice(-2);
+    expect(notificationEvents[0]?.providerEventId).not.toBe(
+      notificationEvents[1]?.providerEventId,
+    );
+
+    await send({
+      hook_event_name: "Notification",
+      notification_type: "agent_needs_input",
+    });
+    expect(emitted.at(-1)?.providerEventId).toBe(
+      notificationEvents[1]?.providerEventId,
+    );
+  });
+
+  it("resets reused subagent task tracking at SubagentStart", async () => {
+    const registrations: ProviderIngressRegistration[] = [];
+    const plugin = createProviderPlugin();
+    await plugin.initialise(contextFor(registrations));
+    const hooks = registrations.find(({ path }) => path === "/hooks")!;
+    const send = (
+      hook_event_name: string,
+      extra: Record<string, unknown> = {},
+    ) =>
+      hooks.handle({
+        protocol_version: 1,
+        session_id: "session-1",
+        hook_event_name,
+        cwd: "/workspace/aquila",
+        agent_id: "agent-1",
+        ...extra,
+      });
+
+    await send("SubagentStart");
+    await send("TaskCompleted", { task_id: "task-1" });
+    await send("SubagentStop");
+    await send("SubagentStart");
+
+    const subagent = (await plugin.discover()).agents.find(
+      ({ kind }) => kind === "subagent",
+    );
+    expect(subagent?.progress?.plan).toBeUndefined();
+  });
 });

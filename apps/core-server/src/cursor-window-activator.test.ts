@@ -17,7 +17,7 @@ describe("macOS Cursor focus link launcher", () => {
   it("opens validated Cursor links", async () => {
     await expect(
       openCursorFocusLink(
-        "cursor://anysphere.cursor-deeplink/background-agent?bcId=cloud-1",
+        "cursor://anysphere.cursor-deeplink/background-agent?bcId=external-1",
       ),
     ).resolves.toBeUndefined();
   });
