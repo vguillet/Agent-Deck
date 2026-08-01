@@ -12,8 +12,12 @@ import {
   type CursorFocusTargetKind,
   type CursorWindowRegistration,
 } from "@agent-deck/api-contract";
+import type { Workspace } from "@agent-deck/domain";
 
 export type CursorWindowActivator = (target: string) => Promise<void>;
+export type CursorWorkspaceResolver = (
+  workspaceRoots: readonly string[],
+) => Workspace | undefined;
 
 interface WindowConnection {
   id: string;
@@ -89,6 +93,7 @@ export class CursorWindowBroker {
   constructor(
     private readonly activate: CursorWindowActivator,
     private readonly timeoutMs = 5_000,
+    private readonly resolveWorkspace?: CursorWorkspaceResolver,
   ) {}
 
   onLateOpened(listener: (target: CursorFocusTarget) => void): () => void {
@@ -402,9 +407,12 @@ export class CursorWindowBroker {
         status: "ambiguous",
         message: "More than one Cursor workspace reports being focused",
       };
+    const registration = focused[0]!.registration!;
+    const workspace = this.resolveWorkspace?.(registration.workspaceRoots);
     return {
       status: "available",
-      workspaceRoots: [...focused[0]!.registration!.workspaceRoots],
+      workspaceRoots: [...registration.workspaceRoots],
+      ...(workspace?.colour ? { workspaceColour: workspace.colour } : {}),
     };
   }
 
@@ -486,6 +494,15 @@ export class CursorWindowBroker {
     connection.registration = registration;
     connection.focused = registration.focused;
     this.connectionsByWindow.set(registration.windowInstanceId, connection.id);
+    const workspace = this.resolveWorkspace?.(registration.workspaceRoots);
+    if (workspace)
+      try {
+        connection.socket.send(
+          JSON.stringify({ type: "window.registered", workspace }),
+        );
+      } catch {
+        return false;
+      }
     return true;
   }
 

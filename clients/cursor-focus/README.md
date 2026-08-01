@@ -13,7 +13,8 @@ then uses an isolated Cursor URI adapter to select `/local/<thread-id>`. If the
 extension, command, workspace match, or exact URI dispatch is unavailable,
 focus fails visibly. The standalone Codex app is never used as a fallback.
 
-Version 0.4.0 is required for serialized focus cancellation and recovery.
+Version 0.5.1 is required for server-assigned workspace status colors. Version
+0.4.0 is required for serialized focus cancellation and recovery.
 Version 0.3.0 supports Codex thread targets, and a 0.2.0 companion continues
 to receive legacy Cursor-conversation intents, but the server returns an
 explicit upgrade-required failure for Codex targets.

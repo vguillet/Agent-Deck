@@ -167,6 +167,22 @@ describe("Cursor window focus contract", () => {
       }),
     ).toMatchObject({ type: "creation.intent", providerId: "codex" });
     expect(
+      CursorWindowServerFrameSchema.parse({
+        type: "window.registered",
+        workspace: {
+          id: "agent-deck:workspace:alpha",
+          providerId: "agent-deck",
+          externalId: "alpha",
+          name: "alpha",
+          colour: "#123456",
+          metadata: {},
+        },
+      }),
+    ).toMatchObject({
+      type: "window.registered",
+      workspace: { colour: "#123456" },
+    });
+    expect(
       CursorWindowClientFrameSchema.parse({
         type: "creation.result",
         requestId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
@@ -177,8 +193,12 @@ describe("Cursor window focus contract", () => {
       AgentCreationContextSchema.parse({
         status: "available",
         workspaceRoots: ["/workspace/alpha"],
+        workspaceColour: "#123456",
       }),
-    ).toMatchObject({ workspaceRoots: ["/workspace/alpha"] });
+    ).toMatchObject({
+      workspaceRoots: ["/workspace/alpha"],
+      workspaceColour: "#123456",
+    });
   });
 
   it("validates live window registration and normalizes root ordering", () => {

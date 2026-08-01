@@ -48,14 +48,11 @@ describe("Stream Deck visual regression", () => {
         ],
         777,
       ),
-      workspaceBadgeSvg({ id: "workspace:visual", name: 'R&D "Tools"' }, [
-        "workspace:other",
-        "workspace:visual",
-      ]),
+      workspaceBadgeSvg({ id: "workspace:visual", name: 'R&D "Tools"' }),
     ];
 
     expect(digest(frames)).toBe(
-      "f083359ab549cde276370733d07687c44f3ab63d483a8b70dc27f4d40c7f0239",
+      "7123ebcad855be3e187a37757e50d6956be9bebb2c0bfccab86c731aac62b1de",
     );
     expect(
       digest([

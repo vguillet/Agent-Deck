@@ -190,6 +190,37 @@ describe("Cursor window broker", () => {
     });
   });
 
+  it("acknowledges registrations with the runtime workspace colour", () => {
+    const broker = new CursorWindowBroker(
+      vi.fn(async () => undefined),
+      5_000,
+      (roots) => ({
+        id: `workspace:${roots.join(",")}`,
+        providerId: "agent-deck",
+        externalId: "alpha",
+        name: "alpha",
+        colour: "#123456",
+        metadata: { roots },
+      }),
+    );
+    const socket = new FakeSocket();
+
+    register(broker, socket, ["/workspace/alpha"]);
+
+    expect(JSON.parse(socket.sent[0]!)).toMatchObject({
+      type: "window.registered",
+      workspace: {
+        id: "workspace:/workspace/alpha",
+        colour: "#123456",
+      },
+    });
+    expect(broker.creationContext()).toEqual({
+      status: "available",
+      workspaceRoots: ["/workspace/alpha"],
+      workspaceColour: "#123456",
+    });
+  });
+
   it("activates the exact window even when focused and awaits acknowledgement", async () => {
     const activate = vi.fn(async () => undefined);
     const broker = new CursorWindowBroker(activate);

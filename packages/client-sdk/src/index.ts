@@ -15,6 +15,7 @@ import {
   type AgentCreationResult,
   type CursorFocusResult,
 } from "@agent-deck/api-contract";
+import { fallbackWorkspaceColour } from "@agent-deck/domain";
 import type {
   Agent,
   AgentRun,
@@ -26,6 +27,28 @@ import type {
   Provider,
   Workspace,
 } from "@agent-deck/domain";
+
+export const workspaceColour = (
+  workspace: string | Pick<Workspace, "id" | "colour">,
+): string =>
+  typeof workspace === "string"
+    ? fallbackWorkspaceColour(workspace)
+    : (workspace.colour ?? fallbackWorkspaceColour(workspace.id));
+
+export const workspaceAcronym = (name: string): string => {
+  const words = name.match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (words.length > 1)
+    return words
+      .slice(0, 2)
+      .map((word) => Array.from(word)[0])
+      .join("")
+      .toLocaleUpperCase();
+
+  return Array.from(words[0] ?? "?")
+    .slice(0, 2)
+    .join("")
+    .toLocaleUpperCase();
+};
 
 export interface AgentListOptions {
   providerId?: string;
@@ -117,7 +140,7 @@ export class AgentDeckClient {
     );
     return {
       ...page,
-      items: page.items.map((item) => WorkspaceSchema.parse(item)),
+      items: page.items.map((item) => WorkspaceSchema.parse(item) as Workspace),
     };
   }
 

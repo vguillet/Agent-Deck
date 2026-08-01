@@ -234,7 +234,16 @@ export const sanitizeCursorHook = (
   let conversationKind: "top_level" | "subagent" | "background" | undefined;
   if (isSubagent) conversationKind = "subagent";
   else if (isBackgroundAgent === true) conversationKind = "background";
-  else if (conversation) conversationKind = "top_level";
+  else if (isBackgroundAgent === false) conversationKind = "top_level";
+  if (
+    command?.includes("agent-deck:progress") ||
+    sanitizedPlanProgress ||
+    normalizeToolName(toolName) === "todowrite"
+  ) {
+    // #region agent log
+    fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d833c3'},body:JSON.stringify({sessionId:'d833c3',runId:'pre-fix',hypothesisId:'H1',location:'plugins/cursor-local/src/hook-payload.ts:sanitizeCursorHook',message:'Progress hook parsing result',data:{event,tool:normalizeToolName(toolName),hasProgressMarker:Boolean(command?.includes("agent-deck:progress")),hasConversation:Boolean(conversation),hasGeneration:Boolean(generationId),planProgress:sanitizedPlanProgress},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }
   return {
     protocol_version: 2,
     hook_event_name: event,

@@ -7,6 +7,7 @@ import {
   type CompatibleCursorFocusIntentFrame,
   type CursorFocusTarget,
 } from "@agent-deck/api-contract";
+import type { Workspace } from "@agent-deck/domain";
 
 export interface CursorWindowSnapshot {
   workspaceRoots: string[];
@@ -35,6 +36,7 @@ export interface CursorWindowClientDependencies {
   createAgent(
     providerId: AgentCreationProviderId,
   ): Promise<CursorTargetExecutionResult>;
+  workspaceRegistered(workspace: Workspace): void;
   random(): number;
   log(message: string, error?: unknown): void;
 }
@@ -157,6 +159,12 @@ export class CursorWindowClient {
       }
       const parsed = CursorWindowServerFrameSchema.safeParse(value);
       if (!parsed.success) return;
+      if (parsed.data.type === "window.registered") {
+        this.dependencies.workspaceRegistered(
+          parsed.data.workspace as Workspace,
+        );
+        return;
+      }
       if (
         parsed.data.type === "focus.cancel" ||
         parsed.data.type === "creation.cancel"

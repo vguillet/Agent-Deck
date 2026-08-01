@@ -78,6 +78,7 @@ export interface Workspace {
   providerId: string;
   externalId: string;
   name: string;
+  colour?: string;
   metadata: Record<string, unknown>;
 }
 
@@ -256,6 +257,47 @@ export interface ClientConfigurationDocument {
 export const canonicalId = (providerId: string, externalId: string): string =>
   `${providerId}:${externalId}`;
 
+export const WORKSPACE_COLOURS = [
+  "#e11d48",
+  "#f97316",
+  "#d97706",
+  "#65a30d",
+  "#16a34a",
+  "#0d9488",
+  "#0891b2",
+  "#2563eb",
+  "#4f46e5",
+  "#7c3aed",
+  "#a855f7",
+  "#db2777",
+  "#fb7185",
+  "#fdba74",
+  "#fde047",
+  "#bef264",
+  "#4ade80",
+  "#5eead4",
+  "#67e8f9",
+  "#60a5fa",
+  "#818cf8",
+  "#c4b5fd",
+  "#e879f9",
+  "#f9a8d4",
+] as const;
+
+export const workspaceIdentityHash = (value: string): number => {
+  let result = 2_166_136_261;
+  for (const character of value) {
+    result ^= character.codePointAt(0) ?? 0;
+    result = Math.imul(result, 16_777_619);
+  }
+  return result >>> 0;
+};
+
+export const fallbackWorkspaceColour = (workspaceId: string): string =>
+  WORKSPACE_COLOURS[
+    workspaceIdentityHash(workspaceId) % WORKSPACE_COLOURS.length
+  ] ?? "#2563eb";
+
 const WORKSPACE_PROVIDER_ID = "agent-deck";
 
 const stableResourceHash = (values: readonly string[]): string =>
@@ -348,9 +390,7 @@ export const isActiveRunState = (state: AgentRun["state"]): boolean =>
   state === "waiting_for_approval";
 
 export const isTerminalVisibleAgentState = (state: AgentState): boolean =>
-  state === "ready_for_review" ||
-  state === "failed" ||
-  state === "cancelled";
+  state === "ready_for_review" || state === "failed" || state === "cancelled";
 
 export const attentionForAgentState = (
   agent: Agent,

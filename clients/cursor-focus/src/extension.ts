@@ -1,4 +1,5 @@
 import type { CursorFocusTarget } from "@agent-deck/api-contract";
+import type { Workspace } from "@agent-deck/domain";
 import * as vscode from "vscode";
 import WebSocket from "ws";
 import { createAgentChat, focusCursorConversation } from "./focus-handler.js";
@@ -6,6 +7,7 @@ import {
   CursorWindowClient,
   type CursorWindowSnapshot,
 } from "./window-client.js";
+import { workspaceStatus } from "./workspace-status.js";
 
 const focusDependencies = (): Parameters<
   typeof focusCursorConversation
@@ -63,6 +65,26 @@ export const activate = (context: vscode.ExtensionContext): void => {
     "version" in packageJson
       ? String(packageJson.version)
       : "unknown";
+  const workspaceStatusItem = vscode.window.createStatusBarItem(
+    "agentDeck.workspace",
+    vscode.StatusBarAlignment.Right,
+    100,
+  );
+  workspaceStatusItem.name = "Agent Deck Workspace";
+  const refreshWorkspaceStatus = (workspace?: Workspace): void => {
+    const status = workspaceStatus(windowSnapshot().workspaceRoots, workspace);
+    if (!status) {
+      workspaceStatusItem.hide();
+      return;
+    }
+    workspaceStatusItem.text = status.text;
+    workspaceStatusItem.tooltip = status.tooltip;
+    workspaceStatusItem.color = status.colour;
+    workspaceStatusItem.accessibilityInformation = {
+      label: status.tooltip,
+    };
+    workspaceStatusItem.show();
+  };
   const windowClient = new CursorWindowClient(
     {
       getServerUrl: () =>
@@ -75,6 +97,7 @@ export const activate = (context: vscode.ExtensionContext): void => {
         focusCursorConversation(targetUri(target), focusDependencies()),
       createAgent: (providerId) =>
         createAgentChat(providerId, focusDependencies()),
+      workspaceRegistered: refreshWorkspaceStatus,
       random: Math.random,
       log: (message, error) => {
         if (error === undefined) console.warn(`[Agent Deck] ${message}`);
@@ -83,15 +106,18 @@ export const activate = (context: vscode.ExtensionContext): void => {
     },
     extensionVersion,
   );
+  refreshWorkspaceStatus();
   windowClient.start();
   context.subscriptions.push(
+    workspaceStatusItem,
     { dispose: () => windowClient.dispose() },
     vscode.window.onDidChangeWindowState((state) =>
       windowClient.windowStateChanged(state.focused),
     ),
-    vscode.workspace.onDidChangeWorkspaceFolders(() =>
-      windowClient.workspaceChanged(),
-    ),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      refreshWorkspaceStatus();
+      windowClient.workspaceChanged();
+    }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("agentDeck.serverUrl"))
         windowClient.configurationChanged();

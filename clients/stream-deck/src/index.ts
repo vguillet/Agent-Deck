@@ -11,7 +11,11 @@ import streamDeck, {
   type WillAppearEvent,
   type WillDisappearEvent,
 } from "@elgato/streamdeck";
-import { AgentDeckClient, type WatchHandle } from "@agent-deck/client-sdk";
+import {
+  AgentDeckClient,
+  workspaceColour,
+  type WatchHandle,
+} from "@agent-deck/client-sdk";
 import {
   workspaceResourcesForRoots,
   type Agent,
@@ -72,7 +76,6 @@ import {
 import {
   agentWorkspaceBadgeSvg,
   workspaceBadgesNeeded,
-  workspaceColour,
 } from "./workspace-badge.js";
 import { ActionOutputWriter } from "./action-output-writer.js";
 import { subagentBackgroundSvg } from "./subagent-background.js";
@@ -278,7 +281,6 @@ const rebuildAgentRenderCache = (session: DeviceSession): void => {
             agent.workspaceId
               ? session.workspaceById.get(agent.workspaceId)
               : undefined,
-            session.visibleWorkspaceIds,
           )
         : "",
     ]),
@@ -1050,12 +1052,9 @@ class DeviceManager {
     const workspace = roots?.length
       ? workspaceResourcesForRoots(providerId, roots).workspace
       : undefined;
-    const workspaceAccent = workspace
-      ? workspaceColour(workspace.id, [
-          ...session.visibleWorkspaceIds,
-          workspace.id,
-        ])
-      : "white";
+    const workspaceAccent =
+      session.creationContext?.workspaceColour ??
+      (workspace ? workspaceColour(workspace) : "white");
     if (actionContext.isKey() || actionContext.isDial())
       await this.outputWriter.write(actionContext, {
         title: "",
@@ -1254,6 +1253,34 @@ class DeviceManager {
 
   private onEvent(session: DeviceSession, event: CanonicalEvent): void {
     const resources = refreshResourcesForEvent(event.type);
+    if (event.type === "agent.progress.changed") {
+      // #region agent log
+      fetch(
+        "http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Debug-Session-Id": "d833c3",
+          },
+          body: JSON.stringify({
+            sessionId: "d833c3",
+            runId: "pre-fix",
+            hypothesisId: "H5",
+            location: "clients/stream-deck/src/index.ts:onEvent",
+            message: "Stream Deck received progress event",
+            data: {
+              sequence: event.sequence,
+              refreshAgents: resources.has("agents"),
+              refreshPending: Boolean(session.refreshTimer),
+              refreshInFlight: Boolean(session.refreshPromise),
+            },
+            timestamp: Date.now(),
+          }),
+        },
+      ).catch(() => {});
+      // #endregion
+    }
     if (!resources.size) return;
     addRefreshResources(session.refreshResources, resources);
     if (session.refreshTimer) return;
@@ -1304,6 +1331,46 @@ class DeviceManager {
           ? settle(session.client.health())
           : Promise.resolve(undefined),
       ] as const);
+    if (resources.has("agents")) {
+      // #region agent log
+      fetch(
+        "http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Debug-Session-Id": "d833c3",
+          },
+          body: JSON.stringify({
+            sessionId: "d833c3",
+            runId: "pre-fix",
+            hypothesisId: "H5",
+            location: "clients/stream-deck/src/index.ts:refreshOnce",
+            message: "Stream Deck fetched agent snapshot",
+            data: {
+              status: agents?.status,
+              snapshotSequence:
+                agents?.status === "fulfilled"
+                  ? agents.value.asOfSequence
+                  : undefined,
+              lastSnapshotSequence: session.lastSnapshotSequence,
+              clearingAgents: session.clearingAgents,
+              progressAgents:
+                agents?.status === "fulfilled"
+                  ? agents.value.items
+                      .filter((agent) => agent.progress?.plan)
+                      .map((agent) => ({
+                        state: agent.state,
+                        plan: agent.progress?.plan,
+                      }))
+                  : [],
+            },
+            timestamp: Date.now(),
+          }),
+        },
+      ).catch(() => {});
+      // #endregion
+    }
     if (session.connectionStatus === "disconnected") {
       await this.renderVisible(session.deviceId);
       return;

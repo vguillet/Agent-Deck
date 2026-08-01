@@ -21,7 +21,6 @@ describe("Cursor hook payload sanitizer", () => {
       protocol_version: 2,
       hook_event_name: "preToolUse",
       conversation_id: "conversation-1",
-      conversation_kind: "top_level",
       generation_id: "generation-1",
       tool_use_id: "tool-1",
       agent_activity: "waiting",
@@ -57,7 +56,6 @@ describe("Cursor hook payload sanitizer", () => {
       protocol_version: 2,
       hook_event_name: "preToolUse",
       conversation_id: "conversation-question",
-      conversation_kind: "top_level",
       agent_activity: "executing",
       agent_signal: "question_started",
       workspace_roots: [],
@@ -81,7 +79,6 @@ describe("Cursor hook payload sanitizer", () => {
       protocol_version: 2,
       hook_event_name: "preToolUse",
       conversation_id: "conversation-progress",
-      conversation_kind: "top_level",
       agent_activity: "planning",
       plan_progress: { completed: 1, total: 3 },
       workspace_roots: [],
@@ -182,6 +179,21 @@ describe("Cursor hook payload sanitizer", () => {
       conversation_id: "top-1",
       conversation_kind: "top_level",
     });
+  });
+
+  it("leaves ordinary lifecycle hooks unclassified until identity is settled", () => {
+    const sanitized = sanitizeCursorHook({
+      hook_event_name: "preToolUse",
+      conversation_id: "unsettled-1",
+      transcript_path:
+        "/private/cursor/agent-transcripts/unsettled-1/unsettled-1.jsonl",
+    });
+
+    expect(sanitized).toMatchObject({
+      protocol_version: 2,
+      conversation_id: "unsettled-1",
+    });
+    expect(sanitized).not.toHaveProperty("conversation_kind");
   });
 
   it("identifies subagent transcripts without retaining their path", () => {

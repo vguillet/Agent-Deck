@@ -68,6 +68,7 @@ interface Harness {
   urls: URL[];
   executeTarget: ReturnType<typeof vi.fn>;
   createAgent: ReturnType<typeof vi.fn>;
+  workspaceRegistered: ReturnType<typeof vi.fn>;
   getSnapshot(): CursorWindowSnapshot;
   setSnapshot(snapshot: CursorWindowSnapshot): void;
   setServerUrl(url: string): void;
@@ -88,6 +89,7 @@ const harness = (
     status: "opened" as const,
   }));
   const createAgent = vi.fn(async () => ({ status: "opened" as const }));
+  const workspaceRegistered = vi.fn();
   const dependencies: CursorWindowClientDependencies = {
     getServerUrl: () => serverUrl,
     getWindowSnapshot: () => snapshot,
@@ -99,12 +101,13 @@ const harness = (
     },
     executeTarget,
     createAgent,
+    workspaceRegistered,
     random: () => 0,
     log: vi.fn(),
   };
   const client = new CursorWindowClient(
     dependencies,
-    "0.5.0",
+    "0.5.1",
     "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   );
   return {
@@ -113,6 +116,7 @@ const harness = (
     urls,
     executeTarget,
     createAgent,
+    workspaceRegistered,
     getSnapshot: () => snapshot,
     setSnapshot: (value) => {
       snapshot = value;
@@ -141,6 +145,28 @@ afterEach(() => {
 });
 
 describe("Cursor window connection lifecycle", () => {
+  it("accepts the server workspace appearance acknowledgement", () => {
+    const test = harness();
+    test.client.start();
+    test.sockets[0]!.open();
+
+    test.sockets[0]!.message({
+      type: "window.registered",
+      workspace: {
+        id: "agent-deck:workspace:alpha",
+        providerId: "agent-deck",
+        externalId: "alpha",
+        name: "alpha",
+        colour: "#123456",
+        metadata: {},
+      },
+    });
+
+    expect(test.workspaceRegistered).toHaveBeenCalledWith(
+      expect.objectContaining({ colour: "#123456" }),
+    );
+  });
+
   it("registers capabilities and dispatches a target once", async () => {
     const test = harness({
       workspaceRoots: ["/workspace/beta", "/workspace/alpha"],
@@ -158,7 +184,7 @@ describe("Cursor window connection lifecycle", () => {
       workspaceRoots: ["/workspace/alpha", "/workspace/beta"],
       launchTarget: "/workspace/project.code-workspace",
       focused: true,
-      version: "0.5.0",
+      version: "0.5.1",
       focusProtocolVersion: 2,
       focusKinds: ["cursor.conversation", "codex.thread"],
       creationProviderIds: ["cursor-local", "codex"],

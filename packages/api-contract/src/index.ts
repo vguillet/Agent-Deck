@@ -126,6 +126,10 @@ export const WorkspaceSchema = z.object({
   providerId: z.string(),
   externalId: z.string(),
   name: z.string(),
+  colour: z
+    .string()
+    .regex(/^#[\da-f]{6}$/i)
+    .optional(),
   metadata: MetadataSchema,
 });
 
@@ -321,7 +325,13 @@ export const CompatibleCursorFocusIntentFrameSchema = z.union([
   LegacyCursorFocusIntentFrameSchema,
 ]);
 
+export const CursorWindowRegisteredFrameSchema = z.object({
+  type: z.literal("window.registered"),
+  workspace: WorkspaceSchema,
+});
+
 export const CursorWindowServerFrameSchema = z.union([
+  CursorWindowRegisteredFrameSchema,
   CompatibleCursorFocusIntentFrameSchema,
   CursorFocusCancelFrameSchema,
   AgentCreationIntentFrameSchema,
@@ -350,6 +360,10 @@ export const AgentCreationResponseSchema = CursorFocusResponseSchema;
 export const AgentCreationContextSchema = z.object({
   status: z.enum(["available", "unavailable", "ambiguous"]),
   workspaceRoots: z.array(z.string().min(1)).optional(),
+  workspaceColour: z
+    .string()
+    .regex(/^#[\da-f]{6}$/i)
+    .optional(),
   message: z.string().optional(),
 });
 
@@ -412,6 +426,9 @@ export type CursorFocusIntentFrame = z.infer<
 >;
 export type CompatibleCursorFocusIntentFrame = z.infer<
   typeof CompatibleCursorFocusIntentFrameSchema
+>;
+export type CursorWindowRegisteredFrame = z.infer<
+  typeof CursorWindowRegisteredFrameSchema
 >;
 export type CursorFocusCancelFrame = z.infer<
   typeof CursorFocusCancelFrameSchema

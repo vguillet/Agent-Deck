@@ -15,6 +15,7 @@ import type { SubscriptionBroker } from "./broker.js";
 import type { AgentFocusCoordinator } from "./agent-focus-coordinator.js";
 import type { ProviderManager } from "./provider-manager.js";
 import type { CursorWindowBroker } from "./cursor-window-broker.js";
+import type { WorkspaceColourAllocator } from "./workspace-colour-allocator.js";
 
 const pageResponse = <T>(
   store: EventStore,
@@ -56,6 +57,7 @@ export const registerApiRoutes = (
   agentFocus: AgentFocusCoordinator,
   cursorWindows: CursorWindowBroker,
   providers: ProviderManager,
+  workspaceColours: WorkspaceColourAllocator,
 ): void => {
   app.get("/healthz", async () => ({ status: "ok" }));
   app.get("/readyz", async () => ({
@@ -195,10 +197,21 @@ export const registerApiRoutes = (
     "/api/v1/providers",
     collection((page) => store.listProviders(page)),
   );
-  app.get(
-    "/api/v1/workspaces",
-    collection((page) => store.listWorkspaces(page)),
-  );
+  app.get("/api/v1/workspaces", async (request) => {
+    const { offset, limit } = parsePage(request.query);
+    const page = store.listWorkspaces({ offset, limit });
+    return pageResponse(
+      store,
+      {
+        ...page,
+        items: page.items.map((workspace) =>
+          workspaceColours.decorate(workspace),
+        ),
+      },
+      offset,
+      limit,
+    );
+  });
   app.get(
     "/api/v1/projects",
     collection((page) => store.listProjects(page)),

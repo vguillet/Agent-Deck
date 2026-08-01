@@ -2,7 +2,7 @@
   "name": "focus",
   "displayName": "Agent Deck Focus",
   "description": "Opens exact Cursor conversations and local Codex threads from Agent Deck.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "publisher": "agent-deck",
   "type": "module",
@@ -42,6 +42,8 @@
   },
   "dependencies": {
     "@agent-deck/api-contract": "0.1.0",
+    "@agent-deck/client-sdk": "0.1.0",
+    "@agent-deck/domain": "0.1.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {

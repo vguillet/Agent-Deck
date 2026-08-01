@@ -1,12 +1,13 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Agent } from "@agent-deck/domain";
+import type { Agent, Workspace } from "@agent-deck/domain";
 import type { EventStore } from "@agent-deck/event-store";
 import type { AgentFocusCoordinator } from "./agent-focus-coordinator.js";
 import type { SubscriptionBroker } from "./broker.js";
 import type { ProviderManager } from "./provider-manager.js";
 import type { CursorWindowBroker } from "./cursor-window-broker.js";
 import { registerApiRoutes } from "./routes.js";
+import { WorkspaceColourAllocator } from "./workspace-colour-allocator.js";
 
 const apps: FastifyInstance[] = [];
 
@@ -38,7 +39,7 @@ const agent = (
   metadata,
 });
 
-const setup = async (agents: Agent[]) => {
+const setup = async (agents: Agent[], workspaces: Workspace[] = []) => {
   const app = Fastify();
   apps.push(app);
   const byId = new Map(agents.map((candidate) => [candidate.id, candidate]));
@@ -60,6 +61,7 @@ const setup = async (agents: Agent[]) => {
     currentSequence: () => 0,
     dismissAgent,
     dismissTerminalAgents: () => [],
+    listWorkspaces: () => ({ items: workspaces, hasMore: false }),
   } as unknown as EventStore;
   const focusAgent = vi.fn(async () => ({
     requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -79,6 +81,7 @@ const setup = async (agents: Agent[]) => {
     status: "available" as const,
     workspaceRoots: ["/workspace/alpha"],
   }));
+  const workspaceColours = new WorkspaceColourAllocator(() => 0);
   registerApiRoutes(
     app,
     store,
@@ -86,6 +89,7 @@ const setup = async (agents: Agent[]) => {
     agentFocus,
     { create, creationContext } as unknown as CursorWindowBroker,
     { rediscover } as unknown as ProviderManager,
+    workspaceColours,
   );
   await app.ready();
   return {
@@ -95,6 +99,7 @@ const setup = async (agents: Agent[]) => {
     dismissAgent,
     focusAgent,
     publish,
+    workspaceColours,
   };
 };
 
@@ -113,6 +118,31 @@ describe("agent collection route", () => {
     expect(response.statusCode).toBe(204);
     expect(test.dismissAgent).toHaveBeenCalledWith("fake:one");
     expect(test.publish).toHaveBeenCalledOnce();
+  });
+});
+
+describe("workspace collection route", () => {
+  it("adds a runtime colour without mutating the stored workspace", async () => {
+    const workspace: Workspace = {
+      id: "agent-deck:workspace:alpha",
+      providerId: "agent-deck",
+      externalId: "alpha",
+      name: "alpha",
+      metadata: {},
+    };
+    const test = await setup([], [workspace]);
+
+    const response = await test.app.inject({
+      method: "GET",
+      url: "/api/v1/workspaces",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items[0]).toMatchObject({
+      id: workspace.id,
+      colour: test.workspaceColours.colour(workspace.id),
+    });
+    expect(workspace).not.toHaveProperty("colour");
   });
 });
 

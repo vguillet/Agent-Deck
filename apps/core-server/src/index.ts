@@ -7,6 +7,7 @@ import {
   RegisterFrameSchema,
   SubscriptionSchema,
 } from "@agent-deck/api-contract";
+import { workspaceResourcesForRoots } from "@agent-deck/domain";
 import { SqliteEventStore } from "@agent-deck/persistence-sqlite";
 import { SubscriptionBroker } from "./broker.js";
 import { loadConfiguration, type AgentDeckConfiguration } from "./config.js";
@@ -18,6 +19,7 @@ import {
 import { CursorWindowBroker } from "./cursor-window-broker.js";
 import { ProviderManager } from "./provider-manager.js";
 import { registerApiRoutes } from "./routes.js";
+import { WorkspaceColourAllocator } from "./workspace-colour-allocator.js";
 
 export interface RunningAgentDeckServer {
   app: FastifyInstance;
@@ -40,7 +42,18 @@ export const buildServer = async (
   store.migrate();
   store.clearAgents();
   const broker = new SubscriptionBroker(store);
-  const cursorWindows = new CursorWindowBroker(activateCursorWindow);
+  const workspaceColours = new WorkspaceColourAllocator();
+  const cursorWindows = new CursorWindowBroker(
+    activateCursorWindow,
+    5_000,
+    (roots) => {
+      const workspace = workspaceResourcesForRoots(
+        "cursor-local",
+        roots,
+      ).workspace;
+      return workspace ? workspaceColours.decorate(workspace) : undefined;
+    },
+  );
   const agentFocus = new AgentFocusCoordinator(
     (id) => store.getAgent(id),
     cursorWindows,
@@ -64,6 +77,7 @@ export const buildServer = async (
     agentFocus,
     cursorWindows,
     providerManager,
+    workspaceColours,
   );
 
   app.get("/internal/cursor-focus", { websocket: true }, (socket) => {

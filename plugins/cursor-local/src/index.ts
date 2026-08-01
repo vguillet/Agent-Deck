@@ -467,6 +467,11 @@ class CursorLocalProvider implements AgentProviderPlugin {
         is_subagent: true,
       };
     }
+    if (input.plan_progress) {
+      // #region agent log
+      fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d833c3'},body:JSON.stringify({sessionId:'d833c3',runId:'pre-fix',hypothesisId:'H3',location:'plugins/cursor-local/src/index.ts:consumeHook',message:'Provider received progress hook',data:{event:input.hook_event_name,explicitKind:explicitConversationKind(input),knownKind:this.conversationKinds.get(input.conversation_id),hasGeneration:Boolean(input.generation_id),planProgress:input.plan_progress},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
     this.lastProtocolVersion =
       input.protocol_version ?? this.lastProtocolVersion;
     const explicitKind = explicitConversationKind(input);
@@ -528,6 +533,11 @@ class CursorLocalProvider implements AgentProviderPlugin {
       currentGeneration &&
       input.generation_id !== currentGeneration
     ) {
+      if (input.plan_progress) {
+        // #region agent log
+        fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d833c3'},body:JSON.stringify({sessionId:'d833c3',runId:'pre-fix',hypothesisId:'H3',location:'plugins/cursor-local/src/index.ts:applyLifecycleHook:generation-filter',message:'Progress hook rejected by generation filter',data:{event:input.hook_event_name,hasInputGeneration:true,hasCurrentGeneration:true,planProgress:input.plan_progress},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+      }
       return;
     }
 
@@ -603,6 +613,11 @@ class CursorLocalProvider implements AgentProviderPlugin {
               observedAt: now,
             }
           : existing?.progress;
+    if (input.plan_progress) {
+      // #region agent log
+      fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d833c3'},body:JSON.stringify({sessionId:'d833c3',runId:'pre-fix',hypothesisId:'H4',location:'plugins/cursor-local/src/index.ts:applyLifecycleHook:progress',message:'Provider computed agent progress',data:{event:input.hook_event_name,state,terminal,startsGeneration,inputPlan:input.plan_progress,outputPlan:progress?.plan,activity:progress?.activity},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
     const metadata: Record<string, unknown> = {
       ...existing?.metadata,
     };

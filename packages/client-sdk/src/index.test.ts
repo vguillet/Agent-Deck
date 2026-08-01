@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentDeckClient } from "./index.js";
+import { AgentDeckClient, workspaceColour } from "./index.js";
 
 class FakeWebSocket extends EventTarget {
   static instances: FakeWebSocket[] = [];
@@ -50,6 +50,24 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   FakeWebSocket.instances = [];
+});
+
+describe("workspaceColour", () => {
+  it("assigns a deterministic palette colour from the workspace identity", () => {
+    expect(workspaceColour("workspace:alpha")).toBe(
+      workspaceColour("workspace:alpha"),
+    );
+    expect(workspaceColour("workspace:alpha")).not.toBe(
+      workspaceColour("workspace:beta"),
+    );
+    expect(workspaceColour("workspace:alpha")).toMatch(/^#[0-9a-f]{6}$/);
+  });
+
+  it("prefers a server-assigned workspace colour", () => {
+    expect(workspaceColour({ id: "workspace:alpha", colour: "#123456" })).toBe(
+      "#123456",
+    );
+  });
 });
 
 describe("AgentDeckClient watch", () => {
