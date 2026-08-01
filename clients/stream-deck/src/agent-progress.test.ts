@@ -28,6 +28,19 @@ describe("agent progress renderer", () => {
     ).toBe("");
   });
 
+  it("keeps explicit progress visible while recovering", () => {
+    expect(
+      agentProgressSvg(
+        {
+          activity: "working",
+          plan: { completed: 1, total: 3 },
+          observedAt: "2026-07-28T09:00:00.000Z",
+        },
+        "recovering",
+      ),
+    ).toContain("2/3");
+  });
+
   it("hides progress for terminal agents", () => {
     expect(
       agentProgressSvg(

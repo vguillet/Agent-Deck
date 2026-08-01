@@ -1,3 +1,8 @@
+import {
+  DARK_KEY_VISUAL_PALETTE,
+  type KeyVisualPalette,
+} from "./agent-palette.js";
+
 export const BRING_UP_ANIMATION_MS = 560;
 export const BRING_UP_KEY_STAGGER_MS = 120;
 
@@ -45,6 +50,7 @@ export const bringUpImage = (
   elapsedMs: number,
   position: BringUpPosition,
   previousImage?: string,
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string => {
   const progress = bringUpProgress(elapsedMs, position);
   const eased = easeOutBack(progress);
@@ -60,9 +66,9 @@ export const bringUpImage = (
 
   return `data:image/svg+xml,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
-      <rect width="144" height="144" fill="#020617"/>
+      <rect width="144" height="144" fill="${palette.bringUpSurface}"/>
       ${previousImage ? `<image href="${escapeAttribute(previousImage)}" width="144" height="144" opacity="${number(previousOpacity)}"/>` : ""}
-      <circle cx="72" cy="${number(72 + lift * 0.35)}" r="${number(haloRadius)}" fill="none" stroke="#22d3ee" stroke-width="${number(1.5 + (1 - progress) * 3)}" opacity="${number(burst * 0.72)}"/>
+      <circle cx="72" cy="${number(72 + lift * 0.35)}" r="${number(haloRadius)}" fill="none" stroke="${palette.bringUpHalo}" stroke-width="${number(1.5 + (1 - progress) * 3)}" opacity="${number(burst * 0.72)}"/>
       <image href="${escapeAttribute(image)}" x="${number(x)}" y="${number(y)}" width="${number(size)}" height="${number(size)}" opacity="${number(opacity)}"/>
     </svg>`,
   )}`;

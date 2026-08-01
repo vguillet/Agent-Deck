@@ -54,8 +54,12 @@ import {
   type ConnectorBubble,
 } from "./connector-bubbles.js";
 import {
-  CLASSIC_AGENT_STATE_COLOUR,
-  CLASSIC_EMPTY_AGENT_COLOUR,
+  DARK_KEY_VISUAL_PALETTE,
+  keyVisualPalette,
+  normalizeKeyVisualThemePreference,
+  type KeyVisualPalette,
+  type KeyVisualThemePreference,
+  type ResolvedKeyVisualTheme,
 } from "./agent-palette.js";
 import {
   AnimationFrameScheduler,
@@ -84,6 +88,10 @@ import {
 import { ActionOutputWriter } from "./action-output-writer.js";
 import { subagentBackgroundSvg } from "./subagent-background.js";
 import {
+  resolveSystemAppearance,
+  systemAppearanceChanged,
+} from "./system-appearance.js";
+import {
   addRefreshResources,
   actionManifestIdsForResources,
   allRefreshResources,
@@ -97,6 +105,7 @@ interface ActionSettings {
   summaryProviderId?: string;
   showSubagents?: boolean;
   creationProviderId?: "cursor-local" | "codex";
+  keyVisualTheme?: KeyVisualThemePreference;
   [key: string]: string | number | boolean | null | undefined;
 }
 
@@ -107,12 +116,14 @@ interface DeviceConfiguration {
   providers: string[];
   states: Agent["state"][];
   showSubagents: boolean;
+  keyVisualTheme: KeyVisualThemePreference;
 }
 
 interface DeviceSession {
   deviceId: string;
   client: AgentDeckClient;
   configuration: DeviceConfiguration;
+  resolvedKeyVisualTheme: ResolvedKeyVisualTheme;
   connectionStatus: "connecting" | "connected" | "disconnected";
   allAgents: Agent[];
   agentById: Map<string, Agent>;
@@ -170,6 +181,7 @@ interface AgentStaticVisuals {
 const ALL_AGENT_STATES: Agent["state"][] = [
   "idle",
   "running",
+  "recovering",
   "waiting_for_input",
   "waiting_for_approval",
   "ready_for_review",
@@ -185,6 +197,7 @@ const DEFAULT_CONFIGURATION: DeviceConfiguration = {
   providers: [],
   states: ALL_AGENT_STATES,
   showSubagents: false,
+  keyVisualTheme: "dark",
 };
 
 const settle = async <T>(
@@ -198,6 +211,10 @@ const settle = async <T>(
 };
 
 const LONG_PRESS_DURATION_MS = 650;
+const SYSTEM_APPEARANCE_POLL_MS = 5_000;
+
+const sessionPalette = (session: DeviceSession): KeyVisualPalette =>
+  keyVisualPalette(session.resolvedKeyVisualTheme);
 
 interface ProviderStyle {
   accent: string;
@@ -212,7 +229,11 @@ interface IconOptions {
   glyph?: string;
 }
 
-const muteSvgContent = (content: string, muted: boolean): string =>
+const muteSvgContent = (
+  content: string,
+  muted: boolean,
+  palette: KeyVisualPalette,
+): string =>
   muted
     ? `<defs>
         <filter id="agent-slot-muted">
@@ -220,7 +241,7 @@ const muteSvgContent = (content: string, muted: boolean): string =>
         </filter>
       </defs>
       <g filter="url(#agent-slot-muted)" opacity=".55">${content}</g>
-      <rect width="144" height="144" fill="#64748b" opacity=".32"/>`
+      <rect width="144" height="144" fill="${palette.mutedOverlay}" opacity="${palette.mutedOverlayOpacity}"/>`
     : content;
 
 const providerStyle = (providerId: string): ProviderStyle => {
@@ -260,7 +281,9 @@ const emptyAgentSummary = (): AgentSummary => ({
 
 const addAgentToSummary = (summary: AgentSummary, agent: Agent): void => {
   summary.total += 1;
-  summary.running += Number(agent.state === "running");
+  summary.running += Number(
+    agent.state === "running" || agent.state === "recovering",
+  );
   summary.attention += Number(agent.requiresAttention);
   summary.failed ||= agent.state === "failed";
   summary.waiting ||=
@@ -270,6 +293,7 @@ const addAgentToSummary = (summary: AgentSummary, agent: Agent): void => {
 };
 
 const rebuildAgentRenderCache = (session: DeviceSession): void => {
+  const palette = sessionPalette(session);
   session.agentById = new Map(
     session.allAgents.map((agent) => [agent.id, agent]),
   );
@@ -289,6 +313,7 @@ const rebuildAgentRenderCache = (session: DeviceSession): void => {
             agent.workspaceId
               ? session.workspaceById.get(agent.workspaceId)
               : undefined,
+            palette,
           )
         : "",
     ]),
@@ -299,6 +324,7 @@ const rebuildAgentRenderCache = (session: DeviceSession): void => {
       buildAgentStaticVisuals(
         agent,
         session.workspaceBadgeByAgentId.get(agent.id) ?? "",
+        palette,
       ),
     ]),
   );
@@ -335,6 +361,7 @@ const icon = (
   accent = "#94a3b8",
   badge?: string,
   options: IconOptions = {},
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string => {
   const showStrip = options.showStrip ?? true;
   const showBadge = options.showBadge ?? true;
@@ -346,14 +373,15 @@ const icon = (
     ${
       showBadge
         ? `<circle cx="114" cy="31" r="20" fill="${accent}"/>
-    <text x="114" y="37" text-anchor="middle" font-family="system-ui" font-size="15" font-weight="800" fill="white">${badge ?? ""}</text>`
+    <text x="114" y="37" text-anchor="middle" font-family="system-ui" font-size="15" font-weight="800" fill="${palette.inverseForeground}">${badge ?? ""}</text>`
         : ""
     }
     ${
       options.glyph ??
-      `<text x="72" y="${showBadge ? 98 : 93}" text-anchor="middle" font-family="system-ui" font-size="58" font-weight="700" fill="white">${symbol}</text>`
+      `<text x="72" y="${showBadge ? 98 : 93}" text-anchor="middle" font-family="system-ui" font-size="58" font-weight="700" fill="${palette.foreground}">${symbol}</text>`
     }`,
       options.muted ?? false,
+      palette,
     )}
   </svg>`,
   )}`;
@@ -377,8 +405,11 @@ const SYSTEM_STATUS_PATHS: Record<SystemDisplayState, string> = {
     <path d="M12 17h.01"/>`,
 };
 
-const systemStatusGlyph = (state: SystemDisplayState): string => {
-  return `<g transform="translate(36 36) scale(3)" fill="none" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+const systemStatusGlyph = (
+  state: SystemDisplayState,
+  palette: KeyVisualPalette,
+): string => {
+  return `<g transform="translate(36 36) scale(3)" fill="none" stroke="${palette.foreground}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
     ${SYSTEM_STATUS_PATHS[state]}
   </g>`;
 };
@@ -386,6 +417,7 @@ const systemStatusGlyph = (state: SystemDisplayState): string => {
 const systemDisplay = (
   session: DeviceSession,
 ): { colour: string; state: SystemDisplayState } => {
+  const palette = sessionPalette(session);
   const status =
     typeof session.health.status === "string"
       ? session.health.status
@@ -397,15 +429,18 @@ const systemDisplay = (
     status === "loading" ||
     status === "starting"
   )
-    return { colour: "#f59e0b", state: "connecting" };
+    return {
+      colour: palette.stateSurface.waiting_for_input,
+      state: "connecting",
+    };
   if (session.connectionStatus === "disconnected" || status === "disconnected")
-    return { colour: "#dc2626", state: "disconnected" };
+    return { colour: palette.stateSurface.failed, state: "disconnected" };
   if (session.connectionStatus === "connected" && status === "healthy")
     return {
-      colour: CLASSIC_AGENT_STATE_COLOUR.ready_for_review,
+      colour: palette.stateSurface.ready_for_review,
       state: "connected",
     };
-  return { colour: "#dc2626", state: "degraded" };
+  return { colour: palette.stateSurface.failed, state: "degraded" };
 };
 
 const systemIcon = (
@@ -413,11 +448,19 @@ const systemIcon = (
   animationElapsedMs: number,
 ): string => {
   const display = systemDisplay(session);
-  return icon(display.colour, "", "#0f172a", String(session.allAgents.length), {
-    showStrip: false,
-    glyph: `${systemStatusGlyph(display.state)}
-        ${connectorBubblesSvg(session.providerBubbles, animationElapsedMs)}`,
-  });
+  const palette = sessionPalette(session);
+  return icon(
+    display.colour,
+    "",
+    palette.foreground,
+    String(session.allAgents.length),
+    {
+      showStrip: false,
+      glyph: `${systemStatusGlyph(display.state, palette)}
+        ${connectorBubblesSvg(session.providerBubbles, animationElapsedMs, palette)}`,
+    },
+    palette,
+  );
 };
 
 const title = (value: string, max = 18): string =>
@@ -430,38 +473,45 @@ const escapeXml = (value: string): string =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 
-const renderProviderLogo = (providerId: string): string => {
+const renderProviderLogo = (
+  providerId: string,
+  palette: KeyVisualPalette,
+): string => {
   const id = providerId.toLowerCase();
   if (id.includes("cursor"))
     return `<g transform="translate(0 93)">
-      <rect x="98" y="5" width="41" height="41" rx="10" fill="#11100d"/>
-      <path d="M118.5 10L133 18.5V35L118.5 43.5L104 35V18.5L118.5 10Z" fill="#4c4b47"/>
-      <path d="M106 19.5H131L118.5 27.5L106 19.5Z" fill="white"/>
-      <path d="M131 19.5L118.5 41V27.5L131 19.5Z" fill="#d5d4d1"/>
-      <path d="M104 35V18.5L118.5 27.5L104 35Z" fill="#5f5e5a"/>
-      <path d="M104 35L118.5 27.5V43.5L104 35Z" fill="#85847f"/>
+      <rect x="98" y="5" width="41" height="41" rx="10" fill="${palette.providerTileSurface}"/>
+      <path d="M118.5 10L133 18.5V35L118.5 43.5L104 35V18.5L118.5 10Z" fill="${palette.providerNeutral}"/>
+      <path d="M106 19.5H131L118.5 27.5L106 19.5Z" fill="${palette.providerForeground}"/>
+      <path d="M131 19.5L118.5 41V27.5L131 19.5Z" fill="${palette.providerNeutralLight}"/>
+      <path d="M104 35V18.5L118.5 27.5L104 35Z" fill="${palette.providerNeutralDark}"/>
+      <path d="M104 35L118.5 27.5V43.5L104 35Z" fill="${palette.providerNeutralMid}"/>
     </g>`;
   if (id.includes("codex") || id.includes("openai") || id.includes("chatgpt"))
     return `<g transform="translate(0 93)">
-      <rect x="98" y="5" width="41" height="41" rx="10" fill="#11100d"/>
+      <rect x="98" y="5" width="41" height="41" rx="10" fill="${palette.providerTileSurface}"/>
       <g transform="translate(104 11) scale(.18)">
-        <path d="M60.87 57.26V42.31c0-1.26.47-2.2 1.57-2.83l30.05-17.3c4.09-2.36 8.97-3.46 14-3.46 18.88 0 30.83 14.63 30.83 30.2 0 1.1 0 2.36-.16 3.62l-31.14-18.25c-1.89-1.1-3.78-1.1-5.66 0L60.87 57.26Zm70.16 58.2V79.75c0-2.2-.94-3.78-2.83-4.88L88.71 51.91l12.9-7.39c1.1-.63 2.05-.63 3.15 0l30.04 17.3c8.65 5.03 14.47 15.73 14.47 26.11 0 11.95-7.08 22.97-18.24 27.53ZM51.59 84 38.7 76.45c-1.1-.63-1.58-1.58-1.58-2.84v-34.6c0-16.83 12.9-29.57 30.36-29.57 6.61 0 12.74 2.2 17.93 6.13L54.43 33.5c-1.89 1.1-2.83 2.67-2.83 4.88V84Zm27.77 16.04L60.87 89.66V67.64l18.49-10.38 18.48 10.38v22.02l-18.48 10.38Zm11.87 47.82c-6.61 0-12.74-2.2-17.93-6.13l30.99-17.94c1.89-1.1 2.83-2.67 2.83-4.88V73.3l13.05 7.55c1.1.63 1.58 1.57 1.58 2.83v34.61c0 16.83-13.06 29.57-30.52 29.57Zm-37.28-35.08L23.91 95.48c-8.65-5.03-14.47-15.73-14.47-26.11 0-12.11 7.24-22.97 18.4-27.53v35.87c0 2.2.94 3.77 2.83 4.87L70 105.39l-12.9 7.39c-1.1.63-2.05.63-3.15 0Zm-1.73 25.8c-17.77 0-30.83-13.37-30.83-29.89 0-1.26.16-2.52.32-3.77l30.98 17.93c1.89 1.1 3.78 1.1 5.67 0l39.48-22.81v14.95c0 1.26-.47 2.2-1.58 2.83l-30.04 17.3c-4.09 2.36-8.97 3.46-14 3.46Z" fill="white"/>
+        <path d="M60.87 57.26V42.31c0-1.26.47-2.2 1.57-2.83l30.05-17.3c4.09-2.36 8.97-3.46 14-3.46 18.88 0 30.83 14.63 30.83 30.2 0 1.1 0 2.36-.16 3.62l-31.14-18.25c-1.89-1.1-3.78-1.1-5.66 0L60.87 57.26Zm70.16 58.2V79.75c0-2.2-.94-3.78-2.83-4.88L88.71 51.91l12.9-7.39c1.1-.63 2.05-.63 3.15 0l30.04 17.3c8.65 5.03 14.47 15.73 14.47 26.11 0 11.95-7.08 22.97-18.24 27.53ZM51.59 84 38.7 76.45c-1.1-.63-1.58-1.58-1.58-2.84v-34.6c0-16.83 12.9-29.57 30.36-29.57 6.61 0 12.74 2.2 17.93 6.13L54.43 33.5c-1.89 1.1-2.83 2.67-2.83 4.88V84Zm27.77 16.04L60.87 89.66V67.64l18.49-10.38 18.48 10.38v22.02l-18.48 10.38Zm11.87 47.82c-6.61 0-12.74-2.2-17.93-6.13l30.99-17.94c1.89-1.1 2.83-2.67 2.83-4.88V73.3l13.05 7.55c1.1.63 1.58 1.57 1.58 2.83v34.61c0 16.83-13.06 29.57-30.52 29.57Zm-37.28-35.08L23.91 95.48c-8.65-5.03-14.47-15.73-14.47-26.11 0-12.11 7.24-22.97 18.4-27.53v35.87c0 2.2.94 3.77 2.83 4.87L70 105.39l-12.9 7.39c-1.1.63-2.05.63-3.15 0Zm-1.73 25.8c-17.77 0-30.83-13.37-30.83-29.89 0-1.26.16-2.52.32-3.77l30.98 17.93c1.89 1.1 3.78 1.1 5.67 0l39.48-22.81v14.95c0 1.26-.47 2.2-1.58 2.83l-30.04 17.3c-4.09 2.36-8.97 3.46-14 3.46Z" fill="${palette.providerForeground}"/>
       </g>
     </g>`;
   const mark = escapeXml(providerStyle(providerId).mark);
   return `<g transform="translate(0 93)">
-      <circle cx="116" cy="24" r="17" fill="#000" opacity=".3"/>
-      <text x="116" y="29" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="800" fill="white">${mark}</text>
+      <circle cx="116" cy="24" r="17" fill="${palette.genericLogoSurface}" opacity=".72"/>
+      <text x="116" y="29" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="800" fill="${palette.providerForeground}">${mark}</text>
     </g>`;
 };
 
 const providerLogoCache = new Map<string, string>();
 
-const providerLogo = (providerId: string): string => {
-  const cached = providerLogoCache.get(providerId);
+const providerLogo = (
+  providerId: string,
+  palette: KeyVisualPalette,
+): string => {
+  const cacheKey = `${palette.id}\0${providerId}`;
+  const cached = providerLogoCache.get(cacheKey);
   if (cached) return cached;
-  const logo = renderProviderLogo(providerId);
-  providerLogoCache.set(providerId, logo);
+  const logo = renderProviderLogo(providerId, palette);
+  providerLogoCache.set(cacheKey, logo);
   if (providerLogoCache.size > 128) {
     const oldest = providerLogoCache.keys().next().value;
     if (oldest !== undefined) providerLogoCache.delete(oldest);
@@ -469,19 +519,26 @@ const providerLogo = (providerId: string): string => {
   return logo;
 };
 
-const agentModeIcon = (style: AgentModeStyle): string => {
-  const common = `fill="none" stroke="${style.colour}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"`;
+const agentModeIcon = (
+  style: AgentModeStyle,
+  palette: KeyVisualPalette,
+): string => {
+  const iconColour =
+    style.icon === "debug" ? palette.workspaceBadgeForeground : style.colour;
+  const badgeSurface =
+    style.icon === "debug" ? style.colour : palette.modeBadgeSurface;
+  const common = `fill="none" stroke="${iconColour}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"`;
   let glyph: string;
   if (style.icon === "plan")
-    glyph = `<path transform="translate(10 42) scale(.115 -.115)" fill="${style.colour}" d="M75 170Q63 170 52 176.5Q41 183 34.5 194Q28 205 28 218Q28 231 34.5 241.5Q41 252 52 258.5Q63 265 75.5 265Q88 265 99 258.5Q110 252 116.5 241.5Q123 231 123 218Q123 205 116.5 194Q110 183 99 176.5Q88 170 75 170ZM75 186Q84 186 91 190.5Q98 195 102.5 202Q107 209 107 217.5Q107 226 102.5 233Q98 240 91 244.5Q84 249 75.5 249Q67 249 60 244.5Q53 240 48.5 233Q44 226 44 217.5Q44 209 48.5 202Q53 195 60 190.5Q67 186 75 186ZM75 43Q63 43 52 49.5Q41 56 34.5 67Q28 78 28 90.5Q28 103 34.5 114Q41 125 52 131.5Q63 138 75.5 138Q88 138 99 131.5Q110 125 116.5 114.5Q123 104 123 91Q123 78 116.5 67Q110 56 99 49.5Q88 43 75 43ZM75 59Q84 59 91 63.5Q98 68 102.5 75Q107 82 107 90.5Q107 99 102.5 106Q98 113 91 117.5Q84 122 75.5 122Q67 122 60 117.5Q53 113 48.5 106Q44 99 44 90.5Q44 82 48.5 75Q53 68 60 63.5Q67 59 75 59ZM156 209Q152 209 149.5 211.5Q147 214 147 217.5Q147 221 149.5 223.5Q152 226 156 226H265Q269 226 271.5 223.5Q274 221 274 217.5Q274 214 271.5 211.5Q269 209 265 209ZM156 82Q152 82 149.5 84.5Q147 87 147 90.5Q147 94 149.5 96.5Q152 99 156 99H265Q269 99 271.5 96.5Q274 94 274 90.5Q274 87 271.5 84.5Q269 82 265 82Z"/>`;
+    glyph = `<path transform="translate(12.12 43.77) scale(.115 -.115)" fill="${iconColour}" d="M75 170Q63 170 52 176.5Q41 183 34.5 194Q28 205 28 218Q28 231 34.5 241.5Q41 252 52 258.5Q63 265 75.5 265Q88 265 99 258.5Q110 252 116.5 241.5Q123 231 123 218Q123 205 116.5 194Q110 183 99 176.5Q88 170 75 170ZM75 186Q84 186 91 190.5Q98 195 102.5 202Q107 209 107 217.5Q107 226 102.5 233Q98 240 91 244.5Q84 249 75.5 249Q67 249 60 244.5Q53 240 48.5 233Q44 226 44 217.5Q44 209 48.5 202Q53 195 60 190.5Q67 186 75 186ZM75 43Q63 43 52 49.5Q41 56 34.5 67Q28 78 28 90.5Q28 103 34.5 114Q41 125 52 131.5Q63 138 75.5 138Q88 138 99 131.5Q110 125 116.5 114.5Q123 104 123 91Q123 78 116.5 67Q110 56 99 49.5Q88 43 75 43ZM75 59Q84 59 91 63.5Q98 68 102.5 75Q107 82 107 90.5Q107 99 102.5 106Q98 113 91 117.5Q84 122 75.5 122Q67 122 60 117.5Q53 113 48.5 106Q44 99 44 90.5Q44 82 48.5 75Q53 68 60 63.5Q67 59 75 59ZM156 209Q152 209 149.5 211.5Q147 214 147 217.5Q147 221 149.5 223.5Q152 226 156 226H265Q269 226 271.5 223.5Q274 221 274 217.5Q274 214 271.5 211.5Q269 209 265 209ZM156 82Q152 82 149.5 84.5Q147 87 147 90.5Q147 94 149.5 96.5Q152 99 156 99H265Q269 99 271.5 96.5Q274 94 274 90.5Q274 87 271.5 84.5Q269 82 265 82Z"/>`;
   else if (style.icon === "debug")
-    glyph = `<path transform="translate(9 43) scale(.115 -.115)" fill="${style.colour}" d="M162 288Q162 295 157.5 297Q153 299 148 295L105 265Q101 262 101 257.5Q101 253 105 250L148 220Q153 216 157.5 218Q162 220 162 227ZM136 0Q173 0 204 18.5Q235 37 253.5 68Q272 99 272 136Q272 173 253.5 204Q235 235 204 253.5Q173 272 136 272Q131 272 128 268.5Q125 265 125 260.5Q125 256 128 252.5Q131 249 136 249Q167 249 193 234Q219 219 234 193Q249 167 249 136Q249 105 234 79Q219 53 193 38Q167 23 136 23Q105 23 79 38Q53 53 38 79Q23 105 23 136Q23 164 35.5 188Q48 212 70 227Q74 231 75 235Q76 239 73.5 243.5Q71 248 66 248.5Q61 249 57 246Q30 227 15 198Q0 169 0 136Q0 99 18.5 68Q37 37 68 18.5Q99 0 136 0ZM121 73Q128 73 132 79L193 175Q196 180 196 183.5Q196 187 193 190Q190 193 185 193Q180 193 176 187L121 98L95 132Q91 138 85.5 138Q80 138 77 134.5Q74 131 74 127Q74 123 77 119L110 79Q115 73 121 73Z"/>`;
+    glyph = `<path transform="translate(10.14 42.1) scale(.115 -.115)" fill="${iconColour}" d="M162 288Q162 295 157.5 297Q153 299 148 295L105 265Q101 262 101 257.5Q101 253 105 250L148 220Q153 216 157.5 218Q162 220 162 227ZM136 0Q173 0 204 18.5Q235 37 253.5 68Q272 99 272 136Q272 173 253.5 204Q235 235 204 253.5Q173 272 136 272Q131 272 128 268.5Q125 265 125 260.5Q125 256 128 252.5Q131 249 136 249Q167 249 193 234Q219 219 234 193Q249 167 249 136Q249 105 234 79Q219 53 193 38Q167 23 136 23Q105 23 79 38Q53 53 38 79Q23 105 23 136Q23 164 35.5 188Q48 212 70 227Q74 231 75 235Q76 239 73.5 243.5Q71 248 66 248.5Q61 249 57 246Q30 227 15 198Q0 169 0 136Q0 99 18.5 68Q37 37 68 18.5Q99 0 136 0ZM121 73Q128 73 132 79L193 175Q196 180 196 183.5Q196 187 193 190Q190 193 185 193Q180 193 176 187L121 98L95 132Q91 138 85.5 138Q80 138 77 134.5Q74 131 74 127Q74 123 77 119L110 79Q115 73 121 73Z"/>`;
   else
-    glyph = `<g ${common}>
+    glyph = `<g transform="translate(.62 1.41)" ${common}>
       <path d="M14 15h24v17H25l-7 6v-6h-4z"/>
     </g>`;
   return `<g transform="translate(0 92)">
-      <circle cx="26" cy="26" r="19" fill="#000" opacity=".55"/>
+      <circle cx="26" cy="26" r="19" fill="${badgeSurface}" opacity=".72"/>
       ${glyph}
     </g>`;
 };
@@ -489,12 +546,13 @@ const agentModeIcon = (style: AgentModeStyle): string => {
 const buildAgentStaticVisuals = (
   agent: Agent,
   workspaceBadge: string,
+  palette: KeyVisualPalette,
 ): AgentStaticVisuals => {
   const modeStyle = agentModeStyle(agent);
   return {
     modeFrame: modeStyle ? agentModeFrameSvg(modeStyle) : "",
-    modeIcon: modeStyle ? agentModeIcon(modeStyle) : "",
-    providerLogo: providerLogo(agent.providerId),
+    modeIcon: modeStyle ? agentModeIcon(modeStyle, palette) : "",
+    providerLogo: providerLogo(agent.providerId, palette),
     workspaceBadge,
   };
 };
@@ -507,28 +565,35 @@ const agentIcon = (
   muted = false,
   pressed = false,
   stateTransition?: AgentStateTransitionFrame,
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string => {
   const scene =
     look === "agent"
-      ? agentLookScene(agent.state, agent.id, animation.elapsedMs)
-      : `<rect width="144" height="144" fill="${CLASSIC_AGENT_STATE_COLOUR[agent.state]}"/>
-      ${agentStateIndicatorSvg(agent.state, animation.stateElapsedMs, stateTransition)}`;
+      ? agentLookScene(agent.state, agent.id, animation.elapsedMs, palette)
+      : `<rect width="144" height="144" fill="${palette.stateSurface[agent.state]}"/>
+      ${agentStateIndicatorSvg(
+        agent.state,
+        animation.stateElapsedMs,
+        stateTransition,
+        palette,
+      )}`;
   return `data:image/svg+xml,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
       ${muteSvgContent(
         `${scene}
-      ${isSubagent(agent) ? subagentBackgroundSvg() : ""}
-      ${agentLabelBackgroundSvg()}
-      ${agentLabelSvg(agent.title, animation.elapsedMs)}
-      ${agentProgressSvg(agent.progress, agent.state)}
+      ${isSubagent(agent) ? subagentBackgroundSvg(palette) : ""}
+      ${agentLabelBackgroundSvg(palette)}
+      ${agentLabelSvg(agent.title, animation.elapsedMs, palette)}
+      ${agentProgressSvg(agent.progress, agent.state, palette)}
       ${staticVisuals.modeFrame}
       ${staticVisuals.providerLogo}
       ${staticVisuals.modeIcon}
       ${staticVisuals.workspaceBadge}
       `,
         muted,
+        palette,
       )}
-      ${pressed ? agentEdgeFrameSvg("#ffffff") : ""}
+      ${pressed ? agentEdgeFrameSvg(palette.foreground) : ""}
     </svg>`,
   )}`;
 };
@@ -538,15 +603,17 @@ const emptyAgentIcon = (
   seed: string,
   animationElapsedMs: number,
   muted = false,
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string =>
   `data:image/svg+xml,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
       ${muteSvgContent(
-        `${emptyAgentLookScene(seed, animationElapsedMs)}
-      ${agentLabelBackgroundSvg()}
-      ${agentLabelSvg(label, animationElapsedMs)}
+        `${emptyAgentLookScene(seed, animationElapsedMs, palette)}
+      ${agentLabelBackgroundSvg(palette)}
+      ${agentLabelSvg(label, animationElapsedMs, palette)}
       `,
         muted,
+        palette,
       )}
     </svg>`,
   )}`;
@@ -555,17 +622,19 @@ const newAgentIcon = (
   providerId: string,
   workspaceAccent: string,
   muted = false,
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string => {
   return `data:image/svg+xml,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
       ${muteSvgContent(
-        `<rect width="144" height="144" fill="#172033"/>
-        <g transform="translate(50 45) scale(1.55) translate(-118.5 -118.5)">${providerLogo(providerId)}</g>
-        <circle cx="72" cy="51" r="20" fill="white" stroke="#172033" stroke-width="3"/>
-        <path d="M40 127c3-32 14-49 32-49s29 17 32 49z" fill="white" stroke="#172033" stroke-width="3" stroke-linejoin="round"/>
+        `<rect width="144" height="144" fill="${palette.newAgentSurface}"/>
+        <g transform="translate(50 45) scale(1.55) translate(-118.5 -118.5)">${providerLogo(providerId, palette)}</g>
+        <circle cx="72" cy="51" r="20" fill="${palette.newAgentCharacter}" stroke="${palette.newAgentSurface}" stroke-width="3"/>
+        <path d="M40 127c3-32 14-49 32-49s29 17 32 49z" fill="${palette.newAgentCharacter}" stroke="${palette.newAgentSurface}" stroke-width="3" stroke-linejoin="round"/>
         <circle cx="116" cy="27" r="18" fill="none" stroke="${workspaceAccent}" stroke-width="3"/>
         <path d="M112 15h9v8h8v9h-8v8h-9v-8h-8v-9h8z" fill="${workspaceAccent}"/>`,
         muted,
+        palette,
       )}
     </svg>`,
   )}`;
@@ -575,10 +644,15 @@ const removedAgentIcon = (
   seed: string,
   elapsedMs: number,
   muted = false,
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string =>
   `data:image/svg+xml,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
-      ${muteSvgContent(removedAgentLookScene(seed, elapsedMs), muted)}
+      ${muteSvgContent(
+        removedAgentLookScene(seed, elapsedMs, palette),
+        muted,
+        palette,
+      )}
     </svg>`,
   )}`;
 
@@ -622,6 +696,8 @@ class DeviceManager {
     AgentRemovalTransition
   >();
   private readonly outputWriter = new ActionOutputWriter<string>();
+  private systemAppearanceTimer: NodeJS.Timeout | undefined;
+  private systemAppearancePromise: Promise<void> | undefined;
   private readonly animationScheduler =
     new AnimationFrameScheduler<AnimatedTarget>({
       targets: () => this.animatedTargets(),
@@ -706,15 +782,23 @@ class DeviceManager {
       name: actionContext.device.name || DEFAULT_CONFIGURATION.name,
       ...(document?.data ?? {}),
     };
+    configuration.keyVisualTheme = normalizeKeyVisualThemePreference(
+      configuration.keyVisualTheme,
+    );
     // State selection is not user-configurable. Include newly introduced
     // states when loading configuration documents saved by older versions.
     configuration.states = Array.from(
       new Set<Agent["state"]>([...configuration.states, ...ALL_AGENT_STATES]),
     );
+    const resolvedKeyVisualTheme =
+      configuration.keyVisualTheme === "system"
+        ? await resolveSystemAppearance()
+        : configuration.keyVisualTheme;
     const session: DeviceSession = {
       deviceId,
       client,
       configuration,
+      resolvedKeyVisualTheme,
       connectionStatus: "connecting",
       allAgents: [],
       agentById: new Map(),
@@ -748,6 +832,7 @@ class DeviceManager {
       creationContextPromise: undefined,
     };
     this.sessions.set(deviceId, session);
+    this.syncSystemAppearanceMonitor();
     await this.refresh(session);
     session.watch = client.watch(
       {
@@ -794,7 +879,9 @@ class DeviceManager {
             rebuildAgentRenderCache(session);
             void this.renderVisible(session.deviceId);
           } else if (status === "connected" && previousStatus !== "connected")
-            void this.refreshAndStartBringUp(session);
+            void this.refreshSystemAppearance().then(() =>
+              this.refreshAndStartBringUp(session),
+            );
           else void this.renderVisible(session.deviceId);
         },
       },
@@ -820,6 +907,53 @@ class DeviceManager {
     }, 1_500);
     session.creationContextTimer.unref();
     return session;
+  }
+
+  private syncSystemAppearanceMonitor(): void {
+    const needed = [...this.sessions.values()].some(
+      ({ configuration }) => configuration.keyVisualTheme === "system",
+    );
+    if (!needed) {
+      if (this.systemAppearanceTimer) clearInterval(this.systemAppearanceTimer);
+      this.systemAppearanceTimer = undefined;
+      return;
+    }
+    if (this.systemAppearanceTimer) return;
+    this.systemAppearanceTimer = setInterval(() => {
+      void this.refreshSystemAppearance();
+    }, SYSTEM_APPEARANCE_POLL_MS);
+    this.systemAppearanceTimer.unref();
+  }
+
+  async refreshSystemAppearance(): Promise<void> {
+    if (this.systemAppearancePromise) return this.systemAppearancePromise;
+    if (
+      ![...this.sessions.values()].some(
+        ({ configuration }) => configuration.keyVisualTheme === "system",
+      )
+    )
+      return;
+    this.systemAppearancePromise = resolveSystemAppearance()
+      .then(async (appearance) => {
+        const changedDeviceIds: string[] = [];
+        for (const session of this.sessions.values()) {
+          if (
+            session.configuration.keyVisualTheme !== "system" ||
+            !systemAppearanceChanged(session.resolvedKeyVisualTheme, appearance)
+          )
+            continue;
+          session.resolvedKeyVisualTheme = appearance;
+          rebuildAgentRenderCache(session);
+          changedDeviceIds.push(session.deviceId);
+        }
+        await Promise.all(
+          changedDeviceIds.map((deviceId) => this.renderVisible(deviceId)),
+        );
+      })
+      .finally(() => {
+        this.systemAppearancePromise = undefined;
+      });
+    return this.systemAppearancePromise;
   }
 
   private cancelBringUp(session: DeviceSession): void {
@@ -920,6 +1054,7 @@ class DeviceManager {
     settings: ActionSettings,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
+    const palette = sessionPalette(session);
     const automaticSlot =
       actionContext.isKey() && actionContext.coordinates
         ? actionContext.coordinates.row * actionContext.device.size.columns +
@@ -948,6 +1083,7 @@ class DeviceManager {
         removal.seed,
         Date.now() - removal.startedAt,
         muted,
+        palette,
       );
       if (actionContext.isKey() || actionContext.isDial())
         await this.outputWriter.write(
@@ -975,6 +1111,7 @@ class DeviceManager {
           actionContext.id,
           Date.now() - session.animationStartedAt,
           muted,
+          palette,
         );
         if (actionContext.isKey() || actionContext.isDial())
           await this.outputWriter.write(
@@ -989,11 +1126,18 @@ class DeviceManager {
           actionContext,
           {
             title: label,
-            image: icon(CLASSIC_EMPTY_AGENT_COLOUR, "💤", "#475569", "AG", {
-              showStrip: false,
-              showBadge: false,
-              muted,
-            }),
+            image: icon(
+              palette.emptySurface,
+              "💤",
+              palette.stateAccent.unknown,
+              "AG",
+              {
+                showStrip: false,
+                showBadge: false,
+                muted,
+              },
+              palette,
+            ),
           },
           { binding: undefined },
         );
@@ -1014,7 +1158,7 @@ class DeviceManager {
           image: agentIcon(
             agent,
             session.agentStaticVisuals.get(agent.id) ??
-              buildAgentStaticVisuals(agent, ""),
+              buildAgentStaticVisuals(agent, "", palette),
             {
               elapsedMs: animationElapsedMs,
               stateElapsedMs: stateAnimationElapsedMs,
@@ -1023,6 +1167,7 @@ class DeviceManager {
             muted,
             this.pressedAgentActions.has(actionContext.id),
             stateTransition,
+            palette,
           ),
         },
         { binding: agent.id },
@@ -1056,19 +1201,20 @@ class DeviceManager {
     settings: ActionSettings,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
+    const palette = sessionPalette(session);
     const providerId = String(settings.summaryProviderId ?? "").trim();
     const summary =
       session.agentSummaries.get(providerId) ?? emptyAgentSummary();
     const { attention, failed, reviewing, running, total, waiting } = summary;
     const colour = failed
-      ? CLASSIC_AGENT_STATE_COLOUR.failed
+      ? palette.stateSurface.failed
       : waiting
-        ? CLASSIC_AGENT_STATE_COLOUR.waiting_for_input
+        ? palette.stateSurface.waiting_for_input
         : running
-          ? CLASSIC_AGENT_STATE_COLOUR.running
+          ? palette.stateSurface.running
           : reviewing
-            ? CLASSIC_AGENT_STATE_COLOUR.ready_for_review
-            : CLASSIC_AGENT_STATE_COLOUR.idle;
+            ? palette.stateSurface.ready_for_review
+            : palette.stateSurface.idle;
     const style = providerId
       ? providerStyle(providerId)
       : { accent: "#38bdf8", label: "All agents", mark: "Σ" };
@@ -1079,11 +1225,14 @@ class DeviceManager {
       attention ? String(Math.min(attention, 9)) : String(total),
       style.accent,
       style.mark,
+      {},
+      palette,
     );
   }
 
   async renderAttention(actionContext: Action<ActionSettings>): Promise<void> {
     const session = await this.ensure(actionContext);
+    const palette = sessionPalette(session);
     const attention =
       session.attention[
         session.attentionIndex % Math.max(session.attention.length, 1)
@@ -1092,29 +1241,46 @@ class DeviceManager {
       await this.render(
         actionContext,
         "No attention",
-        CLASSIC_AGENT_STATE_COLOUR.ready_for_review,
+        palette.stateSurface.ready_for_review,
         "✓",
+        undefined,
+        undefined,
+        {},
+        palette,
       );
       return;
     }
     await this.render(
       actionContext,
       `${session.attention.length} attention\n${title(attention.summary, 22)}`,
-      attention.severity === "critical" ? "#dc2626" : "#f59e0b",
+      attention.severity === "critical"
+        ? palette.stateSurface.failed
+        : palette.stateSurface.waiting_for_input,
       "!",
+      undefined,
+      undefined,
+      {},
+      palette,
     );
   }
 
   async renderProvider(actionContext: Action<ActionSettings>): Promise<void> {
     const session = await this.ensure(actionContext);
+    const palette = sessionPalette(session);
     const unhealthy = session.unhealthyProviderCount;
     await this.render(
       actionContext,
       unhealthy
         ? `${unhealthy} provider issue`
         : `${session.providers.length} providers\nhealthy`,
-      unhealthy ? "#dc2626" : CLASSIC_AGENT_STATE_COLOUR.ready_for_review,
+      unhealthy
+        ? palette.stateSurface.failed
+        : palette.stateSurface.ready_for_review,
       "P",
+      undefined,
+      undefined,
+      {},
+      palette,
     );
   }
 
@@ -1161,6 +1327,7 @@ class DeviceManager {
     settings: ActionSettings,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
+    const palette = sessionPalette(session);
     await this.refreshCreationContext(session);
     const providerId = settings.creationProviderId ?? "cursor-local";
     const roots =
@@ -1172,7 +1339,7 @@ class DeviceManager {
       : undefined;
     const workspaceAccent =
       session.creationContext?.workspaceColour ??
-      (workspace ? workspaceColour(workspace) : "white");
+      (workspace ? workspaceColour(workspace) : palette.foreground);
     if (actionContext.isKey() || actionContext.isDial())
       await this.outputWriter.write(actionContext, {
         title: "",
@@ -1180,6 +1347,7 @@ class DeviceManager {
           providerId,
           workspaceAccent,
           session.connectionStatus !== "connected",
+          palette,
         ),
       });
   }
@@ -1263,7 +1431,7 @@ class DeviceManager {
     const session = await this.ensure(actionContext);
     const agent = session.agentById.get(agentId);
     if (!agent) return "missing";
-    if (agent.state === "running") {
+    if (agent.state === "running" || agent.state === "recovering") {
       streamDeck.logger.warn(
         `Agent Deck remove blocked: agent ${agent.id} is still running`,
       );
@@ -1340,6 +1508,26 @@ class DeviceManager {
     if (session.configuration.showSubagents === showSubagents) return;
     session.configuration.showSubagents = showSubagents;
     await this.refresh(session, ["agents", "attention"]);
+  }
+
+  async setKeyVisualTheme(
+    actionContext: Action<ActionSettings>,
+    preference: unknown,
+  ): Promise<void> {
+    if (preference === undefined) return;
+    const session = await this.ensure(actionContext);
+    const normalized = normalizeKeyVisualThemePreference(preference);
+    const resolved =
+      normalized === "system" ? await resolveSystemAppearance() : normalized;
+    const changed =
+      session.configuration.keyVisualTheme !== normalized ||
+      session.resolvedKeyVisualTheme !== resolved;
+    session.configuration.keyVisualTheme = normalized;
+    session.resolvedKeyVisualTheme = resolved;
+    this.syncSystemAppearanceMonitor();
+    if (!changed) return;
+    rebuildAgentRenderCache(session);
+    await this.renderVisible(session.deviceId);
   }
 
   async clearAndRefreshFor(
@@ -1508,7 +1696,7 @@ class DeviceManager {
       const observedAt = Date.now();
       const freshAgentIds = new Set(freshAgents.map(({ id }) => id));
       for (const agent of freshAgents) {
-        if (agent.state !== "running") {
+        if (agent.state !== "running" && agent.state !== "recovering") {
           session.runningAnimationStarts.delete(agent.id);
           continue;
         }
@@ -1639,6 +1827,7 @@ class DeviceManager {
     return Boolean(
       agent &&
       (agent.state === "running" ||
+        agent.state === "recovering" ||
         agent.state === "failed" ||
         agent.state === "waiting_for_input" ||
         agentLabelOverflows(agent.title)),
@@ -1652,6 +1841,7 @@ class DeviceManager {
   }: AnimatedTarget): Promise<void> {
     const now = Date.now();
     const animationElapsedMs = now - session.animationStartedAt;
+    const palette = sessionPalette(session);
     if (kind === "bring-up") {
       const snapshot = session.bringUpImages.get(actionContext.id);
       if (
@@ -1671,6 +1861,7 @@ class DeviceManager {
               total: snapshot.total,
             },
             snapshot.previousImage,
+            palette,
           ),
           ...(snapshot.title === undefined ? {} : { title: snapshot.title }),
         },
@@ -1689,7 +1880,12 @@ class DeviceManager {
       await this.outputWriter.write(
         actionContext,
         {
-          image: removedAgentIcon(removal.seed, now - removal.startedAt),
+          image: removedAgentIcon(
+            removal.seed,
+            now - removal.startedAt,
+            false,
+            palette,
+          ),
         },
         { binding: undefined },
       );
@@ -1707,6 +1903,8 @@ class DeviceManager {
             this.renderedAgentLabels.get(actionContext.id) ?? "Agent",
             actionContext.id,
             animationElapsedMs,
+            false,
+            palette,
           ),
         },
         { binding: undefined },
@@ -1727,7 +1925,7 @@ class DeviceManager {
         image: agentIcon(
           agent,
           session.agentStaticVisuals.get(agent.id) ??
-            buildAgentStaticVisuals(agent, ""),
+            buildAgentStaticVisuals(agent, "", palette),
           {
             elapsedMs: animationElapsedMs,
             stateElapsedMs: this.runningAnimationElapsedMs(session, agent, now),
@@ -1736,6 +1934,7 @@ class DeviceManager {
           false,
           this.pressedAgentActions.has(actionContext.id),
           stateTransition,
+          palette,
         ),
       },
       { binding: agent.id },
@@ -1781,16 +1980,20 @@ class DeviceManager {
     accent?: string,
     badge?: string,
     options: IconOptions = {},
+    palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
   ): Promise<void> {
     if (actionContext.isKey() || actionContext.isDial())
       await this.outputWriter.write(actionContext, {
         title: text,
-        image: icon(colour, symbol, accent, badge, options),
+        image: icon(colour, symbol, accent, badge, options, palette),
       });
   }
 }
 
 const devices = new DeviceManager();
+streamDeck.system.onSystemDidWakeUp(() => {
+  void devices.refreshSystemAppearance();
+});
 
 @action({ UUID: "com.agentdeck.monitor.agent-slot" })
 class AgentSlotAction extends SingletonAction<ActionSettings> {
@@ -1810,6 +2013,10 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
     ev: DidReceiveSettingsEvent<ActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.setKeyVisualTheme(
+      ev.action,
+      ev.payload.settings.keyVisualTheme,
+    );
     await devices.setShowSubagents(
       ev.action,
       ev.payload.settings.showSubagents,
@@ -1907,6 +2114,10 @@ class AgentSummaryAction extends SingletonAction<ActionSettings> {
     ev: DidReceiveSettingsEvent<ActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.setKeyVisualTheme(
+      ev.action,
+      ev.payload.settings.keyVisualTheme,
+    );
     await devices.setShowSubagents(
       ev.action,
       ev.payload.settings.showSubagents,
@@ -1936,6 +2147,10 @@ class AttentionAction extends SingletonAction<ActionSettings> {
     ev: DidReceiveSettingsEvent<ActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.setKeyVisualTheme(
+      ev.action,
+      ev.payload.settings.keyVisualTheme,
+    );
     await devices.setShowSubagents(
       ev.action,
       ev.payload.settings.showSubagents,
@@ -1967,6 +2182,10 @@ class ProviderHealthAction extends SingletonAction<ActionSettings> {
     ev: DidReceiveSettingsEvent<ActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.setKeyVisualTheme(
+      ev.action,
+      ev.payload.settings.keyVisualTheme,
+    );
     await devices.setShowSubagents(
       ev.action,
       ev.payload.settings.showSubagents,
@@ -1999,6 +2218,10 @@ class SystemHealthAction extends SingletonAction<ActionSettings> {
     ev: DidReceiveSettingsEvent<ActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.setKeyVisualTheme(
+      ev.action,
+      ev.payload.settings.keyVisualTheme,
+    );
     await devices.setShowSubagents(
       ev.action,
       ev.payload.settings.showSubagents,
@@ -2034,6 +2257,10 @@ class NewAgentAction extends SingletonAction<ActionSettings> {
     ev: DidReceiveSettingsEvent<ActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.setKeyVisualTheme(
+      ev.action,
+      ev.payload.settings.keyVisualTheme,
+    );
     await devices.renderCreation(ev.action, ev.payload.settings);
   }
   override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {

@@ -1,12 +1,12 @@
 import type { AgentState } from "@agent-deck/domain";
 import {
-  CLASSIC_AGENT_STATE_COLOUR,
-  CLASSIC_EMPTY_AGENT_COLOUR,
+  DARK_KEY_VISUAL_PALETTE,
+  type KeyVisualPalette,
 } from "./agent-palette.js";
 
 export type AgentKeyLook = "classic" | "agent";
 
-const FLAT_WHITE = "#ffffff";
+const FLAT_WHITE = "currentColor";
 export const REMOVED_AGENT_ANIMATION_MS = 800;
 
 const hash = (value: string): number => {
@@ -423,6 +423,7 @@ export const agentLookScene = (
   state: AgentState,
   seed: string,
   elapsedMs: number,
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string => {
   const accent = FLAT_WHITE;
   const variant = agentSceneVariant(seed, state);
@@ -430,6 +431,12 @@ export const agentLookScene = (
   if (state === "idle") content = idleScene(variant, elapsedMs, accent);
   else if (state === "running")
     content = runningScene(variant, elapsedMs, accent);
+  else if (state === "recovering")
+    content = `${runningScene(variant, elapsedMs, accent)}
+      <g data-state-warning="recovering">
+        <path d="M72 35 L84 58 H60 Z" fill="${palette.stateAccent.waiting_for_input}" stroke="${palette.inverseForeground}" stroke-width="1.5"/>
+        <text x="72" y="54" text-anchor="middle" font-family="system-ui" font-size="15" font-weight="900" fill="${palette.inverseForeground}">!</text>
+      </g>`;
   else if (state === "waiting_for_input")
     content = inputScene(variant, elapsedMs, accent);
   else if (state === "waiting_for_approval")
@@ -442,23 +449,25 @@ export const agentLookScene = (
     content = cancelledScene(variant, elapsedMs, accent);
   else content = unknownScene(variant, elapsedMs, accent);
 
-  return `${sceneBackground(CLASSIC_AGENT_STATE_COLOUR[state])}${content}`;
+  return `${sceneBackground(palette.stateSurface[state])}<g color="${palette.foreground}">${content}</g>`;
 };
 
 export const emptyAgentLookScene = (
   seed: string,
   elapsedMs: number,
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string => {
-  return `${sceneBackground(CLASSIC_EMPTY_AGENT_COLOUR)}${idleScene(
+  return `${sceneBackground(palette.emptySurface)}<g color="${palette.emptyCharacter}">${idleScene(
     agentSceneVariant(seed, "empty"),
     elapsedMs,
-    FLAT_WHITE,
-  )}`;
+    palette.foreground,
+  )}</g>`;
 };
 
 export const removedAgentLookScene = (
   seed: string,
   elapsedMs: number,
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string => {
   const progress = Math.min(
     1,
@@ -478,12 +487,14 @@ export const removedAgentLookScene = (
     )}" fill="${FLAT_WHITE}" opacity="${number(opacity)}"/>`;
   }).join("");
 
-  return `${sceneBackground(CLASSIC_EMPTY_AGENT_COLOUR)}
+  return `${sceneBackground(palette.emptySurface)}
+    <g color="${palette.emptyCharacter}">
     <g opacity="${number(opacity)}" transform="rotate(${number(spin)} 72 70)">
       ${agent({ y: 58 + eased * 10, scale })}
     </g>
     ${particles}
     <g opacity="${number(Math.min(1, progress * 2.4))}" stroke="${FLAT_WHITE}" stroke-width="5" stroke-linecap="round">
       <path d="M58 70 H86"/>
+    </g>
     </g>`;
 };

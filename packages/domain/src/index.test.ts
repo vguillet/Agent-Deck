@@ -57,6 +57,7 @@ describe("lifecycle state predicates", () => {
       [
         "idle",
         "running",
+        "recovering",
         "waiting_for_input",
         "waiting_for_approval",
         "ready_for_review",
@@ -64,7 +65,12 @@ describe("lifecycle state predicates", () => {
         "cancelled",
         "unknown",
       ].filter((state) => isActiveAgentState(state as Agent["state"])),
-    ).toEqual(["running", "waiting_for_input", "waiting_for_approval"]);
+    ).toEqual([
+      "running",
+      "recovering",
+      "waiting_for_input",
+      "waiting_for_approval",
+    ]);
   });
 
   it("classifies retained terminal agent states separately", () => {
@@ -72,6 +78,7 @@ describe("lifecycle state predicates", () => {
       [
         "idle",
         "running",
+        "recovering",
         "waiting_for_input",
         "waiting_for_approval",
         "ready_for_review",

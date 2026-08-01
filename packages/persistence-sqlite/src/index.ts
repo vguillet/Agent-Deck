@@ -1016,7 +1016,8 @@ export class SqliteEventStore implements EventStore {
       .prepare(
         `SELECT document FROM agents WHERE provider_id IN (${placeholders})
          AND COALESCE(last_observed_at, last_activity_at) < ? AND state IN (
-           'idle', 'running', 'waiting_for_input', 'waiting_for_approval'
+           'idle', 'running', 'recovering', 'waiting_for_input',
+           'waiting_for_approval'
          )`,
       )
       .all(...this.incrementalProviders, beforeTimestamp) as Row[];

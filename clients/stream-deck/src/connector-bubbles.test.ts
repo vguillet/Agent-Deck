@@ -5,6 +5,7 @@ import {
   connectorBubblesWidth,
   type ConnectorBubble,
 } from "./connector-bubbles.js";
+import { LIGHT_KEY_VISUAL_PALETTE } from "./agent-palette.js";
 
 const connectors = (count: number): ConnectorBubble[] =>
   Array.from({ length: count }, (_, index) => ({
@@ -41,6 +42,19 @@ describe("Stream Deck connector bubbles", () => {
 
     expect(svg).toContain("M20.5 5 35 13.5");
     expect(svg).toContain("M60.87 57.26V42.31");
+  });
+
+  it("uses white provider tiles with dark artwork in light mode", () => {
+    const dark = connectorBubblesSvg(connectors(2), 0);
+    const light = connectorBubblesSvg(
+      connectors(2),
+      0,
+      LIGHT_KEY_VISUAL_PALETTE,
+    );
+
+    expect(light).toContain('fill="#ffffff"');
+    expect(light).toContain('fill="#0f172a"');
+    expect(light).not.toBe(dark);
   });
 
   it("continuously loops a connector list that does not fit", () => {

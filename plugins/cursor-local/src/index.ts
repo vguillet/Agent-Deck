@@ -162,14 +162,16 @@ const terminalStatus = (input: LifecycleHookInput): string =>
 
 const agentTerminalState = (input: LifecycleHookInput): Agent["state"] => {
   const status = terminalStatus(input);
-  if (status.includes("error") || status.includes("fail")) return "failed";
+  if (status.includes("error") || status.includes("fail"))
+    return input.hook_event_name === "sessionEnd" ? "failed" : "recovering";
   if (status.includes("abort") || status.includes("cancel")) return "cancelled";
   return input.hook_event_name === "stop" ? "ready_for_review" : "idle";
 };
 
 const runTerminalState = (input: LifecycleHookInput): AgentRun["state"] => {
   const status = terminalStatus(input);
-  if (status.includes("error") || status.includes("fail")) return "failed";
+  if (status.includes("error") || status.includes("fail"))
+    return input.hook_event_name === "sessionEnd" ? "failed" : "running";
   if (status.includes("abort") || status.includes("cancel")) return "cancelled";
   return "succeeded";
 };
@@ -186,6 +188,9 @@ const withoutProgress = (agent: Agent): Agent => {
   delete copy.progress;
   return copy;
 };
+
+const isWorkingState = (state: Agent["state"]): boolean =>
+  state === "running" || state === "recovering";
 
 const explicitConversationKind = (
   input: LifecycleHookInput,
@@ -334,7 +339,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
   async subscribe(emit: ProviderEventEmitter): Promise<Unsubscribe> {
     this.emit = emit;
     for (const agent of this.agents.values())
-      if (agent.kind === "subagent" && agent.state === "running")
+      if (agent.kind === "subagent" && isWorkingState(agent.state))
         await this.trackSubagentTranscript(agent.externalId);
     return async () => {
       this.emit = undefined;
@@ -358,7 +363,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const run = agent?.activeRunId
       ? this.runs.get(agent.activeRunId)
       : undefined;
-    if (!agent || !run || agent.state !== "running")
+    if (!agent || !run || !isWorkingState(agent.state))
       return {
         commandId: command.commandId,
         status: "failed",
@@ -882,22 +887,25 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const transcriptPaths = await this.topLevelTranscriptPaths();
     const terminalAgents: Agent[] = [];
     for (const agent of this.agents.values()) {
-      if (agent.kind !== "top_level" || agent.state !== "running") continue;
+      if (agent.kind !== "top_level" || !isWorkingState(agent.state)) continue;
       const transcript = transcriptPaths.get(agent.externalId);
       if (!transcript) continue;
       const terminal = await this.subagentTranscriptTerminal(transcript, true);
       if (!terminal) continue;
+      if (terminal.status === "error") {
+        if (agent.state === "recovering") continue;
+      }
       const sourceRevision = this.nextSourceRevision(agent.externalId);
       const state =
         terminal.status === "error"
-          ? "failed"
+          ? "recovering"
           : terminal.status === "aborted"
             ? "cancelled"
             : "ready_for_review";
       const terminalAgent: Agent = {
         ...withoutProgress(agent),
         state,
-        requiresAttention: state === "failed" || state === "ready_for_review",
+        requiresAttention: state === "ready_for_review",
         lastActivityAt: terminal.finishedAt || observedAt,
         sourceRevision,
       };
@@ -910,14 +918,15 @@ class CursorLocalProvider implements AgentProviderPlugin {
           ...run,
           state:
             terminal.status === "error"
-              ? "failed"
+              ? "running"
               : terminal.status === "aborted"
                 ? "cancelled"
                 : "succeeded",
           finishedAt: terminalAgent.lastActivityAt,
           sourceRevision,
         });
-      this.activeGenerations.delete(agent.externalId);
+      if (terminal.status !== "error")
+        this.activeGenerations.delete(agent.externalId);
       terminalAgents.push(terminalAgent);
     }
     return { changed: terminalAgents.length > 0, terminalAgents };
@@ -952,7 +961,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
   ): Promise<Agent | undefined> {
     if (
       agent.kind !== "subagent" ||
-      agent.state !== "running"
+      !isWorkingState(agent.state)
     )
       return undefined;
     const transcript = this.subagentTranscripts.get(agent.externalId);
@@ -1085,7 +1094,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
       .filter(
         (agent) =>
           agent.kind === "subagent" &&
-          agent.state === "running" &&
+          isWorkingState(agent.state) &&
           !this.subagentTranscripts.has(agent.externalId) &&
           this.parentConversations.has(agent.externalId),
       )

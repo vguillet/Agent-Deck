@@ -11,7 +11,10 @@ const number = (value: number): string => value.toFixed(2);
  * Stream Deck animations are produced by repeatedly replacing the key image,
  * so the current time is used to vary each dot's size and opacity.
  */
-export const dottedSpinnerSvg = (elapsedMs: number): string => {
+export const dottedSpinnerSvg = (
+  elapsedMs: number,
+  colour = "white",
+): string => {
   const clockwiseProgress =
     ((elapsedMs % DOTTED_SPINNER_CYCLE_MS) / DOTTED_SPINNER_CYCLE_MS) *
     DOTTED_SPINNER_DOT_COUNT;
@@ -47,7 +50,7 @@ export const dottedSpinnerSvg = (elapsedMs: number): string => {
     const radius = 3 + emphasis * 4.5;
     const opacity = Math.min(1, 0.25 + emphasis * 0.75);
 
-    return `<circle cx="${number(72 + Math.cos(angle) * ringRadius)}" cy="${number(72 + Math.sin(angle) * ringRadius)}" r="${number(radius)}" fill="white" opacity="${number(opacity)}"/>`;
+    return `<circle cx="${number(72 + Math.cos(angle) * ringRadius)}" cy="${number(72 + Math.sin(angle) * ringRadius)}" r="${number(radius)}" fill="${colour}" opacity="${number(opacity)}"/>`;
   }).join("");
 
   return `<g data-motion="dotted-spinner" data-scale="${number(scale)}" transform="translate(72 72) scale(${number(scale)}) translate(-72 -72)">${dots}</g>`;

@@ -1,3 +1,8 @@
+import {
+  DARK_KEY_VISUAL_PALETTE,
+  type KeyVisualPalette,
+} from "./agent-palette.js";
+
 const FONT_SIZE = 18;
 const LABEL_CENTRE_X = 72;
 const LABEL_VIEWPORT_X = 13;
@@ -33,7 +38,7 @@ const measureLabelWidth = (value: string): number =>
   );
 
 interface LabelMetrics {
-  centeredSvg?: string;
+  centeredSvg?: Map<string, string>;
   escaped: string;
   width: number;
 }
@@ -61,21 +66,33 @@ export const agentLabelWidth = (value: string): number =>
 export const agentLabelOverflows = (value: string): boolean =>
   agentLabelWidth(value) > LABEL_VIEWPORT_WIDTH;
 
-export const agentLabelBackgroundSvg = (): string =>
-  '<rect x="0" y="7" width="144" height="26" fill="#000" opacity=".34"/>';
+export const agentLabelBackgroundSvg = (
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
+): string =>
+  `<rect x="0" y="7" width="144" height="26" fill="${palette.labelSurface}" opacity="${palette.labelOpacity}"/>`;
 
-const labelText = (value: string, x: number, textLength?: number): string =>
-  `<text x="${x.toFixed(2)}" y="${LABEL_BASELINE_Y}" text-anchor="${textLength === undefined ? "middle" : "start"}" font-family="system-ui" font-size="${FONT_SIZE}" font-weight="650" fill="white"${textLength === undefined ? "" : ` textLength="${textLength.toFixed(2)}" lengthAdjust="spacingAndGlyphs"`}>${labelMetrics(value).escaped}</text>`;
+const labelText = (
+  value: string,
+  x: number,
+  colour: string,
+  textLength?: number,
+): string =>
+  `<text x="${x.toFixed(2)}" y="${LABEL_BASELINE_Y}" text-anchor="${textLength === undefined ? "middle" : "start"}" font-family="system-ui" font-size="${FONT_SIZE}" font-weight="650" fill="${colour}"${textLength === undefined ? "" : ` textLength="${textLength.toFixed(2)}" lengthAdjust="spacingAndGlyphs"`}>${labelMetrics(value).escaped}</text>`;
 
 export const agentLabelSvg = (
   value: string,
   animationElapsedMs: number,
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string => {
   const metrics = labelMetrics(value);
   const { width } = metrics;
   if (width <= LABEL_VIEWPORT_WIDTH) {
-    metrics.centeredSvg ??= labelText(value, LABEL_CENTRE_X);
-    return metrics.centeredSvg;
+    metrics.centeredSvg ??= new Map();
+    const cached = metrics.centeredSvg.get(palette.id);
+    if (cached) return cached;
+    const centered = labelText(value, LABEL_CENTRE_X, palette.foreground);
+    metrics.centeredSvg.set(palette.id, centered);
+    return centered;
   }
 
   const cycleWidth = width + LABEL_GAP;
@@ -89,7 +106,7 @@ export const agentLabelSvg = (
         </clipPath>
       </defs>
       <g clip-path="url(#agent-label-clip)">
-        ${labelText(value, firstX, width)}
-        ${labelText(value, firstX + cycleWidth, width)}
+        ${labelText(value, firstX, palette.foreground, width)}
+        ${labelText(value, firstX + cycleWidth, palette.foreground, width)}
       </g>`;
 };

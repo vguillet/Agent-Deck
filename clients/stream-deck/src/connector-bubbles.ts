@@ -1,4 +1,8 @@
 import { providerLogoSvg } from "./provider-logo.js";
+import {
+  DARK_KEY_VISUAL_PALETTE,
+  type KeyVisualPalette,
+} from "./agent-palette.js";
 
 const BUBBLE_DIAMETER = 28;
 const BUBBLE_GAP = 8;
@@ -36,6 +40,7 @@ export const connectorBubblesOverflow = (
 const bubbleGroup = (
   connectors: readonly ConnectorBubble[],
   startX: number,
+  palette: KeyVisualPalette,
 ): string =>
   connectors
     .map((connector, index) => {
@@ -43,13 +48,17 @@ const bubbleGroup = (
         startX + BUBBLE_DIAMETER / 2 + index * (BUBBLE_DIAMETER + BUBBLE_GAP);
       const ring = connector.healthy ? "#22c55e" : "#ef4444";
       return `<g data-connector="${escapeXml(connector.id)}">
-        ${providerLogoSvg(connector.id, {
-          x: centreX - BUBBLE_DIAMETER / 2,
-          y: CENTRE_Y - BUBBLE_DIAMETER / 2,
-          size: BUBBLE_DIAMETER,
-          mark: connector.mark,
-          ring,
-        })}
+        ${providerLogoSvg(
+          connector.id,
+          {
+            x: centreX - BUBBLE_DIAMETER / 2,
+            y: CENTRE_Y - BUBBLE_DIAMETER / 2,
+            size: BUBBLE_DIAMETER,
+            mark: connector.mark,
+            ring,
+          },
+          palette,
+        )}
       </g>`;
     })
     .join("");
@@ -57,11 +66,12 @@ const bubbleGroup = (
 export const connectorBubblesSvg = (
   connectors: readonly ConnectorBubble[],
   animationElapsedMs: number,
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string => {
   const width = connectorBubblesWidth(connectors);
   if (!width) return "";
   if (width <= VIEWPORT_WIDTH)
-    return bubbleGroup(connectors, CENTRE_X - width / 2);
+    return bubbleGroup(connectors, CENTRE_X - width / 2, palette);
 
   const cycleWidth = width + LOOP_GAP;
   const travelled = (animationElapsedMs * SCROLL_SPEED) / 1_000;
@@ -74,7 +84,7 @@ export const connectorBubblesSvg = (
       </clipPath>
     </defs>
     <g clip-path="url(#connector-bubbles-clip)">
-      ${bubbleGroup(connectors, firstX)}
-      ${bubbleGroup(connectors, firstX + cycleWidth)}
+      ${bubbleGroup(connectors, firstX, palette)}
+      ${bubbleGroup(connectors, firstX + cycleWidth, palette)}
     </g>`;
 };

@@ -4,6 +4,7 @@ import { basename, resolve } from "node:path";
 export const AGENT_STATES = [
   "idle",
   "running",
+  "recovering",
   "waiting_for_input",
   "waiting_for_approval",
   "ready_for_review",
@@ -380,6 +381,7 @@ export const workspaceResourcesForRoots = (
 
 export const isActiveAgentState = (state: AgentState): boolean =>
   state === "running" ||
+  state === "recovering" ||
   state === "waiting_for_input" ||
   state === "waiting_for_approval";
 

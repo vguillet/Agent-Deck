@@ -11,6 +11,7 @@ import {
 import {
   CLASSIC_AGENT_STATE_COLOUR,
   CLASSIC_EMPTY_AGENT_COLOUR,
+  LIGHT_KEY_VISUAL_PALETTE,
 } from "./agent-palette.js";
 
 describe("agent key look", () => {
@@ -27,7 +28,8 @@ describe("agent key look", () => {
 
     expect(first).toContain('<rect width="144" height="144" fill="');
     expect(first).not.toContain('<rect width="144" height="144" rx="24"');
-    expect(first).toContain('fill="#ffffff"');
+    expect(first).toContain('color="#ffffff"');
+    expect(first).toContain('fill="currentColor"');
     expect(first).not.toContain("Gradient");
     expect(first).not.toMatch(/NaN|undefined/);
     expect(later).not.toBe(first);
@@ -41,6 +43,29 @@ describe("agent key look", () => {
       );
     },
   );
+
+  it.each(AGENT_STATES)(
+    "keeps the dark visual treatment for occupied light-mode %s slots",
+    (state) => {
+      const scene = agentLookScene(
+        state,
+        `light:${state}`,
+        0,
+        LIGHT_KEY_VISUAL_PALETTE,
+      );
+      expect(scene).toContain(
+        `fill="${LIGHT_KEY_VISUAL_PALETTE.stateSurface[state]}"`,
+      );
+      expect(scene).toContain(`color="${LIGHT_KEY_VISUAL_PALETTE.foreground}"`);
+    },
+  );
+
+  it("uses the light surface with a gray character and unchanged zzz accent", () => {
+    const scene = emptyAgentLookScene("slot:4", 0, LIGHT_KEY_VISUAL_PALETTE);
+    expect(scene).toContain('<rect width="144" height="144" fill="#e2e8f0"/>');
+    expect(scene).toContain('color="#cbd5e1"');
+    expect(scene).toContain('<g fill="#ffffff"');
+  });
 
   it.each([
     ["running", "frantic"],
@@ -95,7 +120,7 @@ describe("agent key look", () => {
     const first = emptyAgentLookScene("slot:4", 0);
     const later = emptyAgentLookScene("slot:4", 900);
 
-    expect(first).toContain('fill="#ffffff"');
+    expect(first).toContain('color="#ffffff"');
     expect(first).toContain(`fill="${CLASSIC_EMPTY_AGENT_COLOUR}"`);
     expect(first).not.toContain("Gradient");
     expect(first).not.toMatch(/NaN|undefined/);
@@ -114,7 +139,7 @@ describe("agent key look", () => {
     );
 
     expect(first).toContain(`fill="${CLASSIC_EMPTY_AGENT_COLOUR}"`);
-    expect(first).toContain('fill="#ffffff"');
+    expect(first).toContain('color="#ffffff"');
     expect(new Set([first, middle, final]).size).toBe(3);
     expect(final).not.toMatch(/NaN|undefined/);
   });

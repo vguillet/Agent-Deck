@@ -3,6 +3,7 @@ import { z } from "zod";
 export const AgentStateSchema = z.enum([
   "idle",
   "running",
+  "recovering",
   "waiting_for_input",
   "waiting_for_approval",
   "ready_for_review",

@@ -5,13 +5,23 @@ import {
   agentLabelSvg,
   agentLabelWidth,
 } from "./agent-label.js";
+import { LIGHT_KEY_VISUAL_PALETTE } from "./agent-palette.js";
 
 describe("Stream Deck agent labels", () => {
   it("renders the label background across the full key width", () => {
     expect(agentLabelBackgroundSvg()).toBe(
-      '<rect x="0" y="7" width="144" height="26" fill="#000" opacity=".34"/>',
+      '<rect x="0" y="7" width="144" height="26" fill="#000000" opacity="0.34"/>',
     );
     expect(agentLabelBackgroundSvg()).not.toContain("clip-path");
+  });
+
+  it("keeps labels identical in light mode", () => {
+    expect(agentLabelBackgroundSvg(LIGHT_KEY_VISUAL_PALETTE)).toBe(
+      agentLabelBackgroundSvg(),
+    );
+    expect(agentLabelSvg("Fix login", 0, LIGHT_KEY_VISUAL_PALETTE)).toBe(
+      agentLabelSvg("Fix login", 0),
+    );
   });
 
   it("keeps labels that fit centred and static", () => {

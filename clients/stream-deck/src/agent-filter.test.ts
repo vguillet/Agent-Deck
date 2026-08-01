@@ -37,10 +37,11 @@ describe("Stream Deck agent filtering", () => {
     ).toEqual(["cursor-cloud:agent-1", "cursor-cloud:other"]);
   });
 
-  it("hides subagents by default and only shows running ones when enabled", () => {
+  it("hides subagents by default and shows working ones when enabled", () => {
     const agents = [
       agent({ id: "top", kind: "top_level" }),
       agent({ id: "sub-running", kind: "subagent", state: "running" }),
+      agent({ id: "sub-recovering", kind: "subagent", state: "recovering" }),
       agent({ id: "sub-idle", kind: "subagent", state: "idle" }),
       agent({ id: "sub-failed", kind: "subagent", state: "failed" }),
     ];
@@ -49,6 +50,7 @@ describe("Stream Deck agent filtering", () => {
     expect(streamDeckAgents(agents, true).map(({ id }) => id)).toEqual([
       "top",
       "sub-running",
+      "sub-recovering",
     ]);
   });
 

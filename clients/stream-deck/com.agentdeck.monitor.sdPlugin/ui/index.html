@@ -85,6 +85,14 @@
         <option value="agent">Agent characters</option>
       </select></label
     >
+    <label
+      ><span>Key visual theme</span
+      ><select id="keyVisualTheme">
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+        <option value="system">System</option>
+      </select></label
+    >
     <label id="summaryProviderField" hidden
       ><span>Recap scope</span
       ><select id="summaryProviderId">
@@ -111,9 +119,11 @@
       let settings = {};
       const defaults = {
         showSubagents: false,
+        keyVisualTheme: "dark",
         states: [
           "idle",
           "running",
+          "recovering",
           "waiting_for_input",
           "waiting_for_approval",
           "ready_for_review",
@@ -139,6 +149,8 @@
           settings.creationProviderId = document.querySelector(
             "#creationProviderId",
           ).value;
+        settings.keyVisualTheme =
+          document.querySelector("#keyVisualTheme").value;
         settings.showSubagents =
           document.querySelector("#showSubagents").checked;
         send("setSettings", settings);
@@ -157,6 +169,7 @@
             .map((v) => v.trim())
             .filter(Boolean),
           showSubagents: document.querySelector("#showSubagents").checked,
+          keyVisualTheme: document.querySelector("#keyVisualTheme").value,
         };
         try {
           const existing = await fetch(
@@ -219,6 +232,8 @@
           settings.summaryProviderId ?? "";
         document.querySelector("#creationProviderId").value =
           settings.creationProviderId ?? "cursor-local";
+        document.querySelector("#keyVisualTheme").value =
+          settings.keyVisualTheme ?? "dark";
         document.querySelector("#slotField").hidden =
           actionId !== "com.agentdeck.monitor.agent-slot";
         document.querySelector("#lookField").hidden =
@@ -253,6 +268,8 @@
             ).join(",");
             document.querySelector("#showSubagents").checked =
               data.showSubagents ?? false;
+            document.querySelector("#keyVisualTheme").value =
+              data.keyVisualTheme ?? "dark";
           } catch {}
         };
       };

@@ -50,6 +50,14 @@ describe("agent state indicator", () => {
     expect(agentStateIndicatorSvg("idle", 0)).toContain(">-</text>");
   });
 
+  it("renders recovering agents as a spinner with a warning", () => {
+    const svg = agentStateIndicatorSvg("recovering", 250);
+
+    expect(svg).toContain('data-motion="dotted-spinner"');
+    expect(svg).toContain('data-state-warning="recovering"');
+    expect(svg).toContain(">!</text>");
+  });
+
   it("hands off between state icons with a colored pop and halo", () => {
     const svg = agentStateIndicatorSvg("waiting_for_input", 0, {
       elapsedMs: AGENT_STATE_TRANSITION_MS / 2,

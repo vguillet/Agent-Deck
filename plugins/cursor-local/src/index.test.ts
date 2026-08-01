@@ -157,6 +157,37 @@ describe("Cursor local provider", () => {
     await harness.close();
   });
 
+  it("keeps recoverable turn errors running until the session ends", async () => {
+    const harness = await setup();
+    const base = {
+      conversation_id: "conversation-retry",
+      generation_id: "generation-retry",
+      workspace_roots: ["/workspace/alpha"],
+    };
+    await harness.handle({
+      ...base,
+      hook_event_name: "beforeSubmitPrompt",
+    });
+    await harness.handle({
+      ...base,
+      hook_event_name: "stop",
+      status: "error",
+    });
+    expect((await harness.plugin.discover()).agents[0]?.state).toBe(
+      "recovering",
+    );
+    expect((await harness.plugin.discover()).runs[0]?.state).toBe("running");
+
+    await harness.handle({
+      ...base,
+      hook_event_name: "sessionEnd",
+      status: "error",
+    });
+    expect((await harness.plugin.discover()).agents[0]?.state).toBe("failed");
+    expect((await harness.plugin.discover()).runs[0]?.state).toBe("failed");
+    await harness.close();
+  });
+
   it("tracks sanitized activity and explicit plan counts", async () => {
     const harness = await setup();
     const base = {
@@ -491,7 +522,7 @@ describe("Cursor local provider", () => {
     await harness.close();
   });
 
-  it("reconciles a top-level crash when Cursor omits the stop hook", async () => {
+  it("keeps a top-level transcript error active for a possible retry", async () => {
     const transcriptsRoot = await mkdtemp(
       resolve(tmpdir(), "agent-deck-top-level-terminal-"),
     );
@@ -520,8 +551,8 @@ describe("Cursor local provider", () => {
 
     expect((await harness.plugin.discover()).agents[0]).toMatchObject({
       externalId: "conversation-crash",
-      state: "failed",
-      requiresAttention: true,
+      state: "recovering",
+      requiresAttention: false,
     });
     await harness.close();
   });

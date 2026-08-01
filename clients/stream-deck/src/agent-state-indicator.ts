@@ -1,5 +1,8 @@
 import type { AgentState } from "@agent-deck/domain";
-import { CLASSIC_AGENT_STATE_COLOUR } from "./agent-palette.js";
+import {
+  DARK_KEY_VISUAL_PALETTE,
+  type KeyVisualPalette,
+} from "./agent-palette.js";
 import { dottedSpinnerSvg } from "./dotted-spinner.js";
 
 export const AGENT_STATE_TRANSITION_MS = 650;
@@ -80,7 +83,10 @@ export class AgentStateTransitionTracker {
   }
 }
 
-const stateSymbol: Record<Exclude<AgentState, "running">, string> = {
+const stateSymbol: Record<
+  Exclude<AgentState, "running" | "recovering">,
+  string
+> = {
   idle: "-",
   waiting_for_input: "?",
   waiting_for_approval: "↻",
@@ -95,16 +101,24 @@ const number = (value: number): string => value.toFixed(2);
 const stateIconSvg = (
   state: AgentState,
   animationElapsedMs: number,
+  palette: KeyVisualPalette,
   forceVisible = false,
 ): string => {
-  if (state === "running") return dottedSpinnerSvg(animationElapsedMs);
+  if (state === "running")
+    return dottedSpinnerSvg(animationElapsedMs, palette.foreground);
+  if (state === "recovering")
+    return `${dottedSpinnerSvg(animationElapsedMs, palette.foreground)}
+      <g data-state-warning="recovering">
+        <path d="M72 57 L84 80 H60 Z" fill="${palette.stateAccent.waiting_for_input}"/>
+        <text x="72" y="76" text-anchor="middle" font-family="system-ui" font-size="15" font-weight="900" fill="${palette.inverseForeground}">!</text>
+      </g>`;
   const opacity =
     !forceVisible &&
     (state === "failed" || state === "waiting_for_input") &&
     animationElapsedMs % 1_000 >= 600
       ? 0.12
       : 1;
-  return `<text x="72" y="91" text-anchor="middle" font-family="system-ui" font-size="64" font-weight="700" fill="white" opacity="${opacity}">${stateSymbol[state]}</text>`;
+  return `<text x="72" y="91" text-anchor="middle" font-family="system-ui" font-size="64" font-weight="700" fill="${palette.foreground}" opacity="${opacity}">${stateSymbol[state]}</text>`;
 };
 
 const easeInCubic = (progress: number): number => progress ** 3;
@@ -119,13 +133,14 @@ export const agentStateIndicatorSvg = (
   state: AgentState,
   animationElapsedMs: number,
   transition?: AgentStateTransitionFrame,
+  palette: KeyVisualPalette = DARK_KEY_VISUAL_PALETTE,
 ): string => {
   if (
     !transition ||
     transition.from === state ||
     transition.elapsedMs >= AGENT_STATE_TRANSITION_MS
   )
-    return stateIconSvg(state, animationElapsedMs);
+    return stateIconSvg(state, animationElapsedMs, palette);
 
   const progress = Math.max(
     0,
@@ -139,15 +154,15 @@ export const agentStateIndicatorSvg = (
   const incomingOpacity = Math.min(1, incomingProgress * 2.4);
   const burst = Math.sin(progress * Math.PI);
   const haloRadius = 18 + (1 - (1 - progress) ** 3) * 31;
-  const accent = CLASSIC_AGENT_STATE_COLOUR[state];
+  const accent = palette.stateAccent[state];
 
   return `<g data-motion="agent-state-transition" data-progress="${number(progress)}">
     <circle cx="72" cy="72" r="${number(haloRadius)}" fill="none" stroke="${accent}" stroke-width="${number(1.5 + (1 - progress) * 2.5)}" opacity="${number(burst * 0.72)}"/>
     <g transform="translate(72 72) rotate(${number(-10 * outgoingEase)}) scale(${number(outgoingScale)}) translate(-72 -72)" opacity="${number(outgoingOpacity)}">
-      ${stateIconSvg(transition.from, animationElapsedMs, true)}
+      ${stateIconSvg(transition.from, animationElapsedMs, palette, true)}
     </g>
     <g transform="translate(72 72) scale(${number(incomingScale)}) translate(-72 -72)" opacity="${number(incomingOpacity)}">
-      ${stateIconSvg(state, animationElapsedMs, true)}
+      ${stateIconSvg(state, animationElapsedMs, palette, true)}
     </g>
   </g>`;
 };
