@@ -39,8 +39,19 @@ Cursor uses user hooks and needs no API key, has no historical backfill, and
 cannot reliably infer approval or input-waiting states. Cursor Cloud uses the
 Cursor SDK catalog and stream APIs.
 
+Claude Code is a hook-driven incremental provider shared by standalone CLI
+sessions and the official Anthropic extension in Cursor. Its reporter strips
+prompts, messages, tool inputs and outputs, and transcript paths before sending
+metadata over loopback. A status-line wrapper preserves existing output while
+forwarding only workspace identity, session naming, and Claude's documented
+5-hour and weekly rate-limit fields. Exact focus and creation use the official
+Claude Code extension URI in a uniquely matched Cursor workspace.
+
 The `execute` method handles provider commands declared in
 `manifest.capabilities.commands`. The preview server currently exposes only
 `cancel`. Plugins must target the canonical agent ID, return `unsupported` for
 unknown actions, and emit sanitized agent/run state events after a successful
 cancellation.
+Interactive Claude Code sessions have no supported external interruption API,
+so that provider declares no commands and must return `unsupported` instead of
+signalling or terminating a process.

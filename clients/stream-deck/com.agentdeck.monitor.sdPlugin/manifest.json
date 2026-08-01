@@ -6,10 +6,7 @@
       "Name": "Agent Slot",
       "Tooltip": "Press to focus or long press to delete an agent and its history",
       "Icon": "assets/action-agent",
-      "Controllers": [
-        "Keypad",
-        "Encoder"
-      ],
+      "Controllers": ["Keypad", "Encoder"],
       "Encoder": {
         "layout": "$B1"
       },
@@ -26,10 +23,7 @@
       "Name": "Agent Recap",
       "Tooltip": "Summarize all agents or one provider type",
       "Icon": "assets/action-summary",
-      "Controllers": [
-        "Keypad",
-        "Encoder"
-      ],
+      "Controllers": ["Keypad", "Encoder"],
       "Encoder": {
         "layout": "$B1"
       },
@@ -45,10 +39,7 @@
       "Name": "Attention Queue",
       "Tooltip": "Show and browse attention items",
       "Icon": "assets/action-attention",
-      "Controllers": [
-        "Keypad",
-        "Encoder"
-      ],
+      "Controllers": ["Keypad", "Encoder"],
       "Encoder": {
         "layout": "$B1"
       },
@@ -64,10 +55,7 @@
       "Name": "Provider Health",
       "Tooltip": "Show provider health",
       "Icon": "assets/action-health",
-      "Controllers": [
-        "Keypad",
-        "Encoder"
-      ],
+      "Controllers": ["Keypad", "Encoder"],
       "Encoder": {
         "layout": "$B1"
       },
@@ -83,9 +71,7 @@
       "Name": "New Agent",
       "Tooltip": "Open a new Cursor or Codex chat in the focused workspace",
       "Icon": "assets/action-create",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "PropertyInspectorPath": "ui/index.html",
       "States": [
         {
@@ -94,14 +80,24 @@
       ]
     },
     {
+      "UUID": "com.agentdeck.monitor.provider-usage",
+      "Name": "Provider Usage",
+      "Tooltip": "Show provider usage; press to view the next reset",
+      "Icon": "assets/action-usage",
+      "Controllers": ["Keypad"],
+      "PropertyInspectorPath": "ui/index.html",
+      "States": [
+        {
+          "Image": "assets/action-usage"
+        }
+      ]
+    },
+    {
       "UUID": "com.agentdeck.monitor.system-health",
       "Name": "System Health",
       "Tooltip": "Show system health; long press to clear and rediscover all agents",
       "Icon": "assets/action-system",
-      "Controllers": [
-        "Keypad",
-        "Encoder"
-      ],
+      "Controllers": ["Keypad", "Encoder"],
       "Encoder": {
         "layout": "$B1"
       },

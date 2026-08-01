@@ -19,6 +19,7 @@ import {
   type ProviderEvent,
   type ProviderHealth,
   type ProviderSnapshot,
+  type ProviderUsage,
   type Workspace,
 } from "@agent-deck/domain";
 import type {
@@ -28,6 +29,7 @@ import type {
   Unsubscribe,
 } from "@agent-deck/provider-sdk";
 import { stopCursorConversation } from "./stop.js";
+import { fetchCursorUsage } from "./cursor-usage.js";
 
 const PROVIDER_ID = "cursor-local";
 const CHECKPOINT_KEY = "registry-v1";
@@ -258,6 +260,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
       discoveryMode: "poll" as const,
       liveEvents: true,
       commands: ["cancel"],
+      usage: true,
     },
   };
   readonly configSchema = ConfigSchema;
@@ -426,6 +429,13 @@ class CursorLocalProvider implements AgentProviderPlugin {
     };
   }
 
+  async usage(): Promise<ProviderUsage> {
+    return fetchCursorUsage(
+      this.stateDatabasePath,
+      this.context?.now() ?? new Date().toISOString(),
+    );
+  }
+
   async dispose(): Promise<void> {
     this.emit = undefined;
     for (const watcher of this.subagentTranscriptWatchers.values())
@@ -474,7 +484,31 @@ class CursorLocalProvider implements AgentProviderPlugin {
     }
     if (input.plan_progress) {
       // #region agent log
-      fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d833c3'},body:JSON.stringify({sessionId:'d833c3',runId:'pre-fix',hypothesisId:'H3',location:'plugins/cursor-local/src/index.ts:consumeHook',message:'Provider received progress hook',data:{event:input.hook_event_name,explicitKind:explicitConversationKind(input),knownKind:this.conversationKinds.get(input.conversation_id),hasGeneration:Boolean(input.generation_id),planProgress:input.plan_progress},timestamp:Date.now()})}).catch(()=>{});
+      fetch(
+        "http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Debug-Session-Id": "d833c3",
+          },
+          body: JSON.stringify({
+            sessionId: "d833c3",
+            runId: "pre-fix",
+            hypothesisId: "H3",
+            location: "plugins/cursor-local/src/index.ts:consumeHook",
+            message: "Provider received progress hook",
+            data: {
+              event: input.hook_event_name,
+              explicitKind: explicitConversationKind(input),
+              knownKind: this.conversationKinds.get(input.conversation_id),
+              hasGeneration: Boolean(input.generation_id),
+              planProgress: input.plan_progress,
+            },
+            timestamp: Date.now(),
+          }),
+        },
+      ).catch(() => {});
       // #endregion
     }
     this.lastProtocolVersion =
@@ -540,7 +574,31 @@ class CursorLocalProvider implements AgentProviderPlugin {
     ) {
       if (input.plan_progress) {
         // #region agent log
-        fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d833c3'},body:JSON.stringify({sessionId:'d833c3',runId:'pre-fix',hypothesisId:'H3',location:'plugins/cursor-local/src/index.ts:applyLifecycleHook:generation-filter',message:'Progress hook rejected by generation filter',data:{event:input.hook_event_name,hasInputGeneration:true,hasCurrentGeneration:true,planProgress:input.plan_progress},timestamp:Date.now()})}).catch(()=>{});
+        fetch(
+          "http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Debug-Session-Id": "d833c3",
+            },
+            body: JSON.stringify({
+              sessionId: "d833c3",
+              runId: "pre-fix",
+              hypothesisId: "H3",
+              location:
+                "plugins/cursor-local/src/index.ts:applyLifecycleHook:generation-filter",
+              message: "Progress hook rejected by generation filter",
+              data: {
+                event: input.hook_event_name,
+                hasInputGeneration: true,
+                hasCurrentGeneration: true,
+                planProgress: input.plan_progress,
+              },
+              timestamp: Date.now(),
+            }),
+          },
+        ).catch(() => {});
         // #endregion
       }
       return;
@@ -603,8 +661,12 @@ class CursorLocalProvider implements AgentProviderPlugin {
       input.agent_signal === "question_started"
         ? "waiting"
         : input.agent_activity;
+    const retainTerminalProgress =
+      terminal && (state === "recovering" || state === "failed");
     const progress = terminal
-      ? undefined
+      ? retainTerminalProgress
+        ? existing?.progress
+        : undefined
       : startsGeneration
         ? { activity: "working" as const, observedAt: now }
         : activity
@@ -618,9 +680,46 @@ class CursorLocalProvider implements AgentProviderPlugin {
               observedAt: now,
             }
           : existing?.progress;
+    if (
+      terminal ||
+      input.hook_event_name === "postToolUseFailure" ||
+      state === "failed" ||
+      state === "recovering"
+    ) {
+      // #region agent log
+      fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'eef5ae'},body:JSON.stringify({sessionId:'eef5ae',runId:'pre-fix',hypothesisId:'H1,H2',location:'plugins/cursor-local/src/index.ts:applyLifecycleHook:failure-progress',message:'Cursor failure progress transition',data:{event:input.hook_event_name,state,terminal,startsGeneration,hadExistingPlan:Boolean(existing?.progress?.plan),hasInputPlan:Boolean(input.plan_progress),hasOutputPlan:Boolean(progress?.plan),outputActivity:progress?.activity ?? null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
     if (input.plan_progress) {
       // #region agent log
-      fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d833c3'},body:JSON.stringify({sessionId:'d833c3',runId:'pre-fix',hypothesisId:'H4',location:'plugins/cursor-local/src/index.ts:applyLifecycleHook:progress',message:'Provider computed agent progress',data:{event:input.hook_event_name,state,terminal,startsGeneration,inputPlan:input.plan_progress,outputPlan:progress?.plan,activity:progress?.activity},timestamp:Date.now()})}).catch(()=>{});
+      fetch(
+        "http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Debug-Session-Id": "d833c3",
+          },
+          body: JSON.stringify({
+            sessionId: "d833c3",
+            runId: "pre-fix",
+            hypothesisId: "H4",
+            location:
+              "plugins/cursor-local/src/index.ts:applyLifecycleHook:progress",
+            message: "Provider computed agent progress",
+            data: {
+              event: input.hook_event_name,
+              state,
+              terminal,
+              startsGeneration,
+              inputPlan: input.plan_progress,
+              outputPlan: progress?.plan,
+              activity: progress?.activity,
+            },
+            timestamp: Date.now(),
+          }),
+        },
+      ).catch(() => {});
       // #endregion
     }
     const metadata: Record<string, unknown> = {
@@ -655,7 +754,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
         generation ??
         (startsGeneration
           ? `${input.conversation_id}:${now}`
-          : existing?.activityEpoch ?? `${input.conversation_id}:session`),
+          : (existing?.activityEpoch ?? `${input.conversation_id}:session`)),
       ...(runId ? { activeRunId: runId } : {}),
       requiresAttention:
         state === "waiting_for_input" ||
@@ -828,8 +927,10 @@ class CursorLocalProvider implements AgentProviderPlugin {
       for (const [conversation, transcript] of registry.subagentTranscripts ??
         [])
         this.subagentTranscripts.set(conversation, transcript);
-      for (const [conversation, canonical] of
-        registry.subagentConversationAliases ?? [])
+      for (const [
+        conversation,
+        canonical,
+      ] of registry.subagentConversationAliases ?? [])
         this.subagentConversationAliases.set(conversation, canonical);
       for (const [conversation, revision] of registry.sourceRevisions ?? [])
         this.sourceRevisions.set(conversation, revision);
@@ -874,10 +975,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const topLevel = await this.reconcileTopLevelTranscripts(observedAt);
     return {
       changed: subagents.changed || topLevel.changed,
-      terminalAgents: [
-        ...subagents.terminalAgents,
-        ...topLevel.terminalAgents,
-      ],
+      terminalAgents: [...subagents.terminalAgents, ...topLevel.terminalAgents],
     };
   }
 
@@ -959,10 +1057,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
     agent: Agent,
     observedAt: string,
   ): Promise<Agent | undefined> {
-    if (
-      agent.kind !== "subagent" ||
-      !isWorkingState(agent.state)
-    )
+    if (agent.kind !== "subagent" || !isWorkingState(agent.state))
       return undefined;
     const transcript = this.subagentTranscripts.get(agent.externalId);
     if (!transcript) return undefined;
@@ -1149,10 +1244,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
           const activeGeneration = this.activeGenerations.get(
             transcriptConversationId,
           );
-          if (
-            activeGeneration &&
-            !this.activeGenerations.has(agent.externalId)
-          )
+          if (activeGeneration && !this.activeGenerations.has(agent.externalId))
             this.activeGenerations.set(agent.externalId, activeGeneration);
           await this.hideSubagent(transcriptConversationId);
         }

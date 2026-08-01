@@ -6,6 +6,13 @@
   "healthIntervalMs": 30000,
   "providers": [
     {
+      "id": "claude-code",
+      "module": "@agent-deck/provider-claude-code",
+      "enabled": true,
+      "discoveryIntervalMs": 15000,
+      "config": {}
+    },
+    {
       "id": "codex",
       "module": "@agent-deck/provider-codex",
       "enabled": true,

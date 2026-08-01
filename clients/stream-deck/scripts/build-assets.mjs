@@ -19,6 +19,15 @@ await build({
     js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
   },
 });
+await build({
+  entryPoints: [resolve(root, "src", "property-inspector.ts")],
+  outfile: resolve(plugin, "bin", "property-inspector.js"),
+  bundle: true,
+  platform: "browser",
+  format: "iife",
+  target: "es2023",
+  sourcemap: true,
+});
 
 const { PNG } = pngjs;
 const writePluginIcon = async (size, suffix) => {

@@ -186,8 +186,8 @@ describe("Cursor window connection lifecycle", () => {
       focused: true,
       version: "0.5.1",
       focusProtocolVersion: 2,
-      focusKinds: ["cursor.conversation", "codex.thread"],
-      creationProviderIds: ["cursor-local", "codex"],
+      focusKinds: ["cursor.conversation", "codex.thread", "claude.session"],
+      creationProviderIds: ["cursor-local", "codex", "claude-code"],
     });
 
     test.sockets[0]!.message(intent("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"));

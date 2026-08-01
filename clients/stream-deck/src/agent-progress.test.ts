@@ -41,6 +41,19 @@ describe("agent progress renderer", () => {
     ).toContain("2/3");
   });
 
+  it("keeps explicit progress visible after failure", () => {
+    expect(
+      agentProgressSvg(
+        {
+          activity: "working",
+          plan: { completed: 1, total: 3 },
+          observedAt: "2026-07-28T09:00:00.000Z",
+        },
+        "failed",
+      ),
+    ).toContain("2/3");
+  });
+
   it("hides progress for terminal agents", () => {
     expect(
       agentProgressSvg(

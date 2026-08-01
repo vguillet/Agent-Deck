@@ -10,6 +10,7 @@ import {
   CursorWindowClientFrameSchema,
   CursorWindowServerFrameSchema,
   EventSchema,
+  ProviderUsageSchema,
   workspaceRootsKey,
 } from "./index.js";
 
@@ -50,6 +51,31 @@ describe("Agent focus link contract", () => {
       AgentSchema.parse({
         ...agent,
         links: [{ rel: "launch", label: "Open", href: "not a URL" }],
+      }),
+    ).toThrow();
+  });
+});
+
+describe("Provider usage contract", () => {
+  it("accepts normalized usage windows and rejects invalid percentages", () => {
+    const usage = {
+      providerId: "codex",
+      status: "available",
+      windows: [
+        {
+          id: "primary",
+          label: "5h",
+          usedPercent: 42,
+          resetsAt: "2026-08-01T20:00:00.000Z",
+        },
+      ],
+      observedAt: "2026-08-01T18:00:00.000Z",
+    };
+    expect(ProviderUsageSchema.parse(usage)).toEqual(usage);
+    expect(() =>
+      ProviderUsageSchema.parse({
+        ...usage,
+        windows: [{ ...usage.windows[0], usedPercent: 101 }],
       }),
     ).toThrow();
   });
@@ -156,6 +182,9 @@ describe("Cursor window focus contract", () => {
     expect(
       AgentCreationRequestSchema.parse({ providerId: "cursor-local" }),
     ).toEqual({ providerId: "cursor-local" });
+    expect(
+      AgentCreationRequestSchema.parse({ providerId: "claude-code" }),
+    ).toEqual({ providerId: "claude-code" });
     expect(() =>
       AgentCreationRequestSchema.parse({ providerId: "unknown" }),
     ).toThrow();
@@ -211,7 +240,7 @@ describe("Cursor window focus contract", () => {
         focused: false,
         version: "0.3.0",
         focusProtocolVersion: 2,
-        focusKinds: ["cursor.conversation", "codex.thread"],
+        focusKinds: ["cursor.conversation", "codex.thread", "claude.session"],
       }).type,
     ).toBe("window.register");
     expect(workspaceRootsKey(["/workspace/b", "/workspace/a"])).toBe(
@@ -243,6 +272,17 @@ describe("Cursor window focus contract", () => {
         },
       }),
     ).toMatchObject({ target: { kind: "codex.thread" } });
+    expect(
+      CompatibleCursorFocusIntentFrameSchema.parse({
+        type: "focus.intent",
+        requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        target: {
+          kind: "claude.session",
+          sessionId: "session-1",
+          workspaceRoots: ["/workspace/alpha"],
+        },
+      }),
+    ).toMatchObject({ target: { kind: "claude.session" } });
     expect(
       CompatibleCursorFocusIntentFrameSchema.parse({
         type: "focus.intent",

@@ -44,6 +44,11 @@ export class CodexAppServerClient {
     return "available";
   }
 
+  async readRateLimits(): Promise<unknown> {
+    await this.ensureStarted();
+    return this.request("account/rateLimits/read", {});
+  }
+
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
     await this.ensureStarted();
     await this.request("turn/interrupt", { threadId, turnId });

@@ -13,6 +13,7 @@ import {
   type ProviderEvent,
   type ProviderHealth,
   type ProviderSnapshot,
+  type ProviderUsage,
   type Workspace,
 } from "@agent-deck/domain";
 import type {
@@ -52,6 +53,25 @@ const ThreadSchema = z
         }),
       )
       .optional(),
+  })
+  .passthrough();
+
+const RateLimitWindowSchema = z
+  .object({
+    usedPercent: z.number().finite(),
+    windowDurationMins: z.number().finite().positive().nullish(),
+    resetsAt: z.union([z.number(), z.string()]).nullish(),
+  })
+  .passthrough();
+
+const RateLimitsSchema = z
+  .object({
+    rateLimits: z
+      .object({
+        primary: RateLimitWindowSchema.nullish(),
+        secondary: RateLimitWindowSchema.nullish(),
+      })
+      .nullish(),
   })
   .passthrough();
 
@@ -106,6 +126,86 @@ const timestamp = (
   seconds: number | null | undefined,
   fallback: string,
 ): string => (seconds ? new Date(seconds * 1_000).toISOString() : fallback);
+
+const usageResetTimestamp = (
+  value: number | string | null | undefined,
+): string | undefined => {
+  if (value === null || value === undefined) return undefined;
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (Number.isFinite(numeric))
+    return new Date(
+      numeric < 10_000_000_000 ? numeric * 1_000 : numeric,
+    ).toISOString();
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
+};
+
+export const parseCodexUsage = (
+  input: unknown,
+  observedAt: string,
+): ProviderUsage => {
+  const parsed = RateLimitsSchema.safeParse(input);
+  if (!parsed.success || !parsed.data.rateLimits)
+    return {
+      providerId: PROVIDER_ID,
+      status: "unavailable",
+      windows: [],
+      observedAt,
+      message: "Codex usage limits are unavailable",
+    };
+  const { primary, secondary } = parsed.data.rateLimits;
+  const candidates = [primary, secondary].filter(
+    (window) => window !== null && window !== undefined,
+  );
+  const fiveHour =
+    candidates.find(
+      (window) =>
+        window.windowDurationMins !== null &&
+        window.windowDurationMins !== undefined &&
+        window.windowDurationMins <= 360,
+    ) ??
+    (primary?.windowDurationMins === null ||
+    primary?.windowDurationMins === undefined
+      ? primary
+      : undefined);
+  const weekly =
+    candidates.find(
+      (window) =>
+        window.windowDurationMins !== null &&
+        window.windowDurationMins !== undefined &&
+        window.windowDurationMins >= 7 * 24 * 60,
+    ) ??
+    (secondary?.windowDurationMins === null ||
+    secondary?.windowDurationMins === undefined
+      ? secondary
+      : undefined);
+  const windows = [
+    ["five-hour", "5h", fiveHour],
+    ["weekly", "Week", weekly],
+  ] as const;
+  return {
+    providerId: PROVIDER_ID,
+    status: "available",
+    windows: windows.map(([id, label, window]) => {
+      if (!window)
+        return {
+          id,
+          label,
+          usedPercent: 0,
+          available: false,
+        };
+      const resetsAt = usageResetTimestamp(window.resetsAt);
+      return {
+        id,
+        label,
+        usedPercent: Math.min(100, Math.max(0, window.usedPercent)),
+        available: true,
+        ...(resetsAt ? { resetsAt } : {}),
+      };
+    }),
+    observedAt,
+  };
+};
 
 const cursorCodexFocusLink = (threadId: string, cwd: string): string => {
   const url = new URL("cursor://agent-deck.focus/codex");
@@ -177,8 +277,11 @@ const isQuestionTool = (input: HookInput): boolean => {
   return input.agent_signal === "question_started";
 };
 
-const modeFor = (permissionMode: string | undefined): string | undefined =>
-  permissionMode?.trim().toLowerCase() === "plan" ? "plan" : undefined;
+const modeFor = (input: HookInput): string | undefined =>
+  input.permission_mode?.trim().toLowerCase() === "plan" ||
+  input.agent_signal === "question_started"
+    ? "plan"
+    : undefined;
 
 const withoutProgress = (agent: Agent): Agent => {
   const copy = { ...agent };
@@ -203,6 +306,7 @@ class CodexProvider implements AgentProviderPlugin {
       discovery: true,
       liveEvents: true,
       commands: ["cancel"],
+      usage: true,
     },
   };
   readonly configSchema = ConfigSchema;
@@ -229,9 +333,14 @@ class CodexProvider implements AgentProviderPlugin {
         const parsed = HookSchema.safeParse(input);
         if (!parsed.success)
           return { statusCode: 400, body: { accepted: false } };
-        void this.enqueue(() => this.consumeHook(parsed.data)).catch((error) => {
-          this.context?.logger.warn({ error }, "Failed to process Codex hook");
-        });
+        void this.enqueue(() => this.consumeHook(parsed.data)).catch(
+          (error) => {
+            this.context?.logger.warn(
+              { error },
+              "Failed to process Codex hook",
+            );
+          },
+        );
         return { statusCode: 202, body: { accepted: true } };
       },
     });
@@ -525,6 +634,32 @@ class CodexProvider implements AgentProviderPlugin {
     }
   }
 
+  async usage(): Promise<ProviderUsage> {
+    const observedAt = this.context?.now() ?? new Date().toISOString();
+    try {
+      if (!this.client) throw new Error("Codex provider is not initialised");
+      return parseCodexUsage(await this.client.readRateLimits(), observedAt);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const normalized = message.toLowerCase();
+      return {
+        providerId: PROVIDER_ID,
+        status:
+          normalized.includes("login") ||
+          normalized.includes("auth") ||
+          normalized.includes("401") ||
+          normalized.includes("403")
+            ? "login_required"
+            : normalized.includes("rate") || normalized.includes("429")
+              ? "rate_limited"
+              : "error",
+        windows: [],
+        observedAt,
+        message,
+      };
+    }
+  }
+
   async dispose(): Promise<void> {
     this.emit = undefined;
     this.client?.dispose();
@@ -590,10 +725,7 @@ class CodexProvider implements AgentProviderPlugin {
     const terminal =
       input.hook_event_name === "Stop" ||
       input.hook_event_name === "SessionEnd";
-    if (
-      !existing &&
-      (terminal || state === "idle" || state === "unknown")
-    ) {
+    if (!existing && (terminal || state === "idle" || state === "unknown")) {
       if (deduplicationId) this.rememberHook(deduplicationId);
       return;
     }
@@ -603,8 +735,12 @@ class CodexProvider implements AgentProviderPlugin {
         : completesQuestion
           ? "working"
           : input.agent_activity;
+    const retainTerminalProgress =
+      terminal && (state === "recovering" || state === "failed");
     const progress = terminal
-      ? undefined
+      ? retainTerminalProgress
+        ? existing?.progress
+        : undefined
       : startsTurn
         ? { activity: "working" as const, observedAt: now }
         : activity
@@ -618,6 +754,11 @@ class CodexProvider implements AgentProviderPlugin {
               observedAt: now,
             }
           : existing?.progress;
+    if (terminal || state === "failed" || state === "recovering") {
+      // #region agent log
+      fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'eef5ae'},body:JSON.stringify({sessionId:'eef5ae',runId:'pre-fix',hypothesisId:'H1,H2',location:'plugins/codex/src/index.ts:consumeHook:failure-progress',message:'Codex failure progress transition',data:{event:input.hook_event_name,state,terminal,startsTurn,hadExistingPlan:Boolean(existing?.progress?.plan),hasInputPlan:Boolean(input.plan_progress),hasOutputPlan:Boolean(progress?.plan),outputActivity:progress?.activity ?? null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
     const runId = input.turn_id
       ? canonicalId(PROVIDER_ID, `${input.session_id}:${input.turn_id}`)
       : existing?.activeRunId;
@@ -626,11 +767,12 @@ class CodexProvider implements AgentProviderPlugin {
       cwd,
       workspaceRoots: [cwd],
     };
-    if (input.permission_mode !== undefined) {
-      const mode = modeFor(input.permission_mode);
-      if (mode) metadata.agentMode = mode;
-      else delete metadata.agentMode;
-    }
+    // Codex collaboration mode is distinct from its hook permission mode.
+    // request_user_input is Plan-only, so a native question is authoritative
+    // Plan evidence even when Codex reports permission_mode as "default".
+    if (startsTurn) delete metadata.agentMode;
+    const mode = modeFor(input);
+    if (mode) metadata.agentMode = mode;
     const sourceRevision = this.nextSourceRevision(input.session_id);
     const agent: Agent = {
       id,
@@ -647,7 +789,7 @@ class CodexProvider implements AgentProviderPlugin {
         runId ??
         (startsTurn
           ? `${input.session_id}:${now}`
-          : existing?.activityEpoch ?? `${input.session_id}:${now}`),
+          : (existing?.activityEpoch ?? `${input.session_id}:${now}`)),
       ...(runId ? { activeRunId: runId } : {}),
       requiresAttention:
         state === "waiting_for_input" ||

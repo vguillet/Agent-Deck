@@ -15,6 +15,13 @@
         "count": 8,
         "intervalMs": 3000
       }
+    },
+    {
+      "id": "claude-code",
+      "module": "@agent-deck/provider-claude-code",
+      "enabled": false,
+      "discoveryIntervalMs": 15000,
+      "config": {}
     }
   ]
 }

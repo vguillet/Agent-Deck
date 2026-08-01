@@ -288,8 +288,8 @@ export class CursorWindowClient {
         focused: snapshot.focused,
         version: this.version,
         focusProtocolVersion: 2,
-        focusKinds: ["cursor.conversation", "codex.thread"],
-        creationProviderIds: ["cursor-local", "codex"],
+        focusKinds: ["cursor.conversation", "codex.thread", "claude.session"],
+        creationProviderIds: ["cursor-local", "codex", "claude-code"],
       })
     )
       return;

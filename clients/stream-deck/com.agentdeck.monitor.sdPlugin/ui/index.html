@@ -16,11 +16,22 @@
         color: #eee;
         background: #2d2d2d;
       }
+      section {
+        margin-bottom: 18px;
+      }
+      h2 {
+        margin: 0 0 10px;
+        padding-bottom: 6px;
+        color: #eee;
+        border-bottom: 1px solid #555;
+        font-size: 13px;
+        font-weight: 600;
+      }
       label {
         display: block;
         margin: 10px 0;
       }
-      span {
+      label span {
         display: block;
         margin-bottom: 4px;
         color: #bbb;
@@ -35,9 +46,6 @@
         border: 1px solid #555;
         border-radius: 4px;
       }
-      small {
-        color: #aaa;
-      }
       label.checkbox {
         display: flex;
         align-items: center;
@@ -49,230 +57,100 @@
       label.checkbox span {
         margin: 0;
       }
+      #saveStatus {
+        display: block;
+        min-height: 1.4em;
+        color: #aaa;
+      }
+      #saveStatus[data-error="true"] {
+        color: #fca5a5;
+      }
     </style>
   </head>
   <body>
-    <label
-      ><span>Core URL</span
-      ><input id="serverUrl" value="http://127.0.0.1:47831"
-    /></label>
-    <label
-      ><span>Device name</span><input id="name" value="Stream Deck"
-    /></label>
-    <label
-      ><span>Device role</span><input id="role" value="agent-monitor"
-    /></label>
-    <label
-      ><span>Provider IDs (comma-separated)</span><input id="providers"
-    /></label>
-    <label class="checkbox"
-      ><input id="showSubagents" type="checkbox" /><span
-        >Show running sub-agents</span
-      ></label
-    >
-    <label id="slotField"
-      ><span>Slot override</span
-      ><input
-        id="slot"
-        type="number"
-        min="0"
-        placeholder="Automatic key position"
-    /></label>
-    <label id="lookField"
-      ><span>Agent key look</span
-      ><select id="look">
-        <option value="classic">Classic</option>
-        <option value="agent">Agent characters</option>
-      </select></label
-    >
-    <label
-      ><span>Key visual theme</span
-      ><select id="keyVisualTheme">
-        <option value="dark">Dark</option>
-        <option value="light">Light</option>
-        <option value="system">System</option>
-      </select></label
-    >
-    <label id="summaryProviderField" hidden
-      ><span>Recap scope</span
-      ><select id="summaryProviderId">
-        <option value="">All agents</option>
-      </select></label
-    >
-    <label id="creationProviderField" hidden
-      ><span>Agent provider</span
-      ><select id="creationProviderId">
-        <option value="cursor-local">Cursor</option>
-        <option value="codex">Codex</option>
-      </select></label
-    >
-    <small
-      >Agent slots are dynamic placeholders. Classic uses the status design;
-      Agent characters uses animated state scenes. Agent state is
-      read-only.</small
-    >
-    <script>
-      let websocket;
-      let context;
-      let device;
-      let actionId;
-      let settings = {};
-      const defaults = {
-        showSubagents: false,
-        keyVisualTheme: "dark",
-        states: [
-          "idle",
-          "running",
-          "recovering",
-          "waiting_for_input",
-          "waiting_for_approval",
-          "ready_for_review",
-          "failed",
-          "cancelled",
-          "unknown",
-        ],
-      };
-      function send(event, payload, targetContext = context) {
-        websocket?.send(
-          JSON.stringify({ event, context: targetContext, payload }),
-        );
-      }
-      async function save() {
-        const slot = document.querySelector("#slot").value;
-        if (slot === "") delete settings.slot;
-        else settings.slot = Number(slot);
-        if (actionId === "com.agentdeck.monitor.agent-slot")
-          settings.look = document.querySelector("#look").value;
-        settings.summaryProviderId =
-          document.querySelector("#summaryProviderId").value;
-        if (actionId === "com.agentdeck.monitor.new-agent")
-          settings.creationProviderId = document.querySelector(
-            "#creationProviderId",
-          ).value;
-        settings.keyVisualTheme =
-          document.querySelector("#keyVisualTheme").value;
-        settings.showSubagents =
-          document.querySelector("#showSubagents").checked;
-        send("setSettings", settings);
-        const serverUrl = document
-          .querySelector("#serverUrl")
-          .value.replace(/\/$/, "");
-        send("setGlobalSettings", { serverUrl });
-        const data = {
-          ...defaults,
-          serverUrl,
-          name: document.querySelector("#name").value,
-          role: document.querySelector("#role").value,
-          providers: document
-            .querySelector("#providers")
-            .value.split(",")
-            .map((v) => v.trim())
-            .filter(Boolean),
-          showSubagents: document.querySelector("#showSubagents").checked,
-          keyVisualTheme: document.querySelector("#keyVisualTheme").value,
-        };
-        try {
-          const existing = await fetch(
-            `${serverUrl}/api/v1/clients/stream-deck%3A${encodeURIComponent(device)}/configuration`,
-          );
-          const revision = existing.ok
-            ? (await existing.json()).revision
-            : undefined;
-          await fetch(
-            `${serverUrl}/api/v1/clients/stream-deck%3A${encodeURIComponent(device)}/configuration`,
-            {
-              method: "PUT",
-              headers: {
-                "content-type": "application/json",
-                ...(revision === undefined
-                  ? {}
-                  : { "if-match": `"${revision}"` }),
-              },
-              body: JSON.stringify({
-                schema: "com.agentdeck.stream-deck/v1",
-                data,
-              }),
-            },
-          );
-        } catch {}
-      }
-      document
-        .querySelectorAll("input, select")
-        .forEach((input) => input.addEventListener("change", save));
-      async function populateProviders(serverUrl) {
-        try {
-          const response = await fetch(
-            `${serverUrl}/api/v1/providers?limit=200`,
-          );
-          if (!response.ok) return;
-          const providers = (await response.json()).items ?? [];
-          const select = document.querySelector("#summaryProviderId");
-          select.replaceChildren(new Option("All agents", ""));
-          for (const provider of providers) {
-            select.add(new Option(provider.name, provider.id));
-          }
-          select.value = settings.summaryProviderId ?? "";
-        } catch {}
-      }
-      window.connectElgatoStreamDeckSocket = (
-        port,
-        uuid,
-        registerEvent,
-        info,
-        actionInfo,
-      ) => {
-        context = uuid;
-        const parsed = JSON.parse(actionInfo);
-        device = parsed.device;
-        actionId = parsed.action;
-        settings = parsed.payload?.settings ?? {};
-        document.querySelector("#slot").value = settings.slot ?? "";
-        document.querySelector("#look").value = settings.look ?? "classic";
-        document.querySelector("#summaryProviderId").value =
-          settings.summaryProviderId ?? "";
-        document.querySelector("#creationProviderId").value =
-          settings.creationProviderId ?? "cursor-local";
-        document.querySelector("#keyVisualTheme").value =
-          settings.keyVisualTheme ?? "dark";
-        document.querySelector("#slotField").hidden =
-          actionId !== "com.agentdeck.monitor.agent-slot";
-        document.querySelector("#lookField").hidden =
-          actionId !== "com.agentdeck.monitor.agent-slot";
-        document.querySelector("#summaryProviderField").hidden =
-          actionId !== "com.agentdeck.monitor.agent-summary";
-        document.querySelector("#creationProviderField").hidden =
-          actionId !== "com.agentdeck.monitor.new-agent";
-        websocket = new WebSocket(`ws://127.0.0.1:${port}`);
-        websocket.onopen = () => {
-          websocket.send(JSON.stringify({ event: registerEvent, uuid }));
-          send("getGlobalSettings", {});
-        };
-        websocket.onmessage = async (event) => {
-          const message = JSON.parse(event.data);
-          if (message.event !== "didReceiveGlobalSettings") return;
-          const serverUrl =
-            message.payload?.settings?.serverUrl ?? "http://127.0.0.1:47831";
-          document.querySelector("#serverUrl").value = serverUrl;
-          await populateProviders(serverUrl);
-          try {
-            const response = await fetch(
-              `${serverUrl}/api/v1/clients/stream-deck%3A${encodeURIComponent(device)}/configuration`,
-            );
-            if (!response.ok) return;
-            const data = (await response.json()).data;
-            document.querySelector("#name").value = data.name ?? "Stream Deck";
-            document.querySelector("#role").value =
-              data.role ?? "agent-monitor";
-            document.querySelector("#providers").value = (
-              data.providers ?? []
-            ).join(",");
-            document.querySelector("#showSubagents").checked =
-              data.showSubagents ?? false;
-            document.querySelector("#keyVisualTheme").value =
-              data.keyVisualTheme ?? "dark";
-          } catch {}
-        };
-      };
-    </script>
+    <section id="actionSettings">
+      <h2>Action</h2>
+      <div id="agentSlotSettings" data-action-settings hidden>
+        <label>
+          <span>Slot override</span>
+          <input
+            id="slot"
+            type="number"
+            min="0"
+            placeholder="Automatic key position"
+          />
+        </label>
+        <label>
+          <span>Agent key look</span>
+          <select id="look">
+            <option value="classic">Classic</option>
+            <option value="agent">Agent characters</option>
+          </select>
+        </label>
+      </div>
+      <div id="agentSummarySettings" data-action-settings hidden>
+        <label>
+          <span>Recap scope</span>
+          <select id="summaryProviderId">
+            <option value="">All agents</option>
+          </select>
+        </label>
+      </div>
+      <div id="newAgentSettings" data-action-settings hidden>
+        <label>
+          <span>Agent provider</span>
+          <select id="creationProviderId">
+            <option value="cursor-local">Cursor</option>
+            <option value="codex">Codex</option>
+            <option value="claude-code">Claude Code</option>
+          </select>
+        </label>
+      </div>
+      <div id="providerUsageSettings" data-action-settings hidden>
+        <label>
+          <span>Provider</span>
+          <select id="usageDefaultProviderId">
+            <option value="codex">Codex</option>
+            <option value="cursor-local">Cursor</option>
+            <option value="claude-code">Claude Code</option>
+          </select>
+        </label>
+      </div>
+    </section>
+
+    <section id="commonSettings">
+      <h2>Common</h2>
+      <label>
+        <span>Core URL</span>
+        <input id="serverUrl" value="http://127.0.0.1:47831" />
+      </label>
+      <label>
+        <span>Device name</span>
+        <input id="name" value="Stream Deck" />
+      </label>
+      <label>
+        <span>Device role</span>
+        <input id="role" value="agent-monitor" />
+      </label>
+      <label>
+        <span>Provider IDs (comma-separated)</span>
+        <input id="providers" />
+      </label>
+      <label class="checkbox">
+        <input id="showSubagents" type="checkbox" />
+        <span>Show running sub-agents</span>
+      </label>
+      <label>
+        <span>Key visual theme</span>
+        <select id="keyVisualTheme">
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+          <option value="system">System</option>
+        </select>
+      </label>
+      <output id="saveStatus"></output>
+    </section>
+
+    <script src="../bin/property-inspector.js"></script>
   </body>
 </html>

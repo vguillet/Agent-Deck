@@ -9,6 +9,7 @@
     { "path": "packages/client-sdk" },
     { "path": "packages/testing" },
     { "path": "plugins/codex" },
+    { "path": "plugins/claude-code" },
     { "path": "plugins/cursor-cloud" },
     { "path": "plugins/cursor-local" },
     { "path": "apps/core-server" },

@@ -7,6 +7,7 @@ import {
   AttentionSchema,
   EventSchema,
   ProviderSchema,
+  ProviderUsageSchema,
   RunSchema,
   WorkspaceSchema,
   type Page,
@@ -25,6 +26,7 @@ import type {
   ClientDescriptor,
   CommandResult,
   Provider,
+  ProviderUsage,
   Workspace,
 } from "@agent-deck/domain";
 
@@ -132,6 +134,19 @@ export class AgentDeckClient {
       ...page,
       items: page.items.map((item) => ProviderSchema.parse(item) as Provider),
     };
+  }
+
+  async getProviderUsage(
+    providerId: string,
+    refresh = false,
+  ): Promise<ProviderUsage> {
+    return ProviderUsageSchema.parse(
+      await this.get(
+        `/api/v1/providers/${encodeURIComponent(providerId)}/usage${
+          refresh ? "?refresh=true" : ""
+        }`,
+      ),
+    ) as ProviderUsage;
   }
 
   async listWorkspaces(limit = 200): Promise<Page<Workspace>> {

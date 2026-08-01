@@ -61,6 +61,7 @@ export interface ProviderCapabilities {
   discoveryMode?: "poll" | "startup";
   liveEvents: boolean;
   commands: string[];
+  usage?: boolean;
 }
 
 export interface Provider {
@@ -72,6 +73,26 @@ export interface Provider {
   lastCheckedAt?: string;
   consecutiveFailures: number;
   capabilities: ProviderCapabilities;
+}
+
+export type ProviderUsageStatus =
+  "available" | "login_required" | "rate_limited" | "unavailable" | "error";
+
+export interface ProviderUsageWindow {
+  id: string;
+  label: string;
+  usedPercent: number;
+  available?: boolean;
+  resetsAt?: string;
+}
+
+export interface ProviderUsage {
+  providerId: string;
+  status: ProviderUsageStatus;
+  windows: ProviderUsageWindow[];
+  observedAt: string;
+  stale?: boolean;
+  message?: string;
 }
 
 export interface Workspace {

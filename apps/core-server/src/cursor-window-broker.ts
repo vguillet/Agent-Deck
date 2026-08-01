@@ -67,7 +67,9 @@ const registrationKey = (registration: CursorWindowRegistration): string =>
 const targetKey = (target: CursorFocusTarget): string =>
   target.kind === "cursor.conversation"
     ? `${target.kind}:${target.conversationId}:${workspaceRootsKey(normalizedRoots(target.workspaceRoots))}`
-    : `${target.kind}:${target.threadId}:${resolve(target.cwd)}`;
+    : target.kind === "codex.thread"
+      ? `${target.kind}:${target.threadId}:${resolve(target.cwd)}`
+      : `${target.kind}:${target.sessionId}:${workspaceRootsKey(normalizedRoots(target.workspaceRoots))}`;
 
 const pathContains = (root: string, path: string): boolean => {
   const nested = relative(root, path);
@@ -191,7 +193,9 @@ export class CursorWindowBroker {
         message:
           target.kind === "cursor.conversation"
             ? "The agent's Cursor window is not open"
-            : "No open Cursor window contains the Codex thread workspace",
+            : target.kind === "codex.thread"
+              ? "No open Cursor window contains the Codex thread workspace"
+              : "The Claude Code session's Cursor window is not open",
       };
     const bestScore = Math.max(...matches.map(({ score }) => score));
     const bestMatches = matches.filter(({ score }) => score === bestScore);
@@ -211,7 +215,9 @@ export class CursorWindowBroker {
         message:
           target.kind === "codex.thread"
             ? "Update Agent Deck Focus in Cursor to open Codex threads"
-            : "This Cursor window cannot focus this agent type",
+            : target.kind === "claude.session"
+              ? "Update Agent Deck Focus in Cursor to open Claude Code sessions"
+              : "This Cursor window cannot focus this agent type",
       };
 
     const key = targetKey(target);
@@ -507,8 +513,14 @@ export class CursorWindowBroker {
   }
 
   private validateTarget(target: CursorFocusTarget): string | undefined {
-    if (target.kind === "cursor.conversation") {
-      if (!target.conversationId.trim())
+    if (
+      target.kind === "cursor.conversation" ||
+      target.kind === "claude.session"
+    ) {
+      if (target.kind === "claude.session") {
+        if (!target.sessionId.trim())
+          return "The Claude Code session has no ID";
+      } else if (!target.conversationId.trim())
         return "The agent has no Cursor conversation ID";
       if (!target.workspaceRoots.length)
         return "The agent has no Cursor workspace identity";
@@ -523,7 +535,10 @@ export class CursorWindowBroker {
   }
 
   private matches(target: CursorFocusTarget): WindowMatch[] {
-    if (target.kind === "cursor.conversation") {
+    if (
+      target.kind === "cursor.conversation" ||
+      target.kind === "claude.session"
+    ) {
       const key = workspaceRootsKey(normalizedRoots(target.workspaceRoots));
       return [...this.connections.values()].flatMap((connection) => {
         const registration = connection.registration;
@@ -561,7 +576,7 @@ export class CursorWindowBroker {
     }
     const modern = connection.registration?.focusKinds !== undefined;
     const frame =
-      modern || target.kind === "codex.thread"
+      modern || target.kind !== "cursor.conversation"
         ? { type: "focus.intent", requestId, target }
         : {
             type: "focus.intent",

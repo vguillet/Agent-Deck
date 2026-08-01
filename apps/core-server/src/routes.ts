@@ -197,6 +197,15 @@ export const registerApiRoutes = (
     "/api/v1/providers",
     collection((page) => store.listProviders(page)),
   );
+  app.get<{
+    Params: { providerId: string };
+    Querystring: { refresh?: string };
+  }>("/api/v1/providers/:providerId/usage", async (request) =>
+    providers.usage(
+      request.params.providerId,
+      request.query.refresh === "true",
+    ),
+  );
   app.get("/api/v1/workspaces", async (request) => {
     const { offset, limit } = parsePage(request.query);
     const page = store.listWorkspaces({ offset, limit });
@@ -315,6 +324,7 @@ export const registerApiRoutes = (
         "/api/v1/agents/{id}/focus",
         "/api/v1/runs/{id}",
         "/api/v1/providers",
+        "/api/v1/providers/{providerId}/usage",
         "/api/v1/workspaces",
         "/api/v1/projects",
         "/api/v1/attention",

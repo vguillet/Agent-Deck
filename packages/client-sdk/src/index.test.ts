@@ -70,6 +70,28 @@ describe("workspaceColour", () => {
   });
 });
 
+describe("AgentDeckClient provider usage", () => {
+  it("loads and validates a forced provider usage refresh", async () => {
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        providerId: "codex",
+        status: "available",
+        windows: [{ id: "primary", label: "5h", usedPercent: 42 }],
+        observedAt: "2026-08-01T18:00:00.000Z",
+      }),
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      new AgentDeckClient().getProviderUsage("codex", true),
+    ).resolves.toMatchObject({ status: "available" });
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:47831/api/v1/providers/codex/usage?refresh=true",
+    );
+  });
+});
+
 describe("AgentDeckClient watch", () => {
   it("connects and advances its sequence when a resync is required", async () => {
     vi.useFakeTimers();

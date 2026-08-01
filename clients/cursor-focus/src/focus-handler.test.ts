@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  CLAUDE_CODE_EXTENSION_ID,
   CODEX_EXTENSION_ID,
   CODEX_NEW_CHAT_COMMAND,
   CODEX_OPEN_SIDEBAR_COMMAND,
@@ -26,7 +27,7 @@ const dependencies = (
 });
 
 describe("Cursor focus URI handler", () => {
-  it("creates blank Cursor and Codex chats through available commands", async () => {
+  it("creates blank Cursor, Codex, and Claude chats", async () => {
     const cursor = dependencies([CURSOR_NEW_AGENT_CHAT_COMMAND]);
     await expect(createAgentChat("cursor-local", cursor)).resolves.toEqual({
       status: "opened",
@@ -40,6 +41,14 @@ describe("Cursor focus URI handler", () => {
       status: "opened",
     });
     expect(codex.executeCommand).toHaveBeenCalledWith(CODEX_NEW_CHAT_COMMAND);
+
+    const claude = dependencies([]);
+    await expect(createAgentChat("claude-code", claude)).resolves.toEqual({
+      status: "opened",
+    });
+    expect(claude.openExternal).toHaveBeenCalledWith(
+      "cursor://anthropic.claude-code/open",
+    );
   });
 
   it("fails safely when a new-chat command is unavailable", async () => {
@@ -138,6 +147,37 @@ describe("Cursor focus URI handler", () => {
     expect(codexThreadUri("thread:123")).toBe(
       "cursor://openai.chatgpt/local/thread%3A123",
     );
+  });
+
+  it("opens an exact Claude Code session in its Cursor workspace", async () => {
+    const deps = dependencies([]);
+    await expect(
+      focusCursorConversation(
+        "cursor://agent-deck.focus/claude?sessionId=session-123&workspace=%2Fworkspace%2Falpha",
+        deps,
+      ),
+    ).resolves.toEqual({ status: "opened" });
+    expect(deps.openExternal).toHaveBeenCalledWith(
+      "cursor://anthropic.claude-code/open?session=session-123",
+    );
+
+    const wrongWindow = dependencies([]);
+    await expect(
+      focusCursorConversation(
+        "cursor://agent-deck.focus/claude?sessionId=session-123&workspace=%2Fworkspace%2Fbeta",
+        wrongWindow,
+      ),
+    ).resolves.toMatchObject({ status: "unavailable" });
+    expect(wrongWindow.openExternal).not.toHaveBeenCalled();
+
+    const missingExtension = dependencies([]);
+    missingExtension.hasExtension = (id) => id !== CLAUDE_CODE_EXTENSION_ID;
+    await expect(
+      focusCursorConversation(
+        "cursor://agent-deck.focus/claude?sessionId=session-123&workspace=%2Fworkspace%2Falpha",
+        missingExtension,
+      ),
+    ).resolves.toMatchObject({ status: "unavailable" });
   });
 
   it("rejects Codex focus in the wrong window or without a compatible extension", async () => {

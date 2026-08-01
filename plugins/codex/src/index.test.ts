@@ -590,6 +590,80 @@ describe("Codex provider hook ingestion", () => {
     await plugin.dispose();
   });
 
+  it("infers collaboration Plan mode from Codex's Plan-only question tool", async () => {
+    const plugin = createProviderPlugin();
+    let ingress: ProviderIngressRegistration | undefined;
+    await plugin.initialise(
+      contextFor((registration) => {
+        ingress = registration;
+      }),
+    );
+    const emitted: ProviderEvent[] = [];
+    const stop = await plugin.subscribe(async (event) => {
+      emitted.push(event);
+    });
+
+    await ingress?.handle({
+      protocol_version: 1,
+      session_id: "thr_collaboration_plan",
+      hook_event_name: "UserPromptSubmit",
+      cwd: "/workspace/aquila",
+      turn_id: "turn_plan",
+      permission_mode: "default",
+    });
+    await ingress?.handle({
+      protocol_version: 1,
+      session_id: "thr_collaboration_plan",
+      hook_event_name: "PreToolUse",
+      cwd: "/workspace/aquila",
+      turn_id: "turn_plan",
+      tool_use_id: "question_plan",
+      agent_activity: "waiting",
+      permission_mode: "default",
+      agent_signal: "question_started",
+    });
+    await vi.waitFor(() => {
+      expect(
+        emitted.filter((event) => event.payload.agent).at(-1)?.payload.agent,
+      ).toMatchObject({
+        state: "waiting_for_input",
+        metadata: { agentMode: "plan" },
+      });
+    });
+
+    await ingress?.handle({
+      protocol_version: 1,
+      session_id: "thr_collaboration_plan",
+      hook_event_name: "PostToolUse",
+      cwd: "/workspace/aquila",
+      turn_id: "turn_plan",
+      tool_use_id: "question_plan",
+      permission_mode: "default",
+    });
+    await vi.waitFor(() => {
+      expect(
+        emitted.filter((event) => event.payload.agent).at(-1)?.payload.agent,
+      ).toMatchObject({ metadata: { agentMode: "plan" } });
+    });
+
+    await ingress?.handle({
+      protocol_version: 1,
+      session_id: "thr_collaboration_plan",
+      hook_event_name: "UserPromptSubmit",
+      cwd: "/workspace/aquila",
+      turn_id: "turn_default",
+      permission_mode: "default",
+    });
+    await vi.waitFor(() => {
+      expect(
+        emitted.filter((event) => event.payload.agent).at(-1)?.payload.agent,
+      ).not.toMatchObject({ metadata: { agentMode: "plan" } });
+    });
+
+    await stop();
+    await plugin.dispose();
+  });
+
   it("rejects duplicate and late turn hooks and maps terminal failures", async () => {
     const plugin = createProviderPlugin();
     let ingress: ProviderIngressRegistration | undefined;
@@ -628,6 +702,15 @@ describe("Codex provider hook ingestion", () => {
 
     await ingress?.handle({
       session_id: "thr_ordered",
+      hook_event_name: "PreToolUse",
+      cwd: "/workspace/aquila",
+      turn_id: "turn_new",
+      tool_use_id: "tool_plan",
+      agent_activity: "planning",
+      plan_progress: { completed: 1, total: 3 },
+    });
+    await ingress?.handle({
+      session_id: "thr_ordered",
       hook_event_name: "Stop",
       cwd: "/workspace/aquila",
       turn_id: "turn_new",
@@ -636,7 +719,10 @@ describe("Codex provider hook ingestion", () => {
     await vi.waitFor(() => {
       expect(
         emitted.filter((event) => event.payload.agent).at(-1)?.payload.agent,
-      ).toMatchObject({ state: "failed" });
+      ).toMatchObject({
+        state: "failed",
+        progress: { plan: { completed: 1, total: 3 } },
+      });
     });
     await vi.waitFor(() => {
       expect(

@@ -9,6 +9,7 @@ export const BRING_UP_KEY_STAGGER_MS = 120;
 export interface BringUpPosition {
   index: number;
   total: number;
+  delayMs?: number;
 }
 
 const clamp = (value: number, minimum = 0, maximum = 1): number =>
@@ -29,7 +30,9 @@ const escapeAttribute = (value: string): string =>
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
 
-export const bringUpDelayMs = ({ index, total }: BringUpPosition): number => {
+export const bringUpDelayMs = (position: BringUpPosition): number => {
+  if (position.delayMs !== undefined) return Math.max(0, position.delayMs);
+  const { index, total } = position;
   if (total <= 1) return 0;
   return Math.round(clamp(index, 0, total - 1) * BRING_UP_KEY_STAGGER_MS);
 };

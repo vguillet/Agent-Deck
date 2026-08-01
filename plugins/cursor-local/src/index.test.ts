@@ -170,12 +170,20 @@ describe("Cursor local provider", () => {
     });
     await harness.handle({
       ...base,
+      hook_event_name: "preToolUse",
+      tool_use_id: "tool-plan",
+      agent_activity: "planning",
+      plan_progress: { completed: 1, total: 3 },
+    });
+    await harness.handle({
+      ...base,
       hook_event_name: "stop",
       status: "error",
     });
-    expect((await harness.plugin.discover()).agents[0]?.state).toBe(
-      "recovering",
-    );
+    expect((await harness.plugin.discover()).agents[0]).toMatchObject({
+      state: "recovering",
+      progress: { plan: { completed: 1, total: 3 } },
+    });
     expect((await harness.plugin.discover()).runs[0]?.state).toBe("running");
 
     await harness.handle({
@@ -183,7 +191,10 @@ describe("Cursor local provider", () => {
       hook_event_name: "sessionEnd",
       status: "error",
     });
-    expect((await harness.plugin.discover()).agents[0]?.state).toBe("failed");
+    expect((await harness.plugin.discover()).agents[0]).toMatchObject({
+      state: "failed",
+      progress: { plan: { completed: 1, total: 3 } },
+    });
     expect((await harness.plugin.discover()).runs[0]?.state).toBe("failed");
     await harness.close();
   });

@@ -119,7 +119,31 @@ export const ProviderSchema = z.object({
     discoveryMode: z.enum(["poll", "startup"]).optional(),
     liveEvents: z.boolean(),
     commands: z.array(z.string()),
+    usage: z.boolean().optional(),
   }),
+});
+
+export const ProviderUsageWindowSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  usedPercent: z.number().finite().min(0).max(100),
+  available: z.boolean().optional(),
+  resetsAt: TimestampSchema.optional(),
+});
+
+export const ProviderUsageSchema = z.object({
+  providerId: z.string().min(1),
+  status: z.enum([
+    "available",
+    "login_required",
+    "rate_limited",
+    "unavailable",
+    "error",
+  ]),
+  windows: z.array(ProviderUsageWindowSchema).max(8),
+  observedAt: TimestampSchema,
+  stale: z.boolean().optional(),
+  message: z.string().optional(),
 });
 
 export const WorkspaceSchema = z.object({
@@ -224,9 +248,14 @@ export const RegisterFrameSchema = z.object({
 export const CursorFocusTargetKindSchema = z.enum([
   "cursor.conversation",
   "codex.thread",
+  "claude.session",
 ]);
 
-export const AgentCreationProviderIdSchema = z.enum(["cursor-local", "codex"]);
+export const AgentCreationProviderIdSchema = z.enum([
+  "cursor-local",
+  "codex",
+  "claude-code",
+]);
 
 export const CursorWindowRegistrationSchema = z.object({
   type: z.literal("window.register"),
@@ -281,9 +310,16 @@ export const CodexThreadFocusTargetSchema = z.object({
   cwd: z.string().min(1),
 });
 
+export const ClaudeSessionFocusTargetSchema = z.object({
+  kind: z.literal("claude.session"),
+  sessionId: z.string().min(1),
+  workspaceRoots: z.array(z.string().min(1)).min(1).max(32),
+});
+
 export const CursorFocusTargetSchema = z.discriminatedUnion("kind", [
   CursorConversationFocusTargetSchema,
   CodexThreadFocusTargetSchema,
+  ClaudeSessionFocusTargetSchema,
 ]);
 
 export const CursorFocusIntentFrameSchema = z.object({

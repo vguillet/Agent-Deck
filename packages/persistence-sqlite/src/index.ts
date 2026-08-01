@@ -577,6 +577,16 @@ export class SqliteEventStore implements EventStore {
     const incoming = payload.agent as Agent;
     const existing = this.getAgent(incoming.id);
     if (
+      incoming.state === "failed" ||
+      incoming.state === "recovering" ||
+      incoming.state === "cancelled" ||
+      (Boolean(existing?.progress?.plan) && !incoming.progress?.plan)
+    ) {
+      // #region agent log
+      fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'eef5ae'},body:JSON.stringify({sessionId:'eef5ae',runId:'pre-fix',hypothesisId:'H3',location:'packages/persistence-sqlite/src/index.ts:upsertAgent:failure-progress',message:'Store received failure agent progress',data:{state:incoming.state,hadExistingPlan:Boolean(existing?.progress?.plan),hasIncomingPlan:Boolean(incoming.progress?.plan),existingSourceRevision:existing?.sourceRevision ?? null,incomingSourceRevision:incoming.sourceRevision ?? null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
+    if (
       existing?.sourceRevision !== undefined &&
       incoming.sourceRevision !== undefined &&
       incoming.sourceRevision <= existing.sourceRevision

@@ -44,15 +44,21 @@ const targetUri = (target: CursorFocusTarget): string => {
   const url = new URL(
     target.kind === "cursor.conversation"
       ? "cursor://agent-deck.focus/open"
-      : "cursor://agent-deck.focus/codex",
+      : target.kind === "codex.thread"
+        ? "cursor://agent-deck.focus/codex"
+        : "cursor://agent-deck.focus/claude",
   );
   if (target.kind === "cursor.conversation") {
     url.searchParams.set("conversationId", target.conversationId);
     for (const root of target.workspaceRoots)
       url.searchParams.append("workspace", root);
-  } else {
+  } else if (target.kind === "codex.thread") {
     url.searchParams.set("threadId", target.threadId);
     url.searchParams.set("cwd", target.cwd);
+  } else {
+    url.searchParams.set("sessionId", target.sessionId);
+    for (const root of target.workspaceRoots)
+      url.searchParams.append("workspace", root);
   }
   return url.href;
 };

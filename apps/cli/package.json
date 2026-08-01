@@ -13,6 +13,7 @@
     "@agent-deck/client-sdk": "0.1.0",
     "@agent-deck/core-server": "0.1.0",
     "@agent-deck/domain": "0.1.0",
+    "@agent-deck/provider-claude-code": "0.1.0",
     "@agent-deck/provider-codex": "0.1.0",
     "@agent-deck/provider-cursor-local": "0.1.0",
     "focus": "0.5.1"

@@ -7,6 +7,7 @@ import streamDeck, {
   type KeyAction,
   type KeyDownEvent,
   type KeyUpEvent,
+  type SendToPluginEvent,
   SingletonAction,
   type WillAppearEvent,
   type WillDisappearEvent,
@@ -22,6 +23,7 @@ import {
   type Attention,
   type CanonicalEvent,
   type Provider,
+  type ProviderUsage,
   type Workspace,
 } from "@agent-deck/domain";
 import {
@@ -98,16 +100,21 @@ import {
   refreshResourcesForEvent,
   type RefreshResource,
 } from "./refresh-plan.js";
+import {
+  ACTION_IDS,
+  type AgentSlotSettings,
+  type AgentSummarySettings,
+  type AnyActionSettings,
+  type EmptyActionSettings,
+  type NewAgentSettings,
+  type ProviderUsageSettings,
+} from "./action-settings.js";
+import {
+  providerUsageImage,
+  providerUsageResetImage,
+} from "./provider-usage.js";
 
-interface ActionSettings {
-  slot?: number;
-  look?: AgentKeyLook;
-  summaryProviderId?: string;
-  showSubagents?: boolean;
-  creationProviderId?: "cursor-local" | "codex";
-  keyVisualTheme?: KeyVisualThemePreference;
-  [key: string]: string | number | boolean | null | undefined;
-}
+type ActionSettings = AnyActionSettings;
 
 interface DeviceConfiguration {
   serverUrl: string;
@@ -133,6 +140,7 @@ interface DeviceSession {
   agentSummaries: Map<string, AgentSummary>;
   attention: Attention[];
   providers: Provider[];
+  providerUsage: Map<string, ProviderUsage>;
   providerBubbles: ConnectorBubble[];
   providerBubblesOverflow: boolean;
   unhealthyProviderCount: number;
@@ -151,6 +159,7 @@ interface DeviceSession {
   animationStartedAt: number;
   runningAnimationStarts: Map<string, RunningAnimationStart>;
   bringUpStartedAt: number | undefined;
+  hasCompletedBringUp: boolean;
   bringUpHeldActionIds: Set<string>;
   bringUpImages: Map<string, BringUpSnapshot>;
   bringUpTimer: NodeJS.Timeout | undefined;
@@ -160,6 +169,7 @@ interface DeviceSession {
   creationContextCheckedAt: number;
   creationContextPromise: Promise<void> | undefined;
   creationContextTimer?: NodeJS.Timeout;
+  usageTimer?: NodeJS.Timeout;
 }
 
 interface AgentSummary {
@@ -212,6 +222,12 @@ const settle = async <T>(
 
 const LONG_PRESS_DURATION_MS = 650;
 const SYSTEM_APPEARANCE_POLL_MS = 5_000;
+const USAGE_RESET_VIEW_MS = 3_000;
+const USAGE_PROVIDER_IDS = ["codex", "cursor-local", "claude-code"] as const;
+type UsageProviderId = (typeof USAGE_PROVIDER_IDS)[number];
+
+const normalizeUsageProviderId = (value: unknown): UsageProviderId =>
+  value === "cursor-local" || value === "claude-code" ? value : "codex";
 
 const sessionPalette = (session: DeviceSession): KeyVisualPalette =>
   keyVisualPalette(session.resolvedKeyVisualTheme);
@@ -494,6 +510,13 @@ const renderProviderLogo = (
         <path d="M60.87 57.26V42.31c0-1.26.47-2.2 1.57-2.83l30.05-17.3c4.09-2.36 8.97-3.46 14-3.46 18.88 0 30.83 14.63 30.83 30.2 0 1.1 0 2.36-.16 3.62l-31.14-18.25c-1.89-1.1-3.78-1.1-5.66 0L60.87 57.26Zm70.16 58.2V79.75c0-2.2-.94-3.78-2.83-4.88L88.71 51.91l12.9-7.39c1.1-.63 2.05-.63 3.15 0l30.04 17.3c8.65 5.03 14.47 15.73 14.47 26.11 0 11.95-7.08 22.97-18.24 27.53ZM51.59 84 38.7 76.45c-1.1-.63-1.58-1.58-1.58-2.84v-34.6c0-16.83 12.9-29.57 30.36-29.57 6.61 0 12.74 2.2 17.93 6.13L54.43 33.5c-1.89 1.1-2.83 2.67-2.83 4.88V84Zm27.77 16.04L60.87 89.66V67.64l18.49-10.38 18.48 10.38v22.02l-18.48 10.38Zm11.87 47.82c-6.61 0-12.74-2.2-17.93-6.13l30.99-17.94c1.89-1.1 2.83-2.67 2.83-4.88V73.3l13.05 7.55c1.1.63 1.58 1.57 1.58 2.83v34.61c0 16.83-13.06 29.57-30.52 29.57Zm-37.28-35.08L23.91 95.48c-8.65-5.03-14.47-15.73-14.47-26.11 0-12.11 7.24-22.97 18.4-27.53v35.87c0 2.2.94 3.77 2.83 4.87L70 105.39l-12.9 7.39c-1.1.63-2.05.63-3.15 0Zm-1.73 25.8c-17.77 0-30.83-13.37-30.83-29.89 0-1.26.16-2.52.32-3.77l30.98 17.93c1.89 1.1 3.78 1.1 5.67 0l39.48-22.81v14.95c0 1.26-.47 2.2-1.58 2.83l-30.04 17.3c-4.09 2.36-8.97 3.46-14 3.46Z" fill="${palette.providerForeground}"/>
       </g>
     </g>`;
+  if (id.includes("claude"))
+    return `<g transform="translate(0 93)">
+      <rect x="98" y="5" width="41" height="41" rx="10" fill="${palette.providerTileSurface}"/>
+      <g transform="translate(106 13)" fill="${palette.providerForeground}">
+        <path d="M10.8 0h5.4l.9 7.1 5.8-4.2 2.7 4.7-6.6 3 6.6 3-2.7 4.7-5.8-4.2-.9 7.1h-5.4l-.9-7.1-5.8 4.2-2.7-4.7 6.6-3-6.6-3 2.7-4.7 5.8 4.2z"/>
+      </g>
+    </g>`;
   const mark = escapeXml(providerStyle(providerId).mark);
   return `<g transform="translate(0 93)">
       <circle cx="116" cy="24" r="17" fill="${palette.genericLogoSurface}" opacity=".72"/>
@@ -657,13 +680,14 @@ const removedAgentIcon = (
   )}`;
 
 interface AnimatedTarget {
-  actionContext: DialAction<ActionSettings> | KeyAction<ActionSettings>;
+  actionContext: DialAction<AnyActionSettings> | KeyAction<AnyActionSettings>;
   session: DeviceSession;
   kind: "agent" | "bring-up" | "system";
 }
 
 interface BringUpSnapshot {
   binding: string | undefined;
+  delayMs?: number;
   image: string;
   index: number;
   previousImage: string | undefined;
@@ -682,7 +706,9 @@ type AgentDeletionResult = "blocked" | "ignored" | "missing" | "removed";
 class DeviceManager {
   private readonly sessions = new Map<string, DeviceSession>();
   private readonly pendingSessions = new Map<string, Promise<DeviceSession>>();
-  private readonly actionSettings = new Map<string, ActionSettings>();
+  private readonly actionSettings = new Map<string, AnyActionSettings>();
+  private readonly usageResetTimers = new Map<string, NodeJS.Timeout>();
+  private readonly usageResetUntil = new Map<string, number>();
   private readonly desiredAgentIds = new Map<string, string>();
   private readonly frozenAgentIds = new Map<string, string>();
   private readonly renderedAgentLooks = new Map<string, AgentKeyLook>();
@@ -722,8 +748,8 @@ class DeviceManager {
   }
 
   rememberAction(
-    actionContext: Action<ActionSettings>,
-    settings: ActionSettings,
+    actionContext: Action<AnyActionSettings>,
+    settings: AnyActionSettings,
   ): void {
     this.actionSettings.set(actionContext.id, settings);
   }
@@ -739,6 +765,7 @@ class DeviceManager {
     this.renderedAgentLooks.delete(actionId);
     this.renderedAgentLabels.delete(actionId);
     this.renderedAgentSlots.delete(actionId);
+    this.cancelUsageReset(actionId);
     this.agentStateTransitions.clear(actionId);
     this.pressedAgentActions.delete(actionId);
     this.focusRequestVersions.set(
@@ -749,7 +776,9 @@ class DeviceManager {
     this.outputWriter.clear(actionId);
   }
 
-  async ensure(actionContext: Action<ActionSettings>): Promise<DeviceSession> {
+  async ensure(
+    actionContext: Action<AnyActionSettings>,
+  ): Promise<DeviceSession> {
     const deviceId = actionContext.device.id;
     const current = this.sessions.get(deviceId);
     if (current) return current;
@@ -765,7 +794,7 @@ class DeviceManager {
   }
 
   private async createSession(
-    actionContext: Action<ActionSettings>,
+    actionContext: Action<AnyActionSettings>,
   ): Promise<DeviceSession> {
     const deviceId = actionContext.device.id;
     const global = await streamDeck.settings.getGlobalSettings<{
@@ -808,6 +837,7 @@ class DeviceManager {
       agentSummaries: new Map([["", emptyAgentSummary()]]),
       attention: [],
       providers: [],
+      providerUsage: new Map(),
       providerBubbles: [],
       providerBubblesOverflow: false,
       unhealthyProviderCount: 0,
@@ -825,6 +855,7 @@ class DeviceManager {
       animationStartedAt: Date.now(),
       runningAnimationStarts: new Map(),
       bringUpStartedAt: undefined,
+      hasCompletedBringUp: false,
       bringUpHeldActionIds: new Set(),
       bringUpImages: new Map(),
       bringUpTimer: undefined,
@@ -869,6 +900,8 @@ class DeviceManager {
         onStatus: (status) => {
           const previousStatus = session.connectionStatus;
           session.connectionStatus = status;
+          if (status !== previousStatus)
+            this.cancelUsageResetsForDevice(session.deviceId);
           if (status === "disconnected") {
             this.cancelBringUp(session);
             session.allAgents = [];
@@ -906,6 +939,18 @@ class DeviceManager {
       });
     }, 1_500);
     session.creationContextTimer.unref();
+    session.usageTimer = setInterval(() => {
+      const device = streamDeck.devices.getDeviceById(session.deviceId);
+      if (
+        !device ||
+        ![...device.actions].some(
+          (candidate) => candidate.manifestId === ACTION_IDS.providerUsage,
+        )
+      )
+        return;
+      void this.refreshUsage(session);
+    }, 120_000);
+    session.usageTimer.unref();
     return session;
   }
 
@@ -960,6 +1005,7 @@ class DeviceManager {
     if (session.bringUpTimer) clearTimeout(session.bringUpTimer);
     session.bringUpTimer = undefined;
     session.bringUpStartedAt = undefined;
+    session.hasCompletedBringUp = false;
     session.bringUpImages.clear();
     this.releaseBringUpHeldActions(session);
   }
@@ -985,8 +1031,40 @@ class DeviceManager {
           : [];
       })
       .sort((left, right) => left.slot - right.slot);
+    const usageKeys = [...device.actions].filter(
+      (actionContext) =>
+        actionContext.isKey() &&
+        actionContext.manifestId === ACTION_IDS.providerUsage,
+    );
+    const creationKeys = [...device.actions].filter(
+      (actionContext) =>
+        actionContext.isKey() &&
+        actionContext.manifestId === ACTION_IDS.newAgent,
+    );
+    for (const actionContext of usageKeys) {
+      const settings = (this.actionSettings.get(actionContext.id) ??
+        {}) as ProviderUsageSettings;
+      const providerId = normalizeUsageProviderId(
+        settings.usageDefaultProviderId,
+      );
+      await this.writeUsage(actionContext, session, providerId);
+    }
+    await Promise.all(
+      creationKeys.map((actionContext) =>
+        this.renderCreation(
+          actionContext,
+          (this.actionSettings.get(actionContext.id) ?? {}) as NewAgentSettings,
+          true,
+        ),
+      ),
+    );
+    const postAgentKeys = [...usageKeys, ...creationKeys];
+    const animatedKeys = [
+      ...agentKeys.map(({ actionContext }) => actionContext),
+      ...postAgentKeys,
+    ];
     const previousImages = new Map(
-      agentKeys.map(({ actionContext }) => [
+      animatedKeys.map((actionContext) => [
         actionContext.id,
         this.outputWriter.committedImage(actionContext.id),
       ]),
@@ -999,6 +1077,23 @@ class DeviceManager {
 
     try {
       await this.refresh(session);
+      await Promise.all([
+        ...usageKeys.map((actionContext) =>
+          this.renderUsage(
+            actionContext,
+            (this.actionSettings.get(actionContext.id) ??
+              {}) as ProviderUsageSettings,
+            true,
+          ),
+        ),
+        ...creationKeys.map((actionContext) =>
+          this.renderCreation(
+            actionContext,
+            (this.actionSettings.get(actionContext.id) ??
+              {}) as NewAgentSettings,
+          ),
+        ),
+      ]);
     } catch (error) {
       this.releaseBringUpHeldActions(session);
       throw error;
@@ -1022,7 +1117,24 @@ class DeviceManager {
           total: agentKeys.length,
         });
     }
+    const postAgentDelayMs =
+      agentKeys.length > 0 ? bringUpSequenceDurationMs(agentKeys.length) : 0;
+    for (const actionContext of postAgentKeys) {
+      const staged = this.outputWriter.takeStaged(actionContext.id);
+      session.bringUpHeldActionIds.delete(actionContext.id);
+      if (staged?.output.image)
+        session.bringUpImages.set(actionContext.id, {
+          binding: staged.commit?.binding,
+          delayMs: postAgentDelayMs,
+          image: staged.output.image,
+          index: 0,
+          previousImage: previousImages.get(actionContext.id),
+          title: staged.output.title,
+          total: 1,
+        });
+    }
     if (session.bringUpImages.size === 0) {
+      session.hasCompletedBringUp = true;
       this.releaseBringUpHeldActions(session);
       await this.renderVisible(session.deviceId);
       return;
@@ -1030,7 +1142,7 @@ class DeviceManager {
 
     session.bringUpStartedAt = Date.now();
     await Promise.all(
-      agentKeys.map(({ actionContext }) =>
+      animatedKeys.map((actionContext) =>
         this.renderAnimatedTarget({
           actionContext,
           session,
@@ -1038,20 +1150,26 @@ class DeviceManager {
         }),
       ),
     );
-    session.bringUpTimer = setTimeout(() => {
-      session.bringUpTimer = undefined;
-      session.bringUpStartedAt = undefined;
-      session.bringUpImages.clear();
-      this.releaseBringUpHeldActions(session);
-      if (session.connectionStatus === "connected")
-        void this.renderVisible(session.deviceId);
-    }, bringUpSequenceDurationMs(agentKeys.length));
+    session.bringUpTimer = setTimeout(
+      () => {
+        session.bringUpTimer = undefined;
+        session.bringUpStartedAt = undefined;
+        session.hasCompletedBringUp = true;
+        session.bringUpImages.clear();
+        this.releaseBringUpHeldActions(session);
+        if (session.connectionStatus === "connected")
+          void this.renderVisible(session.deviceId);
+      },
+      postAgentKeys.length > 0
+        ? postAgentDelayMs + bringUpSequenceDurationMs(1)
+        : bringUpSequenceDurationMs(agentKeys.length),
+    );
     session.bringUpTimer.unref();
   }
 
   async renderAgent(
     actionContext: Action<ActionSettings>,
-    settings: ActionSettings,
+    settings: AgentSlotSettings,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
     const palette = sessionPalette(session);
@@ -1198,7 +1316,7 @@ class DeviceManager {
 
   async renderAgentSummary(
     actionContext: Action<ActionSettings>,
-    settings: ActionSettings,
+    settings: AgentSummarySettings,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
     const palette = sessionPalette(session);
@@ -1284,6 +1402,123 @@ class DeviceManager {
     );
   }
 
+  private unavailableUsage(providerId: UsageProviderId): ProviderUsage {
+    return {
+      providerId,
+      status: "unavailable",
+      windows: [],
+      observedAt: new Date().toISOString(),
+    };
+  }
+
+  cancelUsageReset(actionId: string): void {
+    const timer = this.usageResetTimers.get(actionId);
+    if (timer) clearTimeout(timer);
+    this.usageResetTimers.delete(actionId);
+    this.usageResetUntil.delete(actionId);
+  }
+
+  private cancelUsageResetsForDevice(deviceId: string): void {
+    const device = streamDeck.devices.getDeviceById(deviceId);
+    if (!device) return;
+    for (const actionContext of device.actions)
+      if (actionContext.manifestId === ACTION_IDS.providerUsage)
+        this.cancelUsageReset(actionContext.id);
+  }
+
+  private async writeUsage(
+    actionContext: Action<ProviderUsageSettings>,
+    session: DeviceSession,
+    providerId: UsageProviderId,
+    forceColour = false,
+  ): Promise<void> {
+    if (!actionContext.isKey()) return;
+    const usage =
+      session.providerUsage.get(providerId) ??
+      this.unavailableUsage(providerId);
+    const showingReset =
+      (this.usageResetUntil.get(actionContext.id) ?? 0) > Date.now();
+    const muted =
+      !forceColour &&
+      (session.connectionStatus !== "connected" ||
+        !session.hasCompletedBringUp);
+    await this.outputWriter.write(actionContext, {
+      title: "",
+      image: showingReset
+        ? providerUsageResetImage(
+            usage,
+            sessionPalette(session),
+            Date.now(),
+            muted,
+          )
+        : providerUsageImage(usage, sessionPalette(session), Date.now(), muted),
+    });
+  }
+
+  async renderUsage(
+    actionContext: Action<ProviderUsageSettings>,
+    settings: ProviderUsageSettings,
+    forceColour = false,
+  ): Promise<void> {
+    const session = await this.ensure(actionContext);
+    const providerId = normalizeUsageProviderId(
+      settings.usageDefaultProviderId,
+    );
+    if (!session.providerUsage.has(providerId)) {
+      const usage = await session.client
+        .getProviderUsage(providerId)
+        .catch(() => this.unavailableUsage(providerId));
+      session.providerUsage.set(providerId, usage);
+    }
+    await this.writeUsage(actionContext, session, providerId, forceColour);
+  }
+
+  async showUsageReset(
+    actionContext: Action<ProviderUsageSettings>,
+    settings: ProviderUsageSettings,
+  ): Promise<void> {
+    const session = await this.ensure(actionContext);
+    const providerId = normalizeUsageProviderId(
+      settings.usageDefaultProviderId,
+    );
+    this.cancelUsageReset(actionContext.id);
+    this.usageResetUntil.set(
+      actionContext.id,
+      Date.now() + USAGE_RESET_VIEW_MS,
+    );
+    await this.writeUsage(actionContext, session, providerId);
+    const timer = setTimeout(() => {
+      this.usageResetTimers.delete(actionContext.id);
+      this.usageResetUntil.delete(actionContext.id);
+      if (!this.actionSettings.has(actionContext.id)) return;
+      const currentSettings = (this.actionSettings.get(actionContext.id) ??
+        {}) as ProviderUsageSettings;
+      void this.renderUsage(actionContext, currentSettings);
+    }, USAGE_RESET_VIEW_MS);
+    timer.unref();
+    this.usageResetTimers.set(actionContext.id, timer);
+  }
+
+  private async refreshUsage(session: DeviceSession): Promise<void> {
+    const entries = await Promise.all(
+      USAGE_PROVIDER_IDS.map(
+        async (providerId) =>
+          [
+            providerId,
+            await session.client
+              .getProviderUsage(providerId)
+              .catch(() => this.unavailableUsage(providerId)),
+          ] as const,
+      ),
+    );
+    for (const [providerId, usage] of entries)
+      session.providerUsage.set(providerId, usage);
+    await this.renderVisible(
+      session.deviceId,
+      new Set([ACTION_IDS.providerUsage]),
+    );
+  }
+
   async renderSystem(actionContext: Action<ActionSettings>): Promise<void> {
     const session = await this.ensure(actionContext);
     const image = systemIcon(session, Date.now() - session.animationStartedAt);
@@ -1324,7 +1559,8 @@ class DeviceManager {
 
   async renderCreation(
     actionContext: Action<ActionSettings>,
-    settings: ActionSettings,
+    settings: NewAgentSettings,
+    forceDisconnected = false,
   ): Promise<void> {
     const session = await this.ensure(actionContext);
     const palette = sessionPalette(session);
@@ -1346,7 +1582,7 @@ class DeviceManager {
         image: newAgentIcon(
           providerId,
           workspaceAccent,
-          session.connectionStatus !== "connected",
+          forceDisconnected || session.connectionStatus !== "connected",
           palette,
         ),
       });
@@ -1354,7 +1590,7 @@ class DeviceManager {
 
   async createAgent(
     actionContext: Action<ActionSettings>,
-    settings: ActionSettings,
+    settings: NewAgentSettings,
   ): Promise<boolean> {
     const session = await this.ensure(actionContext);
     const providerId = settings.creationProviderId ?? "cursor-local";
@@ -1499,35 +1735,24 @@ class DeviceManager {
     await this.refresh(session);
   }
 
-  async setShowSubagents(
+  async reloadCommonSettings(
     actionContext: Action<ActionSettings>,
-    showSubagents: boolean | undefined,
   ): Promise<void> {
-    if (showSubagents === undefined) return;
-    const session = await this.ensure(actionContext);
-    if (session.configuration.showSubagents === showSubagents) return;
-    session.configuration.showSubagents = showSubagents;
-    await this.refresh(session, ["agents", "attention"]);
-  }
-
-  async setKeyVisualTheme(
-    actionContext: Action<ActionSettings>,
-    preference: unknown,
-  ): Promise<void> {
-    if (preference === undefined) return;
-    const session = await this.ensure(actionContext);
-    const normalized = normalizeKeyVisualThemePreference(preference);
-    const resolved =
-      normalized === "system" ? await resolveSystemAppearance() : normalized;
-    const changed =
-      session.configuration.keyVisualTheme !== normalized ||
-      session.resolvedKeyVisualTheme !== resolved;
-    session.configuration.keyVisualTheme = normalized;
-    session.resolvedKeyVisualTheme = resolved;
+    const deviceId = actionContext.device.id;
+    this.cancelUsageResetsForDevice(deviceId);
+    const session = this.sessions.get(deviceId);
+    if (session) {
+      session.watch?.close();
+      if (session.refreshTimer) clearTimeout(session.refreshTimer);
+      if (session.bringUpTimer) clearTimeout(session.bringUpTimer);
+      if (session.creationContextTimer)
+        clearTimeout(session.creationContextTimer);
+      if (session.usageTimer) clearInterval(session.usageTimer);
+      this.sessions.delete(deviceId);
+    }
     this.syncSystemAppearanceMonitor();
-    if (!changed) return;
-    rebuildAgentRenderCache(session);
-    await this.renderVisible(session.deviceId);
+    await this.ensure(actionContext);
+    await this.renderVisible(deviceId);
   }
 
   async clearAndRefreshFor(
@@ -1859,6 +2084,9 @@ class DeviceManager {
             {
               index: snapshot.index,
               total: snapshot.total,
+              ...(snapshot.delayMs === undefined
+                ? {}
+                : { delayMs: snapshot.delayMs }),
             },
             snapshot.previousImage,
             palette,
@@ -1964,6 +2192,8 @@ class DeviceManager {
             visible.manifestId === "com.agentdeck.monitor.provider-health"
           )
             await this.renderProvider(visible);
+          else if (visible.manifestId === ACTION_IDS.providerUsage)
+            await this.renderUsage(visible, settings);
           else if (visible.manifestId === "com.agentdeck.monitor.system-health")
             await this.renderSystem(visible);
           else if (visible.manifestId === "com.agentdeck.monitor.new-agent")
@@ -1995,39 +2225,43 @@ streamDeck.system.onSystemDidWakeUp(() => {
   void devices.refreshSystemAppearance();
 });
 
-@action({ UUID: "com.agentdeck.monitor.agent-slot" })
-class AgentSlotAction extends SingletonAction<ActionSettings> {
+const isCommonSettingsUpdated = (payload: unknown): boolean =>
+  typeof payload === "object" &&
+  payload !== null &&
+  "type" in payload &&
+  payload.type === "common-settings-updated";
+
+@action({ UUID: ACTION_IDS.agentSlot })
+class AgentSlotAction extends SingletonAction<AgentSlotSettings> {
   private readonly presses = new PressGestureController<
     string,
     AgentDeletionResult | "failed"
   >(LONG_PRESS_DURATION_MS);
 
   override async onWillAppear(
-    ev: WillAppearEvent<ActionSettings>,
+    ev: WillAppearEvent<AgentSlotSettings>,
   ): Promise<void> {
     this.presses.cancel(ev.action.id);
     devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderAgent(ev.action, ev.payload.settings);
   }
   override async onDidReceiveSettings(
-    ev: DidReceiveSettingsEvent<ActionSettings>,
+    ev: DidReceiveSettingsEvent<AgentSlotSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
-    await devices.setKeyVisualTheme(
-      ev.action,
-      ev.payload.settings.keyVisualTheme,
-    );
-    await devices.setShowSubagents(
-      ev.action,
-      ev.payload.settings.showSubagents,
-    );
     await devices.renderAgent(ev.action, ev.payload.settings);
   }
-  override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
+  override async onSendToPlugin(
+    ev: SendToPluginEvent<Record<string, string>, AgentSlotSettings>,
+  ): Promise<void> {
+    if (isCommonSettingsUpdated(ev.payload))
+      await devices.reloadCommonSettings(ev.action);
+  }
+  override onWillDisappear(ev: WillDisappearEvent<AgentSlotSettings>): void {
     this.presses.cancel(ev.action.id);
     devices.forgetAction(ev.action.id);
   }
-  override onKeyDown(ev: KeyDownEvent<ActionSettings>): void {
+  override onKeyDown(ev: KeyDownEvent<AgentSlotSettings>): void {
     const agentId = devices.renderedAgentId(ev.action);
     const started = this.presses.keyDown(
       ev.action.id,
@@ -2062,7 +2296,7 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
       );
     });
   }
-  override onKeyUp(ev: KeyUpEvent<ActionSettings>): void {
+  override onKeyUp(ev: KeyUpEvent<AgentSlotSettings>): void {
     const result = this.presses.keyUp(ev.action.id);
     if (result.kind === "none") return;
     void devices.endAgentPress(ev.action).catch((error: unknown) => {
@@ -2096,139 +2330,171 @@ class AgentSlotAction extends SingletonAction<ActionSettings> {
     });
   }
   override async onDialRotate(
-    ev: DialRotateEvent<ActionSettings>,
+    ev: DialRotateEvent<AgentSlotSettings>,
   ): Promise<void> {
     await devices.changePage(ev.action, Math.sign(ev.payload.ticks));
   }
 }
 
-@action({ UUID: "com.agentdeck.monitor.agent-summary" })
-class AgentSummaryAction extends SingletonAction<ActionSettings> {
+@action({ UUID: ACTION_IDS.agentSummary })
+class AgentSummaryAction extends SingletonAction<AgentSummarySettings> {
   override async onWillAppear(
-    ev: WillAppearEvent<ActionSettings>,
+    ev: WillAppearEvent<AgentSummarySettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderAgentSummary(ev.action, ev.payload.settings);
   }
   override async onDidReceiveSettings(
-    ev: DidReceiveSettingsEvent<ActionSettings>,
+    ev: DidReceiveSettingsEvent<AgentSummarySettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
-    await devices.setKeyVisualTheme(
-      ev.action,
-      ev.payload.settings.keyVisualTheme,
-    );
-    await devices.setShowSubagents(
-      ev.action,
-      ev.payload.settings.showSubagents,
-    );
     await devices.renderAgentSummary(ev.action, ev.payload.settings);
   }
-  override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
+  override async onSendToPlugin(
+    ev: SendToPluginEvent<Record<string, string>, AgentSummarySettings>,
+  ): Promise<void> {
+    if (isCommonSettingsUpdated(ev.payload))
+      await devices.reloadCommonSettings(ev.action);
+  }
+  override onWillDisappear(ev: WillDisappearEvent<AgentSummarySettings>): void {
     devices.forgetAction(ev.action.id);
   }
-  override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
+  override async onKeyDown(
+    ev: KeyDownEvent<AgentSummarySettings>,
+  ): Promise<void> {
     await devices.refreshFor(ev.action);
   }
 }
 
-@action({ UUID: "com.agentdeck.monitor.attention" })
-class AttentionAction extends SingletonAction<ActionSettings> {
+@action({ UUID: ACTION_IDS.attention })
+class AttentionAction extends SingletonAction<EmptyActionSettings> {
   override async onWillAppear(
-    ev: WillAppearEvent<ActionSettings>,
+    ev: WillAppearEvent<EmptyActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderAttention(ev.action);
   }
-  override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
+  override onWillDisappear(ev: WillDisappearEvent<EmptyActionSettings>): void {
     devices.forgetAction(ev.action.id);
   }
   override async onDidReceiveSettings(
-    ev: DidReceiveSettingsEvent<ActionSettings>,
+    ev: DidReceiveSettingsEvent<EmptyActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
-    await devices.setKeyVisualTheme(
-      ev.action,
-      ev.payload.settings.keyVisualTheme,
-    );
-    await devices.setShowSubagents(
-      ev.action,
-      ev.payload.settings.showSubagents,
-    );
     await devices.renderAttention(ev.action);
   }
-  override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
+  override async onSendToPlugin(
+    ev: SendToPluginEvent<Record<string, string>, EmptyActionSettings>,
+  ): Promise<void> {
+    if (isCommonSettingsUpdated(ev.payload))
+      await devices.reloadCommonSettings(ev.action);
+  }
+  override async onKeyDown(
+    ev: KeyDownEvent<EmptyActionSettings>,
+  ): Promise<void> {
     await devices.changeAttention(ev.action, 1);
   }
   override async onDialRotate(
-    ev: DialRotateEvent<ActionSettings>,
+    ev: DialRotateEvent<EmptyActionSettings>,
   ): Promise<void> {
     await devices.changeAttention(ev.action, Math.sign(ev.payload.ticks));
   }
 }
 
-@action({ UUID: "com.agentdeck.monitor.provider-health" })
-class ProviderHealthAction extends SingletonAction<ActionSettings> {
+@action({ UUID: ACTION_IDS.providerHealth })
+class ProviderHealthAction extends SingletonAction<EmptyActionSettings> {
   override async onWillAppear(
-    ev: WillAppearEvent<ActionSettings>,
+    ev: WillAppearEvent<EmptyActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderProvider(ev.action);
   }
-  override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
+  override onWillDisappear(ev: WillDisappearEvent<EmptyActionSettings>): void {
     devices.forgetAction(ev.action.id);
   }
   override async onDidReceiveSettings(
-    ev: DidReceiveSettingsEvent<ActionSettings>,
+    ev: DidReceiveSettingsEvent<EmptyActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
-    await devices.setKeyVisualTheme(
-      ev.action,
-      ev.payload.settings.keyVisualTheme,
-    );
-    await devices.setShowSubagents(
-      ev.action,
-      ev.payload.settings.showSubagents,
-    );
     await devices.renderProvider(ev.action);
   }
-  override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
+  override async onSendToPlugin(
+    ev: SendToPluginEvent<Record<string, string>, EmptyActionSettings>,
+  ): Promise<void> {
+    if (isCommonSettingsUpdated(ev.payload))
+      await devices.reloadCommonSettings(ev.action);
+  }
+  override async onKeyDown(
+    ev: KeyDownEvent<EmptyActionSettings>,
+  ): Promise<void> {
     await devices.refreshFor(ev.action);
   }
 }
 
-@action({ UUID: "com.agentdeck.monitor.system-health" })
-class SystemHealthAction extends SingletonAction<ActionSettings> {
+@action({ UUID: ACTION_IDS.providerUsage })
+class ProviderUsageAction extends SingletonAction<ProviderUsageSettings> {
+  override async onWillAppear(
+    ev: WillAppearEvent<ProviderUsageSettings>,
+  ): Promise<void> {
+    devices.cancelUsageReset(ev.action.id);
+    devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.renderUsage(ev.action, ev.payload.settings);
+  }
+  override async onDidReceiveSettings(
+    ev: DidReceiveSettingsEvent<ProviderUsageSettings>,
+  ): Promise<void> {
+    devices.cancelUsageReset(ev.action.id);
+    devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.renderUsage(ev.action, ev.payload.settings);
+  }
+  override async onSendToPlugin(
+    ev: SendToPluginEvent<Record<string, string>, ProviderUsageSettings>,
+  ): Promise<void> {
+    if (isCommonSettingsUpdated(ev.payload))
+      await devices.reloadCommonSettings(ev.action);
+  }
+  override onWillDisappear(
+    ev: WillDisappearEvent<ProviderUsageSettings>,
+  ): void {
+    devices.forgetAction(ev.action.id);
+  }
+  override async onKeyDown(
+    ev: KeyDownEvent<ProviderUsageSettings>,
+  ): Promise<void> {
+    await devices.showUsageReset(ev.action, ev.payload.settings);
+  }
+}
+
+@action({ UUID: ACTION_IDS.systemHealth })
+class SystemHealthAction extends SingletonAction<EmptyActionSettings> {
   private readonly presses = new PressGestureController<true, void>(
     LONG_PRESS_DURATION_MS,
   );
 
   override async onWillAppear(
-    ev: WillAppearEvent<ActionSettings>,
+    ev: WillAppearEvent<EmptyActionSettings>,
   ): Promise<void> {
     this.presses.cancel(ev.action.id);
     devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderSystem(ev.action);
   }
-  override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
+  override onWillDisappear(ev: WillDisappearEvent<EmptyActionSettings>): void {
     this.presses.cancel(ev.action.id);
     devices.forgetAction(ev.action.id);
   }
   override async onDidReceiveSettings(
-    ev: DidReceiveSettingsEvent<ActionSettings>,
+    ev: DidReceiveSettingsEvent<EmptyActionSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
-    await devices.setKeyVisualTheme(
-      ev.action,
-      ev.payload.settings.keyVisualTheme,
-    );
-    await devices.setShowSubagents(
-      ev.action,
-      ev.payload.settings.showSubagents,
-    );
     await devices.renderSystem(ev.action);
   }
-  override onKeyDown(ev: KeyDownEvent<ActionSettings>): void {
+  override async onSendToPlugin(
+    ev: SendToPluginEvent<Record<string, string>, EmptyActionSettings>,
+  ): Promise<void> {
+    if (isCommonSettingsUpdated(ev.payload))
+      await devices.reloadCommonSettings(ev.action);
+  }
+  override onKeyDown(ev: KeyDownEvent<EmptyActionSettings>): void {
     this.presses.keyDown(ev.action.id, true, async () => {
       await devices.clearAndRefreshFor(ev.action).catch((error: unknown) => {
         streamDeck.logger.error(
@@ -2240,33 +2506,35 @@ class SystemHealthAction extends SingletonAction<ActionSettings> {
       });
     });
   }
-  override onKeyUp(ev: KeyUpEvent<ActionSettings>): void {
+  override onKeyUp(ev: KeyUpEvent<EmptyActionSettings>): void {
     this.presses.keyUp(ev.action.id);
   }
 }
 
-@action({ UUID: "com.agentdeck.monitor.new-agent" })
-class NewAgentAction extends SingletonAction<ActionSettings> {
+@action({ UUID: ACTION_IDS.newAgent })
+class NewAgentAction extends SingletonAction<NewAgentSettings> {
   override async onWillAppear(
-    ev: WillAppearEvent<ActionSettings>,
+    ev: WillAppearEvent<NewAgentSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
     await devices.renderCreation(ev.action, ev.payload.settings);
   }
   override async onDidReceiveSettings(
-    ev: DidReceiveSettingsEvent<ActionSettings>,
+    ev: DidReceiveSettingsEvent<NewAgentSettings>,
   ): Promise<void> {
     devices.rememberAction(ev.action, ev.payload.settings);
-    await devices.setKeyVisualTheme(
-      ev.action,
-      ev.payload.settings.keyVisualTheme,
-    );
     await devices.renderCreation(ev.action, ev.payload.settings);
   }
-  override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
+  override async onSendToPlugin(
+    ev: SendToPluginEvent<Record<string, string>, NewAgentSettings>,
+  ): Promise<void> {
+    if (isCommonSettingsUpdated(ev.payload))
+      await devices.reloadCommonSettings(ev.action);
+  }
+  override onWillDisappear(ev: WillDisappearEvent<NewAgentSettings>): void {
     devices.forgetAction(ev.action.id);
   }
-  override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
+  override async onKeyDown(ev: KeyDownEvent<NewAgentSettings>): Promise<void> {
     try {
       const opened = await devices.createAgent(ev.action, ev.payload.settings);
       if (opened) await ev.action.showOk();
@@ -2286,6 +2554,7 @@ streamDeck.actions.registerAction(new AgentSlotAction());
 streamDeck.actions.registerAction(new AgentSummaryAction());
 streamDeck.actions.registerAction(new AttentionAction());
 streamDeck.actions.registerAction(new ProviderHealthAction());
+streamDeck.actions.registerAction(new ProviderUsageAction());
 streamDeck.actions.registerAction(new SystemHealthAction());
 streamDeck.actions.registerAction(new NewAgentAction());
 await streamDeck.connect();

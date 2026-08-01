@@ -65,12 +65,15 @@ const harness = (
 };
 
 describe("Agent focus coordinator", () => {
-  it("maps local Cursor, Codex, and generic Cursor links centrally", async () => {
+  it("maps Cursor, Codex, Claude, and generic links centrally", async () => {
     const local = agent("cursor-local", "conversation-1", {
       workspaceRoots: ["/workspace/beta", "/workspace/alpha"],
     });
     const codex = agent("codex", "thread-1", {
       cwd: "/workspace/alpha/project",
+    });
+    const claude = agent("claude-code", "session-1", {
+      workspaceRoots: ["/workspace/alpha"],
     });
     const cloud = agent("cursor-cloud", "cloud-1", {}, [
       {
@@ -79,7 +82,7 @@ describe("Agent focus coordinator", () => {
         href: "cursor://anysphere.cursor-deeplink/background-agent?bcId=cloud-1",
       },
     ]);
-    const test = harness([local, codex, cloud]);
+    const test = harness([local, codex, claude, cloud]);
 
     await expect(test.coordinator.focusAgent(local.id)).resolves.toMatchObject({
       status: "opened",
@@ -95,6 +98,13 @@ describe("Agent focus coordinator", () => {
       kind: "codex.thread",
       threadId: "thread-1",
       cwd: "/workspace/alpha/project",
+    });
+
+    await test.coordinator.focusAgent(claude.id);
+    expect(test.focus).toHaveBeenLastCalledWith({
+      kind: "claude.session",
+      sessionId: "session-1",
+      workspaceRoots: ["/workspace/alpha"],
     });
 
     await test.coordinator.focusAgent(cloud.id);

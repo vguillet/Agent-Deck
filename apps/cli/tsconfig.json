@@ -10,6 +10,7 @@
     { "path": "../../packages/domain" },
     { "path": "../../packages/client-sdk" },
     { "path": "../core-server" },
+    { "path": "../../plugins/claude-code" },
     { "path": "../../plugins/codex" }
   ]
 }

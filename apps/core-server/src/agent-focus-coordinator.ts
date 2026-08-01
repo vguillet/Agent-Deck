@@ -46,7 +46,11 @@ export const cursorTargetKey = (target: CursorFocusTarget): string =>
     ? `${target.kind}:${target.conversationId}:${workspaceRootsKey(
         normalizedRoots(target.workspaceRoots),
       )}`
-    : `${target.kind}:${target.threadId}:${resolve(target.cwd)}`;
+    : target.kind === "codex.thread"
+      ? `${target.kind}:${target.threadId}:${resolve(target.cwd)}`
+      : `${target.kind}:${target.sessionId}:${workspaceRootsKey(
+          normalizedRoots(target.workspaceRoots),
+        )}`;
 
 const unavailable = (agentId: string, message: string): FocusOperation => ({
   kind: "unavailable",
@@ -84,11 +88,7 @@ export class AgentFocusCoordinator {
   lateOpened(target: CursorFocusTarget): void {
     const staleKey = `broker:${cursorTargetKey(target)}`;
     const desired = this.desired;
-    if (
-      !desired ||
-      desired.kind === "unavailable" ||
-      desired.key === staleKey
-    )
+    if (!desired || desired.kind === "unavailable" || desired.key === staleKey)
       return;
     this.reassert(desired);
   }
@@ -109,8 +109,7 @@ export class AgentFocusCoordinator {
     };
     if (this.active) {
       this.supersede(this.active);
-      if (this.active.operation.kind === "link")
-        this.active.controller.abort();
+      if (this.active.operation.kind === "link") this.active.controller.abort();
     }
     this.active = job;
     void this.run(job);
@@ -228,6 +227,31 @@ export class AgentFocusCoordinator {
         kind: "codex.thread",
         threadId: agent.externalId,
         cwd,
+      };
+      return {
+        kind: "broker",
+        key: `broker:${cursorTargetKey(target)}`,
+        target,
+      };
+    }
+
+    if (agent.providerId === "claude-code") {
+      const roots = agent.metadata.workspaceRoots;
+      const workspaceRoots = Array.isArray(roots)
+        ? roots.filter(
+            (root): root is string => typeof root === "string" && !!root,
+          )
+        : [];
+      const sessionId = agent.externalId.split(":agent:", 1)[0] ?? "";
+      if (!workspaceRoots.length || !sessionId)
+        return unavailable(
+          agent.id,
+          "The Claude Code session has no Cursor workspace identity",
+        );
+      const target: CursorFocusTarget = {
+        kind: "claude.session",
+        sessionId,
+        workspaceRoots,
       };
       return {
         kind: "broker",

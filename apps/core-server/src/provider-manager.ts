@@ -7,6 +7,7 @@ import type {
   Provider,
   ProviderCommand,
   ProviderHealth,
+  ProviderUsage,
 } from "@agent-deck/domain";
 import type { EventStore } from "@agent-deck/event-store";
 import type {
@@ -25,12 +26,22 @@ interface ManagedProvider {
   healthTimer?: NodeJS.Timeout;
 }
 
+interface UsageCacheEntry {
+  value: ProviderUsage;
+  fetchedAt: number;
+}
+
+const USAGE_CACHE_MS = 120_000;
+const USAGE_FORCE_THROTTLE_MS = 10_000;
+
 export class ProviderManager {
   private readonly providers: ManagedProvider[] = [];
   private readonly ingress: Array<{
     providerId: string;
     registration: ProviderIngressRegistration;
   }> = [];
+  private readonly usageCache = new Map<string, UsageCacheEntry>();
+  private readonly usageRequests = new Map<string, Promise<ProviderUsage>>();
 
   constructor(
     private readonly configurations: ProviderConfiguration[],
@@ -150,6 +161,67 @@ export class ProviderManager {
 
   async rediscover(): Promise<void> {
     await Promise.all(this.providers.map((managed) => this.discover(managed)));
+  }
+
+  async usage(
+    providerId: string,
+    forceRefresh = false,
+  ): Promise<ProviderUsage> {
+    const managed = this.providers.find(
+      (candidate) => candidate.provider.id === providerId,
+    );
+    const now = Date.now();
+    const cached = this.usageCache.get(providerId);
+    const maxAge = forceRefresh ? USAGE_FORCE_THROTTLE_MS : USAGE_CACHE_MS;
+    if (cached && now - cached.fetchedAt < maxAge) return cached.value;
+    if (!managed?.plugin.usage)
+      return {
+        providerId,
+        status: "unavailable",
+        windows: [],
+        observedAt: new Date(now).toISOString(),
+        message: "Provider usage is unavailable",
+      };
+    const pending = this.usageRequests.get(providerId);
+    if (pending) return pending;
+    const request = managed.plugin
+      .usage()
+      .then((value): ProviderUsage => {
+        const next =
+          value.status !== "available" && cached?.value.status === "available"
+            ? {
+                ...cached.value,
+                stale: true,
+                ...(value.message ? { message: value.message } : {}),
+              }
+            : value;
+        this.usageCache.set(providerId, {
+          value: next,
+          fetchedAt: Date.now(),
+        });
+        return next;
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        if (cached?.value.status === "available")
+          return {
+            ...cached.value,
+            stale: true,
+            message,
+          };
+        return {
+          providerId,
+          status: "error" as const,
+          windows: [],
+          observedAt: new Date().toISOString(),
+          message,
+        };
+      })
+      .finally(() => {
+        this.usageRequests.delete(providerId);
+      });
+    this.usageRequests.set(providerId, request);
+    return request;
   }
 
   async start(): Promise<void> {

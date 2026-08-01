@@ -7,6 +7,11 @@ import type {
   ClientDescriptor,
 } from "@agent-deck/domain";
 import {
+  claudeHookStatus,
+  installClaudeHooks,
+  uninstallClaudeHooks,
+} from "./claude-hooks.js";
+import {
   codexHookStatus,
   installCodexHooks,
   uninstallCodexHooks,
@@ -161,6 +166,18 @@ const main = async (): Promise<void> => {
         );
       return;
     }
+    case "claude-hooks": {
+      const action = args[1] ?? "status";
+      if (action === "install") console.log(await installClaudeHooks());
+      else if (action === "uninstall")
+        console.log(await uninstallClaudeHooks());
+      else if (action === "status") console.log(await claudeHookStatus());
+      else
+        throw new Error(
+          "Usage: agent-deck claude-hooks install|status|uninstall",
+        );
+      return;
+    }
     case "cursor-hooks": {
       const action = args[1] ?? "status";
       if (action === "install") console.log(await installCursorHooks());
@@ -198,6 +215,7 @@ Commands:
   agent-deck attention [--watch]
   agent-deck providers
   agent-deck health
+  agent-deck claude-hooks install|status|uninstall
   agent-deck codex-hooks install|status|uninstall
   agent-deck cursor-hooks install|status|uninstall
   agent-deck cursor-focus install|status|uninstall`);

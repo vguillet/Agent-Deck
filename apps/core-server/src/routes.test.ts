@@ -73,6 +73,15 @@ const setup = async (agents: Agent[], workspaces: Workspace[] = []) => {
   } as unknown as AgentFocusCoordinator;
   const publish = vi.fn();
   const rediscover = vi.fn(async () => {});
+  const usage = vi.fn(async (providerId: string) => ({
+    providerId,
+    status: "available" as const,
+    windows: [
+      { id: "primary", label: "5h", usedPercent: 42 },
+      { id: "secondary", label: "Week", usedPercent: 18 },
+    ],
+    observedAt: "2026-08-01T18:00:00.000Z",
+  }));
   const create = vi.fn(async () => ({
     requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     status: "opened" as const,
@@ -88,7 +97,7 @@ const setup = async (agents: Agent[], workspaces: Workspace[] = []) => {
     { publish, listPresence: () => [] } as unknown as SubscriptionBroker,
     agentFocus,
     { create, creationContext } as unknown as CursorWindowBroker,
-    { rediscover } as unknown as ProviderManager,
+    { rediscover, usage } as unknown as ProviderManager,
     workspaceColours,
   );
   await app.ready();
@@ -98,10 +107,28 @@ const setup = async (agents: Agent[], workspaces: Workspace[] = []) => {
     creationContext,
     dismissAgent,
     focusAgent,
+    usage,
     publish,
     workspaceColours,
   };
 };
+
+describe("provider usage route", () => {
+  it("returns usage and forwards forced refreshes", async () => {
+    const { app, usage } = await setup([]);
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/providers/codex/usage?refresh=true",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      providerId: "codex",
+      status: "available",
+    });
+    expect(usage).toHaveBeenCalledWith("codex", true);
+  });
+});
 
 describe("agent collection route", () => {
   it("dismisses one visible activity epoch", async () => {

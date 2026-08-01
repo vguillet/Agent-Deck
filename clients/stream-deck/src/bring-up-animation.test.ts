@@ -17,6 +17,7 @@ describe("Stream Deck bring-up animation", () => {
     expect(bringUpDelayMs({ index: 4, total: 5 })).toBe(480);
     expect(bringUpDelayMs({ index: 0, total: 1 })).toBe(0);
     expect(bringUpSequenceDurationMs(5)).toBe(1_040);
+    expect(bringUpDelayMs({ index: 0, total: 1, delayMs: 1_040 })).toBe(1_040);
   });
 
   it("clamps local progress before and after the reveal", () => {

@@ -7,6 +7,7 @@ export const CURSOR_CANCEL_CHAT_COMMAND = "composer.cancelChat";
 export const CODEX_OPEN_SIDEBAR_COMMAND = "chatgpt.openSidebar";
 export const CODEX_NEW_CHAT_COMMAND = "chatgpt.newChat";
 export const CODEX_EXTENSION_ID = "openai.chatgpt";
+export const CLAUDE_CODE_EXTENSION_ID = "anthropic.claude-code";
 export const CURSOR_NEW_AGENT_CHAT_COMMAND = "composer.newAgentChat";
 
 export interface FocusHandlerDependencies {
@@ -24,6 +25,28 @@ export const createAgentChat = async (
   providerId: AgentCreationProviderId,
   dependencies: FocusHandlerDependencies,
 ): Promise<FocusHandlerResult> => {
+  if (providerId === "claude-code") {
+    if (!dependencies.hasExtension(CLAUDE_CODE_EXTENSION_ID))
+      return {
+        status: "unavailable",
+        message:
+          "Install the Anthropic Claude Code extension to create a Claude chat.",
+      };
+    try {
+      if (
+        !(await dependencies.openExternal(
+          "cursor://anthropic.claude-code/open",
+        ))
+      )
+        throw new Error("Cursor rejected the Claude Code link");
+      return { status: "opened" };
+    } catch {
+      return {
+        status: "failed",
+        message: "Claude Code could not create a new chat.",
+      };
+    }
+  }
   const command =
     providerId === "codex"
       ? CODEX_NEW_CHAT_COMMAND
@@ -138,6 +161,48 @@ export const focusCursorConversation = async (
         status: "failed",
         message:
           "Cursor could not open this thread in the Codex sidebar. Update the OpenAI Codex extension and try again.",
+      };
+    }
+  }
+
+  if (
+    parsed.protocol === "cursor:" &&
+    parsed.hostname === "agent-deck.focus" &&
+    parsed.pathname === "/claude"
+  ) {
+    const sessionId = parsed.searchParams.get("sessionId") ?? "";
+    const workspaceRoots = parsed.searchParams.getAll("workspace");
+    if (
+      !CONVERSATION_ID.test(sessionId) ||
+      !workspaceRoots.length ||
+      workspaceRoots.some((workspace) => !isAbsolute(workspace)) ||
+      workspaceRootsKey(workspaceRoots.map((root) => resolve(root))) !==
+        workspaceRootsKey(
+          dependencies.getWorkspaceFolders().map((folder) => resolve(folder)),
+        )
+    )
+      return {
+        status: "unavailable",
+        message:
+          "This Claude Code session belongs to another Cursor window. Agent Deck left this window unchanged.",
+      };
+    if (!dependencies.hasExtension(CLAUDE_CODE_EXTENSION_ID))
+      return {
+        status: "unavailable",
+        message:
+          "Cursor cannot open this Claude Code session. Install the Anthropic Claude Code extension.",
+      };
+    const target = new URL("cursor://anthropic.claude-code/open");
+    target.searchParams.set("session", sessionId);
+    try {
+      if (!(await dependencies.openExternal(target.href)))
+        throw new Error("Cursor rejected the Claude Code session link");
+      return { status: "opened" };
+    } catch {
+      return {
+        status: "failed",
+        message:
+          "Cursor could not open this session in the Claude Code extension.",
       };
     }
   }

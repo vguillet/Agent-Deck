@@ -4,6 +4,7 @@ import type {
   ProviderEvent,
   ProviderHealth,
   ProviderSnapshot,
+  ProviderUsage,
 } from "@agent-deck/domain";
 import type { z } from "zod";
 
@@ -17,6 +18,7 @@ export interface ProviderManifest {
     discoveryMode?: "poll" | "startup";
     liveEvents: boolean;
     commands: string[];
+    usage?: boolean;
   };
 }
 
@@ -55,6 +57,7 @@ export interface AgentProviderPlugin {
   discover(): Promise<ProviderSnapshot>;
   subscribe(emit: ProviderEventEmitter): Promise<Unsubscribe>;
   execute(command: ProviderCommand): Promise<CommandResult>;
+  usage?(): Promise<ProviderUsage>;
   healthCheck(): Promise<ProviderHealth>;
   dispose(): Promise<void>;
 }
