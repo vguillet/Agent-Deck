@@ -307,7 +307,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
   async discover(): Promise<ProviderSnapshot> {
     return this.enqueue(async () => {
       const observedAt = this.context?.now() ?? new Date().toISOString();
-      const reconciled = await this.reconcileSubagentTranscripts(observedAt);
+      const reconciled = await this.reconcileTranscripts(observedAt);
       if (reconciled.changed) await this.persist();
       const agents = [...this.agents.values()].filter(
         (agent) =>
@@ -521,9 +521,6 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const provisional =
       input.hook_event_name === "sessionStart" &&
       this.conversationKinds.get(input.conversation_id) === "top_level";
-    // #region agent log
-    fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'810436'},body:JSON.stringify({sessionId:'810436',runId:'state-loss-pre-fix',hypothesisId:'S1,S2,S3',location:'plugins/cursor-local/src/index.ts:applyLifecycleEntry',message:'Resolving Cursor lifecycle hook',data:{event:input.hook_event_name,conversationSuffix:input.conversation_id.slice(-8),kind:this.conversationKinds.get(input.conversation_id),existingState:existing?.state,hasInputGeneration:Boolean(input.generation_id),inputMatchesCurrent:!input.generation_id||!currentGeneration||input.generation_id===currentGeneration,hasCurrentGeneration:Boolean(currentGeneration),hasToolUseId:Boolean(input.tool_use_id),activity:input.agent_activity,signal:input.agent_signal,hasStatus:Boolean(input.status),hasFinalStatus:Boolean(input.final_status),hasReason:Boolean(input.reason)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
 
     if (
       !startsGeneration &&
@@ -531,9 +528,6 @@ class CursorLocalProvider implements AgentProviderPlugin {
       currentGeneration &&
       input.generation_id !== currentGeneration
     ) {
-      // #region agent log
-      fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'810436'},body:JSON.stringify({sessionId:'810436',runId:'state-loss-pre-fix',hypothesisId:'S2',location:'plugins/cursor-local/src/index.ts:generationDrop',message:'Dropped lifecycle hook for non-current generation',data:{event:input.hook_event_name,conversationSuffix:input.conversation_id.slice(-8),existingState:existing?.state,terminal:input.hook_event_name==='stop'||input.hook_event_name==='sessionEnd'},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       return;
     }
 
@@ -574,9 +568,6 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const state = completesQuestionSignal
       ? "waiting_for_input"
       : agentStateForHook(input, existing?.state);
-    // #region agent log
-    fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'810436'},body:JSON.stringify({sessionId:'810436',runId:'state-loss-pre-fix',hypothesisId:'S1,S3',location:'plugins/cursor-local/src/index.ts:stateResolution',message:'Resolved lifecycle hook to displayed state',data:{event:input.hook_event_name,conversationSuffix:input.conversation_id.slice(-8),previousState:existing?.state,state,storedQuestionSignal:Boolean(signalledToolUse),toolUseMatches:Boolean(signalledToolUse&&input.tool_use_id===signalledToolUse),completesQuestionSignal,terminalMappedState:terminal?agentTerminalState(input):undefined},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     if (
       !existing &&
       (terminal || (!provisional && (state === "idle" || state === "unknown")))
@@ -718,6 +709,8 @@ class CursorLocalProvider implements AgentProviderPlugin {
     if (terminal && generation === currentGeneration)
       this.activeGenerations.delete(input.conversation_id);
     await this.persist();
+    if (input.hook_event_name === "postToolUseFailure")
+      await this.reconcileAndPublishTranscripts();
   }
 
   private async hideSubagent(conversationId: string): Promise<void> {
@@ -854,6 +847,90 @@ class CursorLocalProvider implements AgentProviderPlugin {
     return { changed, terminalAgents };
   }
 
+  private async reconcileTranscripts(
+    observedAt: string,
+  ): Promise<SubagentReconciliation> {
+    const subagents = await this.reconcileSubagentTranscripts(observedAt);
+    const topLevel = await this.reconcileTopLevelTranscripts(observedAt);
+    return {
+      changed: subagents.changed || topLevel.changed,
+      terminalAgents: [
+        ...subagents.terminalAgents,
+        ...topLevel.terminalAgents,
+      ],
+    };
+  }
+
+  private async reconcileTopLevelTranscripts(
+    observedAt: string,
+  ): Promise<SubagentReconciliation> {
+    const transcriptPaths = await this.topLevelTranscriptPaths();
+    const terminalAgents: Agent[] = [];
+    for (const agent of this.agents.values()) {
+      if (agent.kind !== "top_level" || agent.state !== "running") continue;
+      const transcript = transcriptPaths.get(agent.externalId);
+      if (!transcript) continue;
+      const terminal = await this.subagentTranscriptTerminal(transcript, true);
+      if (!terminal) continue;
+      const sourceRevision = this.nextSourceRevision(agent.externalId);
+      const state =
+        terminal.status === "error"
+          ? "failed"
+          : terminal.status === "aborted"
+            ? "cancelled"
+            : "ready_for_review";
+      const terminalAgent: Agent = {
+        ...withoutProgress(agent),
+        state,
+        requiresAttention: state === "failed" || state === "ready_for_review",
+        lastActivityAt: terminal.finishedAt || observedAt,
+        sourceRevision,
+      };
+      this.agents.set(agent.id, terminalAgent);
+      const run = agent.activeRunId
+        ? this.runs.get(agent.activeRunId)
+        : undefined;
+      if (run)
+        this.runs.set(run.id, {
+          ...run,
+          state:
+            terminal.status === "error"
+              ? "failed"
+              : terminal.status === "aborted"
+                ? "cancelled"
+                : "succeeded",
+          finishedAt: terminalAgent.lastActivityAt,
+          sourceRevision,
+        });
+      this.activeGenerations.delete(agent.externalId);
+      terminalAgents.push(terminalAgent);
+    }
+    return { changed: terminalAgents.length > 0, terminalAgents };
+  }
+
+  private async topLevelTranscriptPaths(): Promise<Map<string, string>> {
+    const paths = new Map<string, string>();
+    if (!this.transcriptsRoot) return paths;
+    try {
+      const entries = await readdir(this.transcriptsRoot, { recursive: true });
+      for (const entry of entries) {
+        const normalized = entry.replaceAll("\\", "/");
+        if (
+          !normalized.endsWith(".jsonl") ||
+          normalized.includes("/subagents/")
+        )
+          continue;
+        const segments = normalized.split("/");
+        const conversationId = basename(normalized, ".jsonl");
+        if (segments.at(-2) !== conversationId) continue;
+        paths.set(conversationId, resolve(this.transcriptsRoot, entry));
+      }
+    } catch {
+      return paths;
+    }
+    return paths;
+  }
+
   private async finishSubagentFromTranscript(
     agent: Agent,
     observedAt: string,
@@ -872,7 +949,12 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const finishedAt = terminal.finishedAt || observedAt;
     const terminalAgent: Agent = {
       ...withoutProgress(agent),
-      state: terminal.status === "error" ? "failed" : "ready_for_review",
+      state:
+        terminal.status === "error"
+          ? "failed"
+          : terminal.status === "aborted"
+            ? "cancelled"
+            : "ready_for_review",
       requiresAttention: false,
       lastActivityAt: finishedAt,
       sourceRevision,
@@ -884,7 +966,12 @@ class CursorLocalProvider implements AgentProviderPlugin {
     if (run)
       this.runs.set(run.id, {
         ...run,
-        state: terminal.status === "error" ? "failed" : "succeeded",
+        state:
+          terminal.status === "error"
+            ? "failed"
+            : terminal.status === "aborted"
+              ? "cancelled"
+              : "succeeded",
         finishedAt,
         sourceRevision,
       });
@@ -893,9 +980,9 @@ class CursorLocalProvider implements AgentProviderPlugin {
     return terminalAgent;
   }
 
-  private async reconcileAndPublishSubagentTranscripts(): Promise<void> {
+  private async reconcileAndPublishTranscripts(): Promise<void> {
     const observedAt = this.context?.now() ?? new Date().toISOString();
-    const reconciliation = await this.reconcileSubagentTranscripts(observedAt);
+    const reconciliation = await this.reconcileTranscripts(observedAt);
     if (reconciliation.changed) await this.persist();
     for (const agent of reconciliation.terminalAgents)
       await this.emitEvent({
@@ -929,7 +1016,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
         this.stopSubagentTranscriptTracking(conversationId);
       });
       this.subagentTranscriptWatchers.set(conversationId, watcher);
-      await this.reconcileAndPublishSubagentTranscripts();
+      await this.reconcileAndPublishTranscripts();
     } catch {
       this.scheduleSubagentTranscriptRetry(conversationId);
     }
@@ -959,7 +1046,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
     if (current) clearTimeout(current);
     const timer = setTimeout(() => {
       this.subagentTranscriptDebounceTimers.delete(conversationId);
-      void this.enqueue(() => this.reconcileAndPublishSubagentTranscripts());
+      void this.enqueue(() => this.reconcileAndPublishTranscripts());
     }, 25);
     timer.unref();
     this.subagentTranscriptDebounceTimers.set(conversationId, timer);
@@ -1055,7 +1142,14 @@ class CursorLocalProvider implements AgentProviderPlugin {
 
   private async subagentTranscriptTerminal(
     path: string,
-  ): Promise<{ status: "success" | "error"; finishedAt: string } | undefined> {
+    latestOnly = false,
+  ): Promise<
+    | {
+        status: "success" | "error" | "aborted";
+        finishedAt: string;
+      }
+    | undefined
+  > {
     let file: Awaited<ReturnType<typeof open>> | undefined;
     try {
       const details = await stat(path);
@@ -1073,12 +1167,16 @@ class CursorLocalProvider implements AgentProviderPlugin {
           };
           if (
             record.type === "turn_ended" &&
-            (record.status === "success" || record.status === "error")
-          )
+            (record.status === "success" ||
+              record.status === "error" ||
+              record.status === "aborted")
+          ) {
             return {
               status: record.status,
               finishedAt: details.mtime.toISOString(),
             };
+          }
+          if (latestOnly) return undefined;
         } catch {
           // A partial first line is expected when reading only the file tail.
         }

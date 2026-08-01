@@ -71,8 +71,8 @@ import {
 } from "./agent-state-indicator.js";
 import {
   agentWorkspaceBadgeSvg,
-  workspaceBadgeSvg,
   workspaceBadgesNeeded,
+  workspaceColour,
 } from "./workspace-badge.js";
 import { ActionOutputWriter } from "./action-output-writer.js";
 import { subagentBackgroundSvg } from "./subagent-background.js";
@@ -543,7 +543,7 @@ const emptyAgentIcon = (
 
 const newAgentIcon = (
   providerId: string,
-  workspaceBadge: string,
+  workspaceAccent: string,
   muted = false,
 ): string => {
   return `data:image/svg+xml,${encodeURIComponent(
@@ -553,9 +553,8 @@ const newAgentIcon = (
         <g transform="translate(50 45) scale(1.55) translate(-118.5 -118.5)">${providerLogo(providerId)}</g>
         <circle cx="72" cy="51" r="20" fill="white" stroke="#172033" stroke-width="3"/>
         <path d="M40 127c3-32 14-49 32-49s29 17 32 49z" fill="white" stroke="#172033" stroke-width="3" stroke-linejoin="round"/>
-        <g transform="translate(-50 51)">${workspaceBadge}</g>
-        <circle cx="116" cy="27" r="18" fill="none" stroke="white" stroke-width="3"/>
-        <path d="M112 15h9v8h8v9h-8v8h-9v-8h-8v-9h8z" fill="white"/>`,
+        <circle cx="116" cy="27" r="18" fill="none" stroke="${workspaceAccent}" stroke-width="3"/>
+        <path d="M112 15h9v8h8v9h-8v8h-9v-8h-8v-9h8z" fill="${workspaceAccent}"/>`,
         muted,
       )}
     </svg>`,
@@ -1051,18 +1050,18 @@ class DeviceManager {
     const workspace = roots?.length
       ? workspaceResourcesForRoots(providerId, roots).workspace
       : undefined;
-    const badge = workspace
-      ? workspaceBadgeSvg(workspace, [
+    const workspaceAccent = workspace
+      ? workspaceColour(workspace.id, [
           ...session.visibleWorkspaceIds,
           workspace.id,
         ])
-      : "";
+      : "white";
     if (actionContext.isKey() || actionContext.isDial())
       await this.outputWriter.write(actionContext, {
         title: "",
         image: newAgentIcon(
           providerId,
-          badge,
+          workspaceAccent,
           session.connectionStatus !== "connected",
         ),
       });

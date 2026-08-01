@@ -413,6 +413,7 @@ describe("Cursor local provider", () => {
   it.each([
     ["success", "ready_for_review"],
     ["error", "failed"],
+    ["aborted", "cancelled"],
   ] as const)(
     "reconciles a completed subagent transcript with %s status",
     async (status, expectedState) => {
@@ -487,6 +488,68 @@ describe("Cursor local provider", () => {
         ),
       ).toBe(true);
     });
+    await harness.close();
+  });
+
+  it("reconciles a top-level crash when Cursor omits the stop hook", async () => {
+    const transcriptsRoot = await mkdtemp(
+      resolve(tmpdir(), "agent-deck-top-level-terminal-"),
+    );
+    const conversationDirectory = resolve(
+      transcriptsRoot,
+      "workspace",
+      "agent-transcripts",
+      "conversation-crash",
+    );
+    await mkdir(conversationDirectory, { recursive: true });
+    await writeFile(
+      resolve(conversationDirectory, "conversation-crash.jsonl"),
+      `${JSON.stringify({
+        type: "turn_ended",
+        status: "error",
+        error: "[invalid_argument] Error",
+      })}\n`,
+    );
+    const harness = await setup(undefined, { transcriptsRoot });
+    await harness.handle({
+      hook_event_name: "beforeSubmitPrompt",
+      conversation_id: "conversation-crash",
+      generation_id: "generation-crash",
+      workspace_roots: ["/workspace/alpha"],
+    });
+
+    expect((await harness.plugin.discover()).agents[0]).toMatchObject({
+      externalId: "conversation-crash",
+      state: "failed",
+      requiresAttention: true,
+    });
+    await harness.close();
+  });
+
+  it("does not reuse a prior top-level terminal record for a new turn", async () => {
+    const transcriptsRoot = await mkdtemp(
+      resolve(tmpdir(), "agent-deck-top-level-active-"),
+    );
+    const conversationDirectory = resolve(
+      transcriptsRoot,
+      "workspace",
+      "agent-transcripts",
+      "conversation-active",
+    );
+    await mkdir(conversationDirectory, { recursive: true });
+    await writeFile(
+      resolve(conversationDirectory, "conversation-active.jsonl"),
+      `${JSON.stringify({ type: "turn_ended", status: "error" })}\n${JSON.stringify({ role: "user" })}\n`,
+    );
+    const harness = await setup(undefined, { transcriptsRoot });
+    await harness.handle({
+      hook_event_name: "beforeSubmitPrompt",
+      conversation_id: "conversation-active",
+      generation_id: "generation-active",
+      workspace_roots: ["/workspace/alpha"],
+    });
+
+    expect((await harness.plugin.discover()).agents[0]?.state).toBe("running");
     await harness.close();
   });
 
