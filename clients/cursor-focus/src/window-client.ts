@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import {
   CursorWindowServerFrameSchema,
+  type AgentCreationIntentFrame,
+  type AgentCreationProviderId,
   type CompatibleCursorFocusIntentFrame,
   type CursorFocusTarget,
 } from "@agent-deck/api-contract";
@@ -30,12 +32,18 @@ export interface CursorWindowClientDependencies {
   executeTarget(
     target: CursorFocusTarget,
   ): Promise<CursorTargetExecutionResult>;
+  createAgent(
+    providerId: AgentCreationProviderId,
+  ): Promise<CursorTargetExecutionResult>;
   random(): number;
   log(message: string, error?: unknown): void;
 }
 
 export type CursorTargetExecutionResult =
   { status: "opened" } | { status: "unavailable" | "failed"; message: string };
+
+type CursorWindowIntent =
+  CompatibleCursorFocusIntentFrame | AgentCreationIntentFrame;
 
 const normalizedSnapshot = (
   snapshot: CursorWindowSnapshot,
@@ -54,8 +62,8 @@ export class CursorWindowClient {
   private socket: FocusSocket | undefined;
   private reconnectTimer: NodeJS.Timeout | undefined;
   private retryMs = 250;
-  private pendingIntent: CompatibleCursorFocusIntentFrame | undefined;
-  private executingIntent: CompatibleCursorFocusIntentFrame | undefined;
+  private pendingIntent: CursorWindowIntent | undefined;
+  private executingIntent: CursorWindowIntent | undefined;
   private readonly cancelledExecutions = new Set<string>();
   private executing = false;
   private disposed = false;
@@ -149,7 +157,10 @@ export class CursorWindowClient {
       }
       const parsed = CursorWindowServerFrameSchema.safeParse(value);
       if (!parsed.success) return;
-      if (parsed.data.type === "focus.cancel") {
+      if (
+        parsed.data.type === "focus.cancel" ||
+        parsed.data.type === "creation.cancel"
+      ) {
         if (this.pendingIntent?.requestId === parsed.data.requestId)
           this.pendingIntent = undefined;
         if (this.executingIntent?.requestId === parsed.data.requestId)
@@ -214,17 +225,21 @@ export class CursorWindowClient {
         const snapshot = normalizedSnapshot(
           this.dependencies.getWindowSnapshot(),
         );
-        const target: CursorFocusTarget =
-          "target" in intent
-            ? intent.target
-            : {
-                kind: "cursor.conversation",
-                conversationId: intent.conversationId,
-                workspaceRoots: snapshot.workspaceRoots,
-              };
         let result: CursorTargetExecutionResult;
         try {
-          result = await this.dependencies.executeTarget(target);
+          if (intent.type === "creation.intent")
+            result = await this.dependencies.createAgent(intent.providerId);
+          else {
+            const target: CursorFocusTarget =
+              "target" in intent
+                ? intent.target
+                : {
+                    kind: "cursor.conversation",
+                    conversationId: intent.conversationId,
+                    workspaceRoots: snapshot.workspaceRoots,
+                  };
+            result = await this.dependencies.executeTarget(target);
+          }
         } catch (error) {
           result = {
             status: "failed",
@@ -232,7 +247,10 @@ export class CursorWindowClient {
           };
         }
         this.send({
-          type: "focus.result",
+          type:
+            intent.type === "creation.intent"
+              ? "creation.result"
+              : "focus.result",
           requestId: intent.requestId,
           status: result.status,
           ...("message" in result ? { message: result.message } : {}),
@@ -263,6 +281,7 @@ export class CursorWindowClient {
         version: this.version,
         focusProtocolVersion: 2,
         focusKinds: ["cursor.conversation", "codex.thread"],
+        creationProviderIds: ["cursor-local", "codex"],
       })
     )
       return;

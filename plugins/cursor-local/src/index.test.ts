@@ -64,6 +64,49 @@ const setup = async (
 };
 
 describe("Cursor local provider", () => {
+  it("publishes a provisional top-level agent before it does work", async () => {
+    const harness = await setup();
+    await harness.handle({
+      hook_event_name: "sessionStart",
+      conversation_id: "conversation-created",
+      conversation_kind: "top_level",
+      workspace_roots: ["/workspace/alpha"],
+    });
+
+    const created = harness.events.at(-1);
+    expect(created?.type).toBe("agent.upserted");
+    expect(created?.runId).toBeUndefined();
+    expect(created?.payload.agent).toMatchObject({
+      externalId: "conversation-created",
+      kind: "top_level",
+      state: "idle",
+      metadata: {
+        lifecycle: "provisional",
+        workspaceRoots: ["/workspace/alpha"],
+      },
+    });
+
+    await harness.handle({
+      hook_event_name: "beforeSubmitPrompt",
+      conversation_id: "conversation-created",
+      generation_id: "generation-created",
+      conversation_kind: "top_level",
+      workspace_roots: ["/workspace/alpha"],
+    });
+    expect(
+      harness.events.filter((event) => event.payload.agent).at(-1)?.payload
+        .agent,
+    ).toMatchObject({
+      state: "running",
+      activityEpoch: "generation-created",
+    });
+    expect(
+      harness.events.filter((event) => event.payload.agent).at(-1)?.payload
+        .agent,
+    ).not.toHaveProperty("metadata.lifecycle");
+    await harness.close();
+  });
+
   it("maps turns to stable agents and runs without retaining sensitive data", async () => {
     const harness = await setup();
     await harness.handle({
@@ -526,6 +569,75 @@ describe("Cursor local provider", () => {
       state: "running",
       requiresAttention: false,
     });
+    await harness.close();
+  });
+
+  it("merges a transcript conversation ID into its canonical subagent", async () => {
+    const transcriptsRoot = await mkdtemp(
+      resolve(tmpdir(), "agent-deck-subagent-alias-"),
+    );
+    const subagents = resolve(
+      transcriptsRoot,
+      "workspace",
+      "agent-transcripts",
+      "conversation-parent",
+      "subagents",
+    );
+    await mkdir(subagents, { recursive: true });
+    await writeFile(
+      resolve(subagents, "conversation-transcript.jsonl"),
+      `${JSON.stringify({ role: "user", message: "working" })}\n`,
+    );
+    const harness = await setup(undefined, { transcriptsRoot });
+    await harness.handle({
+      hook_event_name: "sessionStart",
+      conversation_id: "conversation-transcript",
+      conversation_kind: "top_level",
+      workspace_roots: ["/workspace/alpha"],
+    });
+    await harness.handle({
+      hook_event_name: "beforeSubmitPrompt",
+      conversation_id: "conversation-transcript",
+      conversation_kind: "top_level",
+      generation_id: "generation-child",
+      workspace_roots: ["/workspace/alpha"],
+    });
+    await harness.handle({
+      hook_event_name: "subagentStart",
+      subagent_id: "tool-call-child",
+      parent_conversation_id: "conversation-parent",
+      workspace_roots: ["/workspace/alpha"],
+    });
+
+    expect((await harness.plugin.discover()).agents).toEqual([
+      expect.objectContaining({
+        externalId: "tool-call-child",
+        kind: "subagent",
+        parentAgentId: canonicalId("cursor-local", "conversation-parent"),
+        state: "running",
+      }),
+    ]);
+    expect(harness.events).toContainEqual(
+      expect.objectContaining({
+        type: "agent.removed",
+        agentId: canonicalId("cursor-local", "conversation-transcript"),
+      }),
+    );
+
+    await harness.handle({
+      hook_event_name: "stop",
+      conversation_id: "conversation-transcript",
+      conversation_kind: "top_level",
+      generation_id: "generation-child",
+      workspace_roots: ["/workspace/alpha"],
+    });
+    expect((await harness.plugin.discover()).agents).toEqual([
+      expect.objectContaining({
+        externalId: "tool-call-child",
+        kind: "subagent",
+        state: "ready_for_review",
+      }),
+    ]);
     await harness.close();
   });
 

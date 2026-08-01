@@ -1,10 +1,13 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { workspaceRootsKey } from "@agent-deck/api-contract";
+import type { AgentCreationProviderId } from "@agent-deck/api-contract";
 
 export const CURSOR_OPEN_COMPOSER_COMMAND = "composer.openComposer";
 export const CURSOR_CANCEL_CHAT_COMMAND = "composer.cancelChat";
 export const CODEX_OPEN_SIDEBAR_COMMAND = "chatgpt.openSidebar";
+export const CODEX_NEW_CHAT_COMMAND = "chatgpt.newChat";
 export const CODEX_EXTENSION_ID = "openai.chatgpt";
+export const CURSOR_NEW_AGENT_CHAT_COMMAND = "composer.newAgentChat";
 
 export interface FocusHandlerDependencies {
   getWorkspaceFolders(): string[];
@@ -16,6 +19,48 @@ export interface FocusHandlerDependencies {
 
 export type FocusHandlerResult =
   { status: "opened" } | { status: "unavailable" | "failed"; message: string };
+
+export const createAgentChat = async (
+  providerId: AgentCreationProviderId,
+  dependencies: FocusHandlerDependencies,
+): Promise<FocusHandlerResult> => {
+  const command =
+    providerId === "codex"
+      ? CODEX_NEW_CHAT_COMMAND
+      : CURSOR_NEW_AGENT_CHAT_COMMAND;
+  if (providerId === "codex" && !dependencies.hasExtension(CODEX_EXTENSION_ID))
+    return {
+      status: "unavailable",
+      message: "Install the OpenAI Codex extension to create a Codex chat.",
+    };
+
+  let commands: string[];
+  try {
+    commands = await dependencies.getCommands(true);
+  } catch {
+    commands = [];
+  }
+  if (!commands.includes(command))
+    return {
+      status: "unavailable",
+      message:
+        providerId === "codex"
+          ? "The OpenAI Codex extension cannot create a new chat. Update it and try again."
+          : "This Cursor version cannot create a new Agent chat. Update Cursor and try again.",
+    };
+  try {
+    await dependencies.executeCommand(command);
+    return { status: "opened" };
+  } catch {
+    return {
+      status: "failed",
+      message:
+        providerId === "codex"
+          ? "Codex could not create a new chat."
+          : "Cursor could not create a new Agent chat.",
+    };
+  }
+};
 
 const CONVERSATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 

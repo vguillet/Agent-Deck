@@ -76,6 +76,7 @@ Cursor IDE conversations and Codex threads:
 node apps/cli/dist/index.js cursor-focus install
 ```
 
+Reload open Cursor windows after installing or upgrading the extension.
 The extension receives only the native conversation or thread ID and workspace
 identity. Agent Deck selects one exact Cursor window: local Cursor
 conversations require equal normalized root sets, while Codex chooses the
@@ -110,6 +111,12 @@ accents distinguish agent types while the key's main colour reflects lifecycle
 state. Each Agent Slot can keep that Classic look or opt into animated Agent
 characters rendered as flat white silhouettes, with stable variants for idle,
 working, input, approval, review, failed, cancelled, and unknown states.
+The configurable New Agent action opens a blank Cursor Agent or Codex chat in
+the uniquely focused, connected Cursor workspace. Cursor creation requires a
+version that exposes `composer.newAgentChat`; Codex creation requires the
+OpenAI extension command `chatgpt.newChat`. Missing, unsupported, or ambiguous
+focused windows fail safely and alert on the key. A blank chat appears in Agent
+Deck only after its first prompt produces a lifecycle hook event.
 Working variants use energetic tool and writing loops; review variants jump and
 present their finished work. Empty character-mode slots use the same restful
 idle scenes. A single press latches the agent currently rendered on key-down,

@@ -5,6 +5,7 @@ import type { EventStore } from "@agent-deck/event-store";
 import type { AgentFocusCoordinator } from "./agent-focus-coordinator.js";
 import type { SubscriptionBroker } from "./broker.js";
 import type { ProviderManager } from "./provider-manager.js";
+import type { CursorWindowBroker } from "./cursor-window-broker.js";
 import { registerApiRoutes } from "./routes.js";
 
 const apps: FastifyInstance[] = [];
@@ -70,15 +71,31 @@ const setup = async (agents: Agent[]) => {
   } as unknown as AgentFocusCoordinator;
   const publish = vi.fn();
   const rediscover = vi.fn(async () => {});
+  const create = vi.fn(async () => ({
+    requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    status: "opened" as const,
+  }));
+  const creationContext = vi.fn(() => ({
+    status: "available" as const,
+    workspaceRoots: ["/workspace/alpha"],
+  }));
   registerApiRoutes(
     app,
     store,
     { publish, listPresence: () => [] } as unknown as SubscriptionBroker,
     agentFocus,
+    { create, creationContext } as unknown as CursorWindowBroker,
     { rediscover } as unknown as ProviderManager,
   );
   await app.ready();
-  return { app, dismissAgent, focusAgent, publish };
+  return {
+    app,
+    create,
+    creationContext,
+    dismissAgent,
+    focusAgent,
+    publish,
+  };
 };
 
 describe("agent collection route", () => {
@@ -128,5 +145,39 @@ describe("agent focus route", () => {
       url: "/api/v1/agents/missing%3Aagent/focus",
     });
     expect(missing.statusCode).toBe(404);
+  });
+});
+
+describe("agent creation route", () => {
+  it("validates the provider and delegates creation", async () => {
+    const test = await setup([]);
+    const response = await test.app.inject({
+      method: "POST",
+      url: "/api/v1/agents/create",
+      payload: { providerId: "codex" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(test.create).toHaveBeenCalledWith("codex");
+
+    const invalid = await test.app.inject({
+      method: "POST",
+      url: "/api/v1/agents/create",
+      payload: { providerId: "unknown" },
+    });
+    expect(invalid.statusCode).toBe(400);
+  });
+
+  it("returns the focused workspace creation context", async () => {
+    const test = await setup([]);
+    const response = await test.app.inject({
+      method: "GET",
+      url: "/api/v1/agents/create/context",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      status: "available",
+      workspaceRoots: ["/workspace/alpha"],
+    });
+    expect(test.creationContext).toHaveBeenCalledOnce();
   });
 });

@@ -57,7 +57,14 @@ export const buildServer = async (
   );
   await providerManager.initialise();
   providerManager.registerIngressRoutes();
-  registerApiRoutes(app, store, broker, agentFocus, providerManager);
+  registerApiRoutes(
+    app,
+    store,
+    broker,
+    agentFocus,
+    cursorWindows,
+    providerManager,
+  );
 
   app.get("/internal/cursor-focus", { websocket: true }, (socket) => {
     const connectionId = cursorWindows.add(socket);
@@ -202,9 +209,7 @@ export const buildServer = async (
     )) {
       broker.publish(event);
     }
-    store.pruneEvents(
-      new Date(now.getTime() - 60 * 60_000).toISOString(),
-    );
+    store.pruneEvents(new Date(now.getTime() - 60 * 60_000).toISOString());
   };
   runMaintenance();
   const maintenance = setInterval(runMaintenance, 60_000);

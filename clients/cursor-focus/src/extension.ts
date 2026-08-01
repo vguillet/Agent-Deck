@@ -1,7 +1,7 @@
 import type { CursorFocusTarget } from "@agent-deck/api-contract";
 import * as vscode from "vscode";
 import WebSocket from "ws";
-import { focusCursorConversation } from "./focus-handler.js";
+import { createAgentChat, focusCursorConversation } from "./focus-handler.js";
 import {
   CursorWindowClient,
   type CursorWindowSnapshot,
@@ -73,6 +73,8 @@ export const activate = (context: vscode.ExtensionContext): void => {
       createSocket: (url) => new WebSocket(url),
       executeTarget: (target) =>
         focusCursorConversation(targetUri(target), focusDependencies()),
+      createAgent: (providerId) =>
+        createAgentChat(providerId, focusDependencies()),
       random: Math.random,
       log: (message, error) => {
         if (error === undefined) console.warn(`[Agent Deck] ${message}`);

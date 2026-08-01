@@ -97,13 +97,7 @@ export const AttentionSchema = z.object({
   providerId: z.string(),
   agentId: z.string().optional(),
   runId: z.string().optional(),
-  type: z.enum([
-    "input",
-    "approval",
-    "review",
-    "failure",
-    "provider_health",
-  ]),
+  type: z.enum(["input", "approval", "review", "failure", "provider_health"]),
   severity: z.enum(["info", "warning", "critical"]),
   summary: z.string(),
   actions: z.array(z.string()),
@@ -227,6 +221,8 @@ export const CursorFocusTargetKindSchema = z.enum([
   "codex.thread",
 ]);
 
+export const AgentCreationProviderIdSchema = z.enum(["cursor-local", "codex"]);
+
 export const CursorWindowRegistrationSchema = z.object({
   type: z.literal("window.register"),
   windowInstanceId: z.string().uuid(),
@@ -239,6 +235,11 @@ export const CursorWindowRegistrationSchema = z.object({
     .array(CursorFocusTargetKindSchema)
     .min(1)
     .max(CursorFocusTargetKindSchema.options.length)
+    .optional(),
+  creationProviderIds: z
+    .array(AgentCreationProviderIdSchema)
+    .min(1)
+    .max(AgentCreationProviderIdSchema.options.length)
     .optional(),
 });
 
@@ -291,6 +292,24 @@ export const CursorFocusCancelFrameSchema = z.object({
   requestId: z.string().uuid(),
 });
 
+export const AgentCreationIntentFrameSchema = z.object({
+  type: z.literal("creation.intent"),
+  requestId: z.string().uuid(),
+  providerId: AgentCreationProviderIdSchema,
+});
+
+export const AgentCreationCancelFrameSchema = z.object({
+  type: z.literal("creation.cancel"),
+  requestId: z.string().uuid(),
+});
+
+export const AgentCreationResultFrameSchema = z.object({
+  type: z.literal("creation.result"),
+  requestId: z.string().uuid(),
+  status: CursorFocusResultStatusSchema,
+  message: z.string().optional(),
+});
+
 export const LegacyCursorFocusIntentFrameSchema = z.object({
   type: z.literal("focus.intent"),
   requestId: z.string().uuid(),
@@ -305,17 +324,32 @@ export const CompatibleCursorFocusIntentFrameSchema = z.union([
 export const CursorWindowServerFrameSchema = z.union([
   CompatibleCursorFocusIntentFrameSchema,
   CursorFocusCancelFrameSchema,
+  AgentCreationIntentFrameSchema,
+  AgentCreationCancelFrameSchema,
 ]);
 
 export const CursorWindowClientFrameSchema = z.discriminatedUnion("type", [
   CursorWindowRegistrationSchema,
   CursorWindowStateSchema,
   CursorFocusResultFrameSchema,
+  AgentCreationResultFrameSchema,
 ]);
 
 export const CursorFocusResponseSchema = z.object({
   requestId: z.string().uuid(),
   status: CursorFocusResultStatusSchema,
+  message: z.string().optional(),
+});
+
+export const AgentCreationRequestSchema = z.object({
+  providerId: AgentCreationProviderIdSchema,
+});
+
+export const AgentCreationResponseSchema = CursorFocusResponseSchema;
+
+export const AgentCreationContextSchema = z.object({
+  status: z.enum(["available", "unavailable", "ambiguous"]),
+  workspaceRoots: z.array(z.string().min(1)).optional(),
   message: z.string().optional(),
 });
 
@@ -366,6 +400,11 @@ export type CursorWindowRegistration = z.infer<
   typeof CursorWindowRegistrationSchema
 >;
 export type CursorFocusResult = z.infer<typeof CursorFocusResponseSchema>;
+export type AgentCreationProviderId = z.infer<
+  typeof AgentCreationProviderIdSchema
+>;
+export type AgentCreationResult = z.infer<typeof AgentCreationResponseSchema>;
+export type AgentCreationContext = z.infer<typeof AgentCreationContextSchema>;
 export type CursorFocusTarget = z.infer<typeof CursorFocusTargetSchema>;
 export type CursorFocusTargetKind = z.infer<typeof CursorFocusTargetKindSchema>;
 export type CursorFocusIntentFrame = z.infer<
@@ -376,6 +415,12 @@ export type CompatibleCursorFocusIntentFrame = z.infer<
 >;
 export type CursorFocusCancelFrame = z.infer<
   typeof CursorFocusCancelFrameSchema
+>;
+export type AgentCreationIntentFrame = z.infer<
+  typeof AgentCreationIntentFrameSchema
+>;
+export type AgentCreationCancelFrame = z.infer<
+  typeof AgentCreationCancelFrameSchema
 >;
 export type CursorWindowServerFrame = z.infer<
   typeof CursorWindowServerFrameSchema

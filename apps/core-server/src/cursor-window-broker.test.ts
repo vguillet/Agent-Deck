@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
 import type {
+  AgentCreationProviderId,
   CursorFocusTarget,
   CursorFocusTargetKind,
 } from "@agent-deck/api-contract";
@@ -56,6 +57,7 @@ const register = (
     focused?: boolean;
     focusProtocolVersion?: 2;
     focusKinds?: CursorFocusTargetKind[] | null;
+    creationProviderIds?: AgentCreationProviderId[];
     instanceId?: string;
     launchTarget?: string;
     version?: string;
@@ -86,6 +88,9 @@ const register = (
               "codex.thread",
             ],
           }),
+      ...(options.creationProviderIds
+        ? { creationProviderIds: options.creationProviderIds }
+        : {}),
     }),
   ).toBe(true);
   return connectionId;
@@ -119,6 +124,72 @@ afterEach(() => {
 });
 
 describe("Cursor window broker", () => {
+  it("creates an agent in the uniquely focused compatible window", async () => {
+    const activate = vi.fn(async () => undefined);
+    const broker = new CursorWindowBroker(activate);
+    register(broker, new FakeSocket(), ["/workspace/background"], {
+      focused: false,
+      creationProviderIds: ["cursor-local", "codex"],
+    });
+    const socket = new FakeSocket();
+    const connectionId = register(broker, socket, ["/workspace/alpha"], {
+      focused: true,
+      creationProviderIds: ["cursor-local", "codex"],
+      launchTarget: "/workspace/alpha",
+    });
+
+    const resultPromise = broker.create("codex");
+    const intent = await latestIntent(socket);
+    expect(JSON.parse(socket.sent[0]!)).toMatchObject({
+      type: "creation.intent",
+      providerId: "codex",
+    });
+    broker.handle(connectionId, {
+      type: "creation.result",
+      requestId: intent.requestId,
+      status: "opened",
+    });
+    await expect(resultPromise).resolves.toMatchObject({ status: "opened" });
+    expect(activate).toHaveBeenCalledWith("/workspace/alpha");
+  });
+
+  it("rejects creation without one focused compatible window", async () => {
+    const broker = new CursorWindowBroker(vi.fn(async () => undefined));
+    await expect(broker.create("codex")).resolves.toMatchObject({
+      status: "unavailable",
+    });
+    register(broker, new FakeSocket(), ["/workspace/alpha"], {
+      creationProviderIds: ["cursor-local"],
+    });
+    await expect(broker.create("codex")).resolves.toMatchObject({
+      status: "unavailable",
+    });
+    register(broker, new FakeSocket(), ["/workspace/beta"], {
+      creationProviderIds: ["codex"],
+    });
+    await expect(broker.create("codex")).resolves.toMatchObject({
+      status: "ambiguous",
+    });
+  });
+
+  it("reports the uniquely focused workspace for creation previews", () => {
+    const broker = new CursorWindowBroker(vi.fn(async () => undefined));
+    expect(broker.creationContext()).toMatchObject({ status: "unavailable" });
+    register(broker, new FakeSocket(), ["/workspace/alpha"], {
+      focused: false,
+    });
+    register(
+      broker,
+      new FakeSocket(),
+      ["/workspace/beta", "/workspace/shared"],
+      { focused: true },
+    );
+    expect(broker.creationContext()).toEqual({
+      status: "available",
+      workspaceRoots: ["/workspace/beta", "/workspace/shared"],
+    });
+  });
+
   it("activates the exact window even when focused and awaits acknowledgement", async () => {
     const activate = vi.fn(async () => undefined);
     const broker = new CursorWindowBroker(activate);
@@ -323,9 +394,14 @@ describe("Cursor window broker", () => {
     const lateOpened = vi.fn();
     broker.onLateOpened(lateOpened);
     const alphaSocket = new FakeSocket();
-    const alphaConnection = register(broker, alphaSocket, ["/workspace/alpha"], {
-      focusProtocolVersion: 2,
-    });
+    const alphaConnection = register(
+      broker,
+      alphaSocket,
+      ["/workspace/alpha"],
+      {
+        focusProtocolVersion: 2,
+      },
+    );
     const betaSocket = new FakeSocket();
     const betaConnection = register(broker, betaSocket, ["/workspace/beta"], {
       focusProtocolVersion: 2,
@@ -369,9 +445,7 @@ describe("Cursor window broker", () => {
     const replacement = broker.focus(cursorTarget("conversation-2"));
     await expect(first).resolves.toMatchObject({ status: "superseded" });
     expect(
-      socket.sent.map(
-        (frame) => (JSON.parse(frame) as { type: string }).type,
-      ),
+      socket.sent.map((frame) => (JSON.parse(frame) as { type: string }).type),
     ).toEqual(["focus.intent", "focus.intent"]);
     const replacementIntent = JSON.parse(socket.sent[1]!) as {
       requestId: string;

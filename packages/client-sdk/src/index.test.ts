@@ -113,6 +113,49 @@ describe("AgentDeckClient focus", () => {
   });
 });
 
+describe("AgentDeckClient creation", () => {
+  it("requests a new chat for the selected provider", async () => {
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        status: "opened",
+      }),
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      new AgentDeckClient().createAgent("codex"),
+    ).resolves.toMatchObject({ status: "opened" });
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:47831/api/v1/agents/create",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ providerId: "codex" }),
+      },
+    );
+  });
+
+  it("loads the focused workspace creation context", async () => {
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        status: "available",
+        workspaceRoots: ["/workspace/alpha"],
+      }),
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      new AgentDeckClient().getAgentCreationContext(),
+    ).resolves.toMatchObject({ workspaceRoots: ["/workspace/alpha"] });
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:47831/api/v1/agents/create/context",
+    );
+  });
+});
+
 describe("AgentDeckClient dismissTerminalAgents", () => {
   it("dismisses terminal activity epochs", async () => {
     const fetch = vi.fn(async () => ({

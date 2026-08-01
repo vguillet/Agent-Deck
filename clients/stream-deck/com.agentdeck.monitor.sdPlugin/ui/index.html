@@ -91,6 +91,13 @@
         <option value="">All agents</option>
       </select></label
     >
+    <label id="creationProviderField" hidden
+      ><span>Agent provider</span
+      ><select id="creationProviderId">
+        <option value="cursor-local">Cursor</option>
+        <option value="codex">Codex</option>
+      </select></label
+    >
     <small
       >Agent slots are dynamic placeholders. Classic uses the status design;
       Agent characters uses animated state scenes. Agent state is
@@ -128,6 +135,10 @@
           settings.look = document.querySelector("#look").value;
         settings.summaryProviderId =
           document.querySelector("#summaryProviderId").value;
+        if (actionId === "com.agentdeck.monitor.new-agent")
+          settings.creationProviderId = document.querySelector(
+            "#creationProviderId",
+          ).value;
         settings.showSubagents =
           document.querySelector("#showSubagents").checked;
         send("setSettings", settings);
@@ -206,12 +217,16 @@
         document.querySelector("#look").value = settings.look ?? "classic";
         document.querySelector("#summaryProviderId").value =
           settings.summaryProviderId ?? "";
+        document.querySelector("#creationProviderId").value =
+          settings.creationProviderId ?? "cursor-local";
         document.querySelector("#slotField").hidden =
           actionId !== "com.agentdeck.monitor.agent-slot";
         document.querySelector("#lookField").hidden =
           actionId !== "com.agentdeck.monitor.agent-slot";
         document.querySelector("#summaryProviderField").hidden =
           actionId !== "com.agentdeck.monitor.agent-summary";
+        document.querySelector("#creationProviderField").hidden =
+          actionId !== "com.agentdeck.monitor.new-agent";
         websocket = new WebSocket(`ws://127.0.0.1:${port}`);
         websocket.onopen = () => {
           websocket.send(JSON.stringify({ event: registerEvent, uuid }));

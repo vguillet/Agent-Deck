@@ -1,5 +1,7 @@
 import {
   AgentSchema,
+  AgentCreationContextSchema,
+  AgentCreationResponseSchema,
   CommandResultSchema,
   CursorFocusResponseSchema,
   AttentionSchema,
@@ -8,6 +10,9 @@ import {
   RunSchema,
   WorkspaceSchema,
   type Page,
+  type AgentCreationContext,
+  type AgentCreationProviderId,
+  type AgentCreationResult,
   type CursorFocusResult,
 } from "@agent-deck/api-contract";
 import type {
@@ -127,6 +132,24 @@ export class AgentDeckClient {
     );
     if (!response.ok) throw await responseError(response);
     return CursorFocusResponseSchema.parse(await response.json());
+  }
+
+  async createAgent(
+    providerId: AgentCreationProviderId,
+  ): Promise<AgentCreationResult> {
+    const response = await fetch(`${this.baseUrl}/api/v1/agents/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId }),
+    });
+    if (!response.ok) throw await responseError(response);
+    return AgentCreationResponseSchema.parse(await response.json());
+  }
+
+  async getAgentCreationContext(): Promise<AgentCreationContext> {
+    return AgentCreationContextSchema.parse(
+      await this.get("/api/v1/agents/create/context"),
+    );
   }
 
   async cancelAgent(

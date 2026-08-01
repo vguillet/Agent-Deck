@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CODEX_EXTENSION_ID,
+  CODEX_NEW_CHAT_COMMAND,
   CODEX_OPEN_SIDEBAR_COMMAND,
   CURSOR_CANCEL_CHAT_COMMAND,
   CURSOR_OPEN_COMPOSER_COMMAND,
+  CURSOR_NEW_AGENT_CHAT_COMMAND,
   codexThreadUri,
+  createAgentChat,
   focusCursorConversation,
   type FocusHandlerDependencies,
 } from "./focus-handler.js";
@@ -23,6 +26,33 @@ const dependencies = (
 });
 
 describe("Cursor focus URI handler", () => {
+  it("creates blank Cursor and Codex chats through available commands", async () => {
+    const cursor = dependencies([CURSOR_NEW_AGENT_CHAT_COMMAND]);
+    await expect(createAgentChat("cursor-local", cursor)).resolves.toEqual({
+      status: "opened",
+    });
+    expect(cursor.executeCommand).toHaveBeenCalledWith(
+      CURSOR_NEW_AGENT_CHAT_COMMAND,
+    );
+
+    const codex = dependencies([CODEX_NEW_CHAT_COMMAND]);
+    await expect(createAgentChat("codex", codex)).resolves.toEqual({
+      status: "opened",
+    });
+    expect(codex.executeCommand).toHaveBeenCalledWith(CODEX_NEW_CHAT_COMMAND);
+  });
+
+  it("fails safely when a new-chat command is unavailable", async () => {
+    await expect(
+      createAgentChat("cursor-local", dependencies([])),
+    ).resolves.toMatchObject({ status: "unavailable" });
+    const codex = dependencies([CODEX_NEW_CHAT_COMMAND]);
+    codex.hasExtension = () => false;
+    await expect(createAgentChat("codex", codex)).resolves.toMatchObject({
+      status: "unavailable",
+    });
+  });
+
   it("opens the exact local conversation", async () => {
     const deps = dependencies();
     await expect(

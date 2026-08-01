@@ -12,12 +12,13 @@ import streamDeck, {
   type WillDisappearEvent,
 } from "@elgato/streamdeck";
 import { AgentDeckClient, type WatchHandle } from "@agent-deck/client-sdk";
-import type {
-  Agent,
-  Attention,
-  CanonicalEvent,
-  Provider,
-  Workspace,
+import {
+  workspaceResourcesForRoots,
+  type Agent,
+  type Attention,
+  type CanonicalEvent,
+  type Provider,
+  type Workspace,
 } from "@agent-deck/domain";
 import {
   focusResultNeedsAlert,
@@ -70,6 +71,7 @@ import {
 } from "./agent-state-indicator.js";
 import {
   agentWorkspaceBadgeSvg,
+  workspaceBadgeSvg,
   workspaceBadgesNeeded,
 } from "./workspace-badge.js";
 import { ActionOutputWriter } from "./action-output-writer.js";
@@ -87,6 +89,7 @@ interface ActionSettings {
   look?: AgentKeyLook;
   summaryProviderId?: string;
   showSubagents?: boolean;
+  creationProviderId?: "cursor-local" | "codex";
   [key: string]: string | number | boolean | null | undefined;
 }
 
@@ -129,6 +132,12 @@ interface DeviceSession {
   lastSnapshotSequence: number;
   animationStartedAt: number;
   runningAnimationStarts: Map<string, RunningAnimationStart>;
+  creationContext?: Awaited<
+    ReturnType<AgentDeckClient["getAgentCreationContext"]>
+  >;
+  creationContextCheckedAt: number;
+  creationContextPromise: Promise<void> | undefined;
+  creationContextTimer?: NodeJS.Timeout;
 }
 
 interface AgentSummary {
@@ -532,6 +541,27 @@ const emptyAgentIcon = (
     </svg>`,
   )}`;
 
+const newAgentIcon = (
+  providerId: string,
+  workspaceBadge: string,
+  muted = false,
+): string => {
+  return `data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
+      ${muteSvgContent(
+        `<rect width="144" height="144" fill="#172033"/>
+        <g transform="translate(50 45) scale(1.55) translate(-118.5 -118.5)">${providerLogo(providerId)}</g>
+        <circle cx="72" cy="51" r="20" fill="white" stroke="#172033" stroke-width="3"/>
+        <path d="M40 127c3-32 14-49 32-49s29 17 32 49z" fill="white" stroke="#172033" stroke-width="3" stroke-linejoin="round"/>
+        <g transform="translate(-50 51)">${workspaceBadge}</g>
+        <circle cx="116" cy="27" r="18" fill="none" stroke="white" stroke-width="3"/>
+        <path d="M112 15h9v8h8v9h-8v8h-9v-8h-8v-9h8z" fill="white"/>`,
+        muted,
+      )}
+    </svg>`,
+  )}`;
+};
+
 const removedAgentIcon = (
   seed: string,
   elapsedMs: number,
@@ -690,6 +720,8 @@ class DeviceManager {
       lastSnapshotSequence: 0,
       animationStartedAt: Date.now(),
       runningAnimationStarts: new Map(),
+      creationContextCheckedAt: 0,
+      creationContextPromise: undefined,
     };
     this.sessions.set(deviceId, session);
     await this.refresh(session);
@@ -743,6 +775,25 @@ class DeviceManager {
       },
     );
     this.animationScheduler.start();
+    session.creationContextTimer = setInterval(() => {
+      const device = streamDeck.devices.getDeviceById(session.deviceId);
+      if (
+        !device ||
+        ![...device.actions].some(
+          (candidate) =>
+            candidate.manifestId === "com.agentdeck.monitor.new-agent",
+        )
+      )
+        return;
+      void this.refreshCreationContext(session).then((changed) => {
+        if (changed)
+          return this.renderVisible(
+            session.deviceId,
+            new Set(["com.agentdeck.monitor.new-agent"]),
+          );
+      });
+    }, 1_500);
+    session.creationContextTimer.unref();
     return session;
   }
 
@@ -953,6 +1004,84 @@ class DeviceManager {
     const image = systemIcon(session, Date.now() - session.animationStartedAt);
     if (actionContext.isKey() || actionContext.isDial())
       await this.outputWriter.write(actionContext, { title: "", image });
+  }
+
+  private async refreshCreationContext(
+    session: DeviceSession,
+    force = false,
+  ): Promise<boolean> {
+    const previous = JSON.stringify(session.creationContext);
+    if (session.creationContextPromise) {
+      await session.creationContextPromise;
+      return previous !== JSON.stringify(session.creationContext);
+    }
+    const now = Date.now();
+    if (!force && now - session.creationContextCheckedAt < 1_250) return false;
+    session.creationContextCheckedAt = now;
+    session.creationContextPromise = session.client
+      .getAgentCreationContext()
+      .then((context) => {
+        session.creationContext = context;
+      })
+      .catch((error: unknown) => {
+        streamDeck.logger.debug(
+          `Agent Deck creation context unavailable: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      })
+      .finally(() => {
+        session.creationContextPromise = undefined;
+      });
+    await session.creationContextPromise;
+    return previous !== JSON.stringify(session.creationContext);
+  }
+
+  async renderCreation(
+    actionContext: Action<ActionSettings>,
+    settings: ActionSettings,
+  ): Promise<void> {
+    const session = await this.ensure(actionContext);
+    await this.refreshCreationContext(session);
+    const providerId = settings.creationProviderId ?? "cursor-local";
+    const roots =
+      session.creationContext?.status === "available"
+        ? session.creationContext.workspaceRoots
+        : undefined;
+    const workspace = roots?.length
+      ? workspaceResourcesForRoots(providerId, roots).workspace
+      : undefined;
+    const badge = workspace
+      ? workspaceBadgeSvg(workspace, [
+          ...session.visibleWorkspaceIds,
+          workspace.id,
+        ])
+      : "";
+    if (actionContext.isKey() || actionContext.isDial())
+      await this.outputWriter.write(actionContext, {
+        title: "",
+        image: newAgentIcon(
+          providerId,
+          badge,
+          session.connectionStatus !== "connected",
+        ),
+      });
+  }
+
+  async createAgent(
+    actionContext: Action<ActionSettings>,
+    settings: ActionSettings,
+  ): Promise<boolean> {
+    const session = await this.ensure(actionContext);
+    const providerId = settings.creationProviderId ?? "cursor-local";
+    const result = await session.client.createAgent(providerId);
+    if (result.status === "opened") return true;
+    streamDeck.logger.warn(
+      `Agent Deck creation failed (${result.requestId}): ${
+        result.message ?? result.status
+      }`,
+    );
+    return false;
   }
 
   async changePage(
@@ -1420,6 +1549,8 @@ class DeviceManager {
             await this.renderProvider(visible);
           else if (visible.manifestId === "com.agentdeck.monitor.system-health")
             await this.renderSystem(visible);
+          else if (visible.manifestId === "com.agentdeck.monitor.new-agent")
+            await this.renderCreation(visible, settings);
         }),
     );
   }
@@ -1673,9 +1804,43 @@ class SystemHealthAction extends SingletonAction<ActionSettings> {
   }
 }
 
+@action({ UUID: "com.agentdeck.monitor.new-agent" })
+class NewAgentAction extends SingletonAction<ActionSettings> {
+  override async onWillAppear(
+    ev: WillAppearEvent<ActionSettings>,
+  ): Promise<void> {
+    devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.renderCreation(ev.action, ev.payload.settings);
+  }
+  override async onDidReceiveSettings(
+    ev: DidReceiveSettingsEvent<ActionSettings>,
+  ): Promise<void> {
+    devices.rememberAction(ev.action, ev.payload.settings);
+    await devices.renderCreation(ev.action, ev.payload.settings);
+  }
+  override onWillDisappear(ev: WillDisappearEvent<ActionSettings>): void {
+    devices.forgetAction(ev.action.id);
+  }
+  override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
+    try {
+      const opened = await devices.createAgent(ev.action, ev.payload.settings);
+      if (opened) await ev.action.showOk();
+      else await ev.action.showAlert();
+    } catch (error) {
+      streamDeck.logger.error(
+        `Agent Deck creation failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      await ev.action.showAlert();
+    }
+  }
+}
+
 streamDeck.actions.registerAction(new AgentSlotAction());
 streamDeck.actions.registerAction(new AgentSummaryAction());
 streamDeck.actions.registerAction(new AttentionAction());
 streamDeck.actions.registerAction(new ProviderHealthAction());
 streamDeck.actions.registerAction(new SystemHealthAction());
+streamDeck.actions.registerAction(new NewAgentAction());
 await streamDeck.connect();

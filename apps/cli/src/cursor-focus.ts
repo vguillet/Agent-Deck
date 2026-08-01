@@ -97,7 +97,7 @@ export const installCursorFocus = async (
     vsix,
     "--force",
   ]);
-  return `Installed Agent Deck Focus ${EXTENSION_VERSION} in Cursor`;
+  return `Installed Agent Deck Focus ${EXTENSION_VERSION} in Cursor. Reload open Cursor windows to activate it`;
 };
 
 export const uninstallCursorFocus = async (

@@ -128,6 +128,7 @@ interface Registry {
   conversationKinds?: Array<[string, ConversationKind]>;
   parentConversations?: Array<[string, string]>;
   subagentTranscripts?: Array<[string, string]>;
+  subagentConversationAliases?: Array<[string, string]>;
   sourceRevisions?: Array<[string, number]>;
   pendingHooks?: Array<[string, LifecycleHookInput[]]>;
 }
@@ -266,6 +267,7 @@ class CursorLocalProvider implements AgentProviderPlugin {
   private readonly conversationKinds = new Map<string, ConversationKind>();
   private readonly parentConversations = new Map<string, string>();
   private readonly subagentTranscripts = new Map<string, string>();
+  private readonly subagentConversationAliases = new Map<string, string>();
   private readonly subagentTranscriptWatchers = new Map<string, FSWatcher>();
   private readonly subagentTranscriptRetryTimers = new Map<
     string,
@@ -454,6 +456,17 @@ class CursorLocalProvider implements AgentProviderPlugin {
       await this.trackSubagentTranscript(input.subagent_id);
       return;
     }
+    const aliasedConversationId = this.subagentConversationAliases.get(
+      input.conversation_id,
+    );
+    if (aliasedConversationId) {
+      input = {
+        ...input,
+        conversation_id: aliasedConversationId,
+        conversation_kind: "subagent",
+        is_subagent: true,
+      };
+    }
     this.lastProtocolVersion =
       input.protocol_version ?? this.lastProtocolVersion;
     const explicitKind = explicitConversationKind(input);
@@ -505,14 +518,24 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const existing = this.agents.get(agentId);
     const currentGeneration = this.activeGenerations.get(input.conversation_id);
     const startsGeneration = input.hook_event_name === "beforeSubmitPrompt";
+    const provisional =
+      input.hook_event_name === "sessionStart" &&
+      this.conversationKinds.get(input.conversation_id) === "top_level";
+    // #region agent log
+    fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'810436'},body:JSON.stringify({sessionId:'810436',runId:'state-loss-pre-fix',hypothesisId:'S1,S2,S3',location:'plugins/cursor-local/src/index.ts:applyLifecycleEntry',message:'Resolving Cursor lifecycle hook',data:{event:input.hook_event_name,conversationSuffix:input.conversation_id.slice(-8),kind:this.conversationKinds.get(input.conversation_id),existingState:existing?.state,hasInputGeneration:Boolean(input.generation_id),inputMatchesCurrent:!input.generation_id||!currentGeneration||input.generation_id===currentGeneration,hasCurrentGeneration:Boolean(currentGeneration),hasToolUseId:Boolean(input.tool_use_id),activity:input.agent_activity,signal:input.agent_signal,hasStatus:Boolean(input.status),hasFinalStatus:Boolean(input.final_status),hasReason:Boolean(input.reason)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
 
     if (
       !startsGeneration &&
       input.generation_id &&
       currentGeneration &&
       input.generation_id !== currentGeneration
-    )
+    ) {
+      // #region agent log
+      fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'810436'},body:JSON.stringify({sessionId:'810436',runId:'state-loss-pre-fix',hypothesisId:'S2',location:'plugins/cursor-local/src/index.ts:generationDrop',message:'Dropped lifecycle hook for non-current generation',data:{event:input.hook_event_name,conversationSuffix:input.conversation_id.slice(-8),existingState:existing?.state,terminal:input.hook_event_name==='stop'||input.hook_event_name==='sessionEnd'},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       return;
+    }
 
     if (startsGeneration && input.generation_id)
       this.activeGenerations.set(input.conversation_id, input.generation_id);
@@ -525,10 +548,11 @@ class CursorLocalProvider implements AgentProviderPlugin {
     for (const project of resources.projects)
       this.projects.set(project.id, project);
 
-    const generation =
-      input.generation_id ??
-      this.activeGenerations.get(input.conversation_id) ??
-      undefined;
+    const generation = provisional
+      ? undefined
+      : (input.generation_id ??
+        this.activeGenerations.get(input.conversation_id) ??
+        undefined);
     const runId = generation
       ? canonicalId(PROVIDER_ID, `${input.conversation_id}:${generation}`)
       : undefined;
@@ -550,9 +574,12 @@ class CursorLocalProvider implements AgentProviderPlugin {
     const state = completesQuestionSignal
       ? "waiting_for_input"
       : agentStateForHook(input, existing?.state);
+    // #region agent log
+    fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'810436'},body:JSON.stringify({sessionId:'810436',runId:'state-loss-pre-fix',hypothesisId:'S1,S3',location:'plugins/cursor-local/src/index.ts:stateResolution',message:'Resolved lifecycle hook to displayed state',data:{event:input.hook_event_name,conversationSuffix:input.conversation_id.slice(-8),previousState:existing?.state,state,storedQuestionSignal:Boolean(signalledToolUse),toolUseMatches:Boolean(signalledToolUse&&input.tool_use_id===signalledToolUse),completesQuestionSignal,terminalMappedState:terminal?agentTerminalState(input):undefined},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     if (
       !existing &&
-      (terminal || state === "idle" || state === "unknown")
+      (terminal || (!provisional && (state === "idle" || state === "unknown")))
     )
       return;
     const primaryProject = resources.projects[0];
@@ -599,6 +626,8 @@ class CursorLocalProvider implements AgentProviderPlugin {
       }
     }
     if (roots.length) metadata.workspaceRoots = roots;
+    if (provisional) metadata.lifecycle = "provisional";
+    else delete metadata.lifecycle;
     const agent: Agent = {
       id: agentId,
       providerId: PROVIDER_ID,
@@ -751,6 +780,9 @@ class CursorLocalProvider implements AgentProviderPlugin {
       conversationKinds: [...this.conversationKinds.entries()],
       parentConversations: [...this.parentConversations.entries()],
       subagentTranscripts: [...this.subagentTranscripts.entries()],
+      subagentConversationAliases: [
+        ...this.subagentConversationAliases.entries(),
+      ],
       sourceRevisions: [...this.sourceRevisions.entries()],
       pendingHooks: [...this.pendingHooks.entries()],
     };
@@ -783,6 +815,9 @@ class CursorLocalProvider implements AgentProviderPlugin {
       for (const [conversation, transcript] of registry.subagentTranscripts ??
         [])
         this.subagentTranscripts.set(conversation, transcript);
+      for (const [conversation, canonical] of
+        registry.subagentConversationAliases ?? [])
+        this.subagentConversationAliases.set(conversation, canonical);
       for (const [conversation, revision] of registry.sourceRevisions ?? [])
         this.sourceRevisions.set(conversation, revision);
       for (const [conversation, hooks] of registry.pendingHooks ?? [])
@@ -993,6 +1028,23 @@ class CursorLocalProvider implements AgentProviderPlugin {
         if (candidateIndex < 0) continue;
         const [candidate] = candidates.splice(candidateIndex, 1);
         this.subagentTranscripts.set(agent.externalId, candidate!.path);
+        const transcriptConversationId = basename(candidate!.path, ".jsonl");
+        if (transcriptConversationId !== agent.externalId) {
+          this.subagentConversationAliases.set(
+            transcriptConversationId,
+            agent.externalId,
+          );
+          this.conversationKinds.set(transcriptConversationId, "subagent");
+          const activeGeneration = this.activeGenerations.get(
+            transcriptConversationId,
+          );
+          if (
+            activeGeneration &&
+            !this.activeGenerations.has(agent.externalId)
+          )
+            this.activeGenerations.set(agent.externalId, activeGeneration);
+          await this.hideSubagent(transcriptConversationId);
+        }
         changed = true;
       }
       return changed;

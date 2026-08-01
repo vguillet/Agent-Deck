@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
+  AgentCreationRequestSchema,
   AgentCommandRequestSchema,
   AgentListQuerySchema,
   AgentJsonSchema,
@@ -13,6 +14,7 @@ import { RevisionConflictError } from "@agent-deck/event-store";
 import type { SubscriptionBroker } from "./broker.js";
 import type { AgentFocusCoordinator } from "./agent-focus-coordinator.js";
 import type { ProviderManager } from "./provider-manager.js";
+import type { CursorWindowBroker } from "./cursor-window-broker.js";
 
 const pageResponse = <T>(
   store: EventStore,
@@ -52,6 +54,7 @@ export const registerApiRoutes = (
   store: EventStore,
   broker: SubscriptionBroker,
   agentFocus: AgentFocusCoordinator,
+  cursorWindows: CursorWindowBroker,
   providers: ProviderManager,
 ): void => {
   app.get("/healthz", async () => ({ status: "ok" }));
@@ -86,6 +89,23 @@ export const registerApiRoutes = (
     };
   });
 
+  app.post("/api/v1/agents/create", async (request, reply) => {
+    const input = AgentCreationRequestSchema.safeParse(request.body);
+    if (!input.success)
+      return reply.code(400).send({
+        error: {
+          code: "validation_error",
+          message: input.error.message,
+          requestId: request.id,
+        },
+      });
+    return cursorWindows.create(input.data.providerId);
+  });
+
+  app.get("/api/v1/agents/create/context", async () =>
+    cursorWindows.creationContext(),
+  );
+
   app.get<{ Params: { id: string } }>(
     "/api/v1/agents/:id",
     async (request, reply) => {
@@ -98,8 +118,7 @@ export const registerApiRoutes = (
     "/api/v1/agents/:id/dismiss",
     async (request, reply) => {
       const events = store.dismissAgent(request.params.id);
-      if (!events.length)
-        return notFound(request, reply, "Agent");
+      if (!events.length) return notFound(request, reply, "Agent");
       for (const event of events) broker.publish(event);
       return reply.code(204).send();
     },
@@ -273,6 +292,8 @@ export const registerApiRoutes = (
     paths: Object.fromEntries(
       [
         "/api/v1/agents",
+        "/api/v1/agents/create",
+        "/api/v1/agents/create/context",
         "/api/v1/agents/dismiss-terminal",
         "/api/v1/agents/{id}",
         "/api/v1/agents/{id}/dismiss",
@@ -290,6 +311,7 @@ export const registerApiRoutes = (
       ].map((path) => [
         path,
         path.endsWith("/commands") ||
+        path.endsWith("/create") ||
         path.endsWith("/focus") ||
         path.endsWith("/dismiss") ||
         path.endsWith("/dismiss-terminal")

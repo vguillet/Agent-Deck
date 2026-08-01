@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   AgentCommandRequestSchema,
+  AgentCreationContextSchema,
+  AgentCreationRequestSchema,
   AgentJsonSchema,
   AgentSchema,
   CompatibleCursorFocusIntentFrameSchema,
@@ -148,6 +150,35 @@ describe("Cursor window focus contract", () => {
     expect(CursorFocusResultStatusSchema.parse("superseded")).toBe(
       "superseded",
     );
+  });
+
+  it("validates agent creation requests and window frames", () => {
+    expect(
+      AgentCreationRequestSchema.parse({ providerId: "cursor-local" }),
+    ).toEqual({ providerId: "cursor-local" });
+    expect(() =>
+      AgentCreationRequestSchema.parse({ providerId: "unknown" }),
+    ).toThrow();
+    expect(
+      CursorWindowServerFrameSchema.parse({
+        type: "creation.intent",
+        requestId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        providerId: "codex",
+      }),
+    ).toMatchObject({ type: "creation.intent", providerId: "codex" });
+    expect(
+      CursorWindowClientFrameSchema.parse({
+        type: "creation.result",
+        requestId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        status: "opened",
+      }),
+    ).toMatchObject({ type: "creation.result", status: "opened" });
+    expect(
+      AgentCreationContextSchema.parse({
+        status: "available",
+        workspaceRoots: ["/workspace/alpha"],
+      }),
+    ).toMatchObject({ workspaceRoots: ["/workspace/alpha"] });
   });
 
   it("validates live window registration and normalizes root ordering", () => {

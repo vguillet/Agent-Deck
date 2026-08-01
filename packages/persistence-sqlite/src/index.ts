@@ -29,6 +29,9 @@ import {
 
 type Row = Record<string, unknown>;
 
+const isProvisionalAgent = (agent: Agent | undefined): boolean =>
+  agent?.state === "idle" && agent.metadata.lifecycle === "provisional";
+
 const MIGRATION = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
@@ -222,10 +225,14 @@ export class SqliteEventStore implements EventStore {
       ) {
         const incoming = event.payload.agent as Agent | undefined;
         const existing = incoming ? this.getAgent(incoming.id) : undefined;
+        // #region agent log
+        if (incoming?.providerId === "cursor-local") fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'810436'},body:JSON.stringify({sessionId:'810436',runId:'state-loss-pre-fix',hypothesisId:'S5',location:'packages/persistence-sqlite/src/index.ts:transitionDecision',message:'Evaluating Cursor state transition for persistence',data:{agentSuffix:incoming.externalId.slice(-8),eventType:event.type,incomingState:incoming.state,existingState:existing?.state,isTerminalVisible:isTerminalVisibleAgentState(incoming.state),hasExisting:Boolean(existing),epochMatches:Boolean(existing&&existing.activityEpoch===incoming.activityEpoch)},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         if (
           incoming &&
           !isActiveAgentState(incoming.state) &&
-          !isTerminalVisibleAgentState(incoming.state)
+          !isTerminalVisibleAgentState(incoming.state) &&
+          !isProvisionalAgent(incoming)
         ) {
           if (!existing) return undefined;
           return this.applyProviderEvent({
@@ -268,6 +275,9 @@ export class SqliteEventStore implements EventStore {
 
       const normalized = this.reduce(event);
       if (!normalized.changed) return undefined;
+      // #region agent log
+      if (event.providerId === "cursor-local" && event.agentId) fetch('http://127.0.0.1:7387/ingest/f84f2bef-f713-45ff-9929-62841539443f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'810436'},body:JSON.stringify({sessionId:'810436',runId:'state-loss-pre-fix',hypothesisId:'S5',location:'packages/persistence-sqlite/src/index.ts:transitionAccepted',message:'Persisted Cursor agent event',data:{agentSuffix:event.agentId.slice(-8),eventType:event.type,state:(normalized.payload.agent as Agent|undefined)?.state},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
 
       const observedAt = new Date().toISOString();
       const eventId =
@@ -1012,7 +1022,7 @@ export class SqliteEventStore implements EventStore {
       .prepare(
         `SELECT document FROM agents WHERE provider_id IN (${placeholders})
          AND COALESCE(last_observed_at, last_activity_at) < ? AND state IN (
-           'running', 'waiting_for_input', 'waiting_for_approval'
+           'idle', 'running', 'waiting_for_input', 'waiting_for_approval'
          )`,
       )
       .all(...this.incrementalProviders, beforeTimestamp) as Row[];

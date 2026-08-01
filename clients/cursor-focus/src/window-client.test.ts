@@ -67,6 +67,7 @@ interface Harness {
   sockets: FakeSocket[];
   urls: URL[];
   executeTarget: ReturnType<typeof vi.fn>;
+  createAgent: ReturnType<typeof vi.fn>;
   getSnapshot(): CursorWindowSnapshot;
   setSnapshot(snapshot: CursorWindowSnapshot): void;
   setServerUrl(url: string): void;
@@ -86,6 +87,7 @@ const harness = (
   const executeTarget = vi.fn(async (_target: CursorFocusTarget) => ({
     status: "opened" as const,
   }));
+  const createAgent = vi.fn(async () => ({ status: "opened" as const }));
   const dependencies: CursorWindowClientDependencies = {
     getServerUrl: () => serverUrl,
     getWindowSnapshot: () => snapshot,
@@ -96,12 +98,13 @@ const harness = (
       return socket;
     },
     executeTarget,
+    createAgent,
     random: () => 0,
     log: vi.fn(),
   };
   const client = new CursorWindowClient(
     dependencies,
-    "0.4.0",
+    "0.5.0",
     "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   );
   return {
@@ -109,6 +112,7 @@ const harness = (
     sockets,
     urls,
     executeTarget,
+    createAgent,
     getSnapshot: () => snapshot,
     setSnapshot: (value) => {
       snapshot = value;
@@ -154,9 +158,10 @@ describe("Cursor window connection lifecycle", () => {
       workspaceRoots: ["/workspace/alpha", "/workspace/beta"],
       launchTarget: "/workspace/project.code-workspace",
       focused: true,
-      version: "0.4.0",
+      version: "0.5.0",
       focusProtocolVersion: 2,
       focusKinds: ["cursor.conversation", "codex.thread"],
+      creationProviderIds: ["cursor-local", "codex"],
     });
 
     test.sockets[0]!.message(intent("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"));
@@ -164,6 +169,24 @@ describe("Cursor window connection lifecycle", () => {
     expect(test.sockets[0]!.sent.at(-1)).toMatchObject({
       type: "focus.result",
       requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      status: "opened",
+    });
+  });
+
+  it("dispatches agent creation and acknowledges with a creation result", async () => {
+    const test = harness();
+    test.client.start();
+    test.sockets[0]!.open();
+    test.sockets[0]!.message({
+      type: "creation.intent",
+      requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      providerId: "codex",
+    });
+    await vi.waitFor(() =>
+      expect(test.createAgent).toHaveBeenCalledWith("codex"),
+    );
+    expect(test.sockets[0]!.sent.at(-1)).toMatchObject({
+      type: "creation.result",
       status: "opened",
     });
   });

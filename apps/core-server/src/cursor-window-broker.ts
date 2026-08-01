@@ -4,6 +4,9 @@ import type { WebSocket } from "ws";
 import {
   CursorWindowClientFrameSchema,
   workspaceRootsKey,
+  type AgentCreationContext,
+  type AgentCreationProviderId,
+  type AgentCreationResult,
   type CursorFocusResult,
   type CursorFocusTarget,
   type CursorFocusTargetKind,
@@ -17,15 +20,17 @@ interface WindowConnection {
   socket: WebSocket;
   registration?: CursorWindowRegistration;
   focused: boolean;
-  pending?: PendingFocus;
+  pending?: PendingOperation;
 }
 
-interface PendingFocus {
+interface PendingOperation {
   acknowledgement?: CursorFocusResult;
   detachAbort?: () => void;
   requestId: string;
   targetKey: string;
-  target: CursorFocusTarget;
+  operation: "focus" | "creation";
+  target?: CursorFocusTarget;
+  providerId?: AgentCreationProviderId;
   activated: boolean;
   intentSent: boolean;
   timer: NodeJS.Timeout;
@@ -52,6 +57,7 @@ const registrationKey = (registration: CursorWindowRegistration): string =>
     registration.launchTarget,
     registration.focusProtocolVersion ?? 1,
     ...(registration.focusKinds ?? []),
+    ...(registration.creationProviderIds ?? []),
   ].join("\0");
 
 const targetKey = (target: CursorFocusTarget): string =>
@@ -126,9 +132,16 @@ export class CursorWindowBroker {
       connection.focused = frame.focused;
       return true;
     }
+    const resultOperation =
+      frame.type === "creation.result" ? "creation" : "focus";
+    if (
+      connection.pending?.requestId === frame.requestId &&
+      connection.pending.operation !== resultOperation
+    )
+      return true;
     if (connection.pending?.requestId !== frame.requestId) {
       const expired = this.expired.get(frame.requestId);
-      if (expired) {
+      if (expired && resultOperation === "focus") {
         clearTimeout(expired.timer);
         this.expired.delete(frame.requestId);
         if (frame.status === "opened" && !connection.pending)
@@ -226,6 +239,7 @@ export class CursorWindowBroker {
       requestId,
       targetKey: key,
       target,
+      operation: "focus",
       activated: false,
       intentSent: false,
       timer,
@@ -279,6 +293,121 @@ export class CursorWindowBroker {
     return promise;
   }
 
+  async create(
+    providerId: AgentCreationProviderId,
+  ): Promise<AgentCreationResult> {
+    const requestId = randomUUID();
+    const focused = [...this.connections.values()].filter(
+      (connection) => connection.registration && connection.focused,
+    );
+    if (!focused.length)
+      return {
+        requestId,
+        status: "unavailable",
+        message: "No focused Cursor workspace is connected",
+      };
+    if (focused.length > 1)
+      return {
+        requestId,
+        status: "ambiguous",
+        message: "More than one Cursor workspace reports being focused",
+      };
+
+    const connection = focused[0]!;
+    const registration = connection.registration!;
+    if (!registration.creationProviderIds?.includes(providerId))
+      return {
+        requestId,
+        status: "unavailable",
+        message: "Update Agent Deck Focus to create this agent type",
+      };
+
+    const key = `creation:${providerId}`;
+    if (connection.pending?.targetKey === key)
+      return connection.pending.promise;
+    if (connection.pending)
+      this.finish(connection, {
+        requestId: connection.pending.requestId,
+        status: "superseded",
+        message: "Superseded by a newer Cursor request",
+      });
+
+    let resolveResult!: (result: CursorFocusResult) => void;
+    const promise = new Promise<CursorFocusResult>((resolvePromise) => {
+      resolveResult = resolvePromise;
+    });
+    const timer = setTimeout(() => {
+      this.finish(connection, {
+        requestId,
+        status: "timeout",
+        message: "Cursor did not acknowledge the creation request",
+      });
+    }, this.timeoutMs);
+    timer.unref();
+    connection.pending = {
+      requestId,
+      targetKey: key,
+      operation: "creation",
+      providerId,
+      activated: false,
+      intentSent: false,
+      timer,
+      promise,
+      resolve: resolveResult,
+    };
+    connection.pending.intentSent = true;
+    if (!this.sendCreationIntent(connection, providerId, requestId))
+      return promise;
+    let activation: Promise<void>;
+    try {
+      activation = this.activate(registration.launchTarget);
+    } catch (error) {
+      this.finish(connection, {
+        requestId,
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return promise;
+    }
+    void activation.then(
+      () => {
+        const pending = connection.pending;
+        if (!pending || pending.requestId !== requestId) return;
+        pending.activated = true;
+        if (pending.acknowledgement)
+          this.finish(connection, pending.acknowledgement);
+      },
+      (error: unknown) => {
+        this.finish(connection, {
+          requestId,
+          status: "failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
+    return promise;
+  }
+
+  creationContext(): AgentCreationContext {
+    const focused = [...this.connections.values()].filter(
+      (connection) => connection.registration && connection.focused,
+    );
+    if (!focused.length)
+      return {
+        status: "unavailable",
+        message: "No focused Cursor workspace is connected",
+      };
+    if (focused.length > 1)
+      return {
+        status: "ambiguous",
+        message: "More than one Cursor workspace reports being focused",
+      };
+    return {
+      status: "available",
+      workspaceRoots: [...focused[0]!.registration!.workspaceRoots],
+    };
+  }
+
   close(): void {
     for (const connection of [...this.connections.values()]) {
       this.remove(connection.id);
@@ -323,6 +452,11 @@ export class CursorWindowBroker {
       launchTarget: resolve(frame.launchTarget),
       ...(frame.focusKinds
         ? { focusKinds: [...new Set(frame.focusKinds)].sort() }
+        : {}),
+      ...(frame.creationProviderIds
+        ? {
+            creationProviderIds: [...new Set(frame.creationProviderIds)].sort(),
+          }
         : {}),
     };
     const previousConnectionId = this.connectionsByWindow.get(
@@ -437,19 +571,67 @@ export class CursorWindowBroker {
     }
   }
 
-  private cancelIntent(connection: WindowConnection, requestId: string): void {
-    if (connection.registration?.focusProtocolVersion !== 2) return;
+  private sendCreationIntent(
+    connection: WindowConnection,
+    providerId: AgentCreationProviderId,
+    requestId: string,
+  ): boolean {
+    if (connection.socket.readyState !== connection.socket.OPEN) {
+      this.finish(connection, {
+        requestId,
+        status: "failed",
+        message: "Cursor window connection is not open",
+      });
+      return false;
+    }
+    try {
+      connection.socket.send(
+        JSON.stringify({ type: "creation.intent", requestId, providerId }),
+        (error) => {
+          if (!error) return;
+          this.finish(connection, {
+            requestId,
+            status: "failed",
+            message: error.message,
+          });
+        },
+      );
+      return true;
+    } catch (error) {
+      this.finish(connection, {
+        requestId,
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  }
+
+  private cancelIntent(
+    connection: WindowConnection,
+    pending: PendingOperation,
+  ): void {
+    if (
+      pending.operation === "focus" &&
+      connection.registration?.focusProtocolVersion !== 2
+    )
+      return;
     if (connection.socket.readyState !== connection.socket.OPEN) return;
     try {
       connection.socket.send(
-        JSON.stringify({ type: "focus.cancel", requestId }),
+        JSON.stringify({
+          type:
+            pending.operation === "focus" ? "focus.cancel" : "creation.cancel",
+          requestId: pending.requestId,
+        }),
       );
     } catch {
       // The operation is already terminal; disconnect handling owns cleanup.
     }
   }
 
-  private rememberExpired(pending: PendingFocus): void {
+  private rememberExpired(pending: PendingOperation): void {
+    if (!pending.target) return;
     const previous = this.expired.get(pending.requestId);
     if (previous) clearTimeout(previous.timer);
     const timer = setTimeout(() => {
@@ -471,7 +653,7 @@ export class CursorWindowBroker {
     delete connection.pending;
     if (retireIntent && pending.intentSent && result.status !== "opened") {
       this.rememberExpired(pending);
-      this.cancelIntent(connection, pending.requestId);
+      this.cancelIntent(connection, pending);
       if (
         result.status === "timeout" &&
         connection.registration?.focusProtocolVersion !== 2

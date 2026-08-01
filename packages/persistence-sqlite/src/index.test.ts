@@ -120,6 +120,35 @@ describe("SqliteEventStore live projection", () => {
     store.close();
   });
 
+  it("admits provisional idle agents and expires their incremental lease", () => {
+    const store = createMemoryStore();
+    store.applySnapshot("fake", snapshot([], "incremental"));
+    const provisional = {
+      ...makeAgent("idle", "session"),
+      activeRunId: undefined,
+      metadata: { lifecycle: "provisional" },
+    };
+    store.applyProviderEvent({
+      providerId: "fake",
+      type: "agent.upserted",
+      occurredAt: "2026-07-28T09:00:00.000Z",
+      agentId: provisional.id,
+      payload: { agent: provisional },
+    });
+
+    expect(store.getAgent(provisional.id)).toMatchObject({
+      state: "idle",
+      metadata: { lifecycle: "provisional" },
+    });
+    const events = store.expireLeases(
+      "2026-07-28T09:05:00.000Z",
+      "2026-07-28T09:06:00.000Z",
+    );
+    expect(events.at(-1)?.type).toBe("agent.removed");
+    expect(store.getAgent(provisional.id)).toBeUndefined();
+    store.close();
+  });
+
   it("suppresses a dismissed epoch and accepts a genuinely new epoch", () => {
     const store = createMemoryStore();
     const first = makeAgent();
