@@ -111,6 +111,29 @@ describe("Agent focus coordinator", () => {
     expect(test.launch).toHaveBeenCalledWith(generic.links[0]!.href);
   });
 
+  it("opens a Cursor sub-agent's parent conversation", async () => {
+    const parent = agent("cursor-local", "conversation-1", {
+      workspaceRoots: ["/workspace/alpha"],
+    });
+    const subagent: Agent = {
+      ...agent("cursor-local", "tool-call-1", {
+        workspaceRoots: ["/workspace/alpha"],
+      }),
+      kind: "subagent",
+      parentAgentId: parent.id,
+    };
+    const test = harness([parent, subagent]);
+
+    await expect(
+      test.coordinator.focusAgent(subagent.id),
+    ).resolves.toMatchObject({ status: "opened" });
+    expect(test.focus).toHaveBeenCalledWith({
+      kind: "cursor.conversation",
+      conversationId: parent.externalId,
+      workspaceRoots: ["/workspace/alpha"],
+    });
+  });
+
   it("starts a replacement local conversation without waiting for prior work", async () => {
     const firstExecution = deferred<CursorFocusResult>();
     const firstLocal = agent("cursor-local", "conversation-1", {

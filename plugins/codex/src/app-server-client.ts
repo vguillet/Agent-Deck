@@ -1,4 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync } from "node:fs";
+import { delimiter, dirname, isAbsolute, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
 interface PendingRequest {
@@ -7,13 +9,42 @@ interface PendingRequest {
   timeout: NodeJS.Timeout;
 }
 
+export const resolveCodexBinary = (
+  binary: string,
+  executablePath = process.execPath,
+  exists: (path: string) => boolean = existsSync,
+): string => {
+  if (isAbsolute(binary) || binary.includes("/") || binary.includes("\\"))
+    return binary;
+  const sibling = resolve(dirname(executablePath), binary);
+  return exists(sibling) ? sibling : binary;
+};
+
+export const codexProcessEnvironment = (
+  environment: NodeJS.ProcessEnv = process.env,
+  executablePath = process.execPath,
+): NodeJS.ProcessEnv => {
+  const executableDirectory = dirname(executablePath);
+  const path = (environment.PATH ?? "")
+    .split(delimiter)
+    .filter((entry) => entry && entry !== executableDirectory);
+  return {
+    ...environment,
+    PATH: [executableDirectory, ...path].join(delimiter),
+  };
+};
+
 export class CodexAppServerClient {
   private process: ChildProcessWithoutNullStreams | undefined;
   private readonly pending = new Map<number, PendingRequest>();
   private nextId = 1;
   private initialising: Promise<void> | undefined;
 
-  constructor(private readonly binary: string) {}
+  private readonly binary: string;
+
+  constructor(binary: string) {
+    this.binary = resolveCodexBinary(binary);
+  }
 
   async listThreads(): Promise<unknown[]> {
     await this.ensureStarted();
@@ -78,6 +109,7 @@ export class CodexAppServerClient {
   private async start(): Promise<void> {
     const child = spawn(this.binary, ["app-server"], {
       stdio: ["pipe", "pipe", "pipe"],
+      env: codexProcessEnvironment(),
     });
     this.process = child;
     const lines = createInterface({ input: child.stdout });

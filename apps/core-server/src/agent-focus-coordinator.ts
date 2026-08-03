@@ -193,7 +193,16 @@ export class AgentFocusCoordinator {
       return unavailable(agentId, "The displayed agent is no longer available");
 
     if (agent.providerId === "cursor-local") {
-      const roots = agent.metadata.workspaceRoots;
+      const focusAgent =
+        agent.kind === "subagent" && agent.parentAgentId
+          ? this.getAgent(agent.parentAgentId)
+          : agent;
+      if (focusAgent?.providerId !== "cursor-local")
+        return unavailable(
+          agent.id,
+          "The sub-agent's parent Cursor conversation is no longer available",
+        );
+      const roots = focusAgent.metadata.workspaceRoots;
       const workspaceRoots = Array.isArray(roots)
         ? roots.filter(
             (root): root is string => typeof root === "string" && !!root,
@@ -206,7 +215,7 @@ export class AgentFocusCoordinator {
         );
       const target: CursorFocusTarget = {
         kind: "cursor.conversation",
-        conversationId: agent.externalId,
+        conversationId: focusAgent.externalId,
         workspaceRoots,
       };
       return {
